@@ -1,0 +1,118 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String   @id @default(cuid())
+  email          String   @unique
+  createdAt      DateTime @default(now())
+  strategyProfile StrategyProfile?
+  portfolios     Portfolio[]
+  waitlist       Waitlist?
+}
+
+model StrategyProfile {
+  id                 String  @id @default(cuid())
+  userId             String  @unique
+  targetDteMin       Int
+  targetDteMax       Int
+  maxDelta           Float
+  minAnnualizedYield Float
+  avoidEarnings      Boolean @default(true)
+  user               User    @relation(fields: [userId], references: [id])
+}
+
+model Portfolio {
+  id         String     @id @default(cuid())
+  userId     String
+  name       String
+  createdAt  DateTime   @default(now())
+  user       User       @relation(fields: [userId], references: [id])generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String   @id @default(cuid())
+  email          String   @unique
+  createdAt      DateTime @default(now())
+  strategyProfile StrategyProfile?
+  portfolios     Portfolio[]
+  waitlist       Waitlist?
+}
+
+model StrategyProfile {
+  id                 String  @id @default(cuid())
+  userId             String  @unique
+  targetDteMin       Int
+  targetDteMax       Int
+  maxDelta           Float
+  minAnnualizedYield Float
+  avoidEarnings      Boolean @default(true)
+  user               User    @relation(fields: [userId], references: [id])
+}
+
+model Portfolio {
+  id         String     @id @default(cuid())
+  userId     String
+  name       String
+  createdAt  DateTime   @default(now())
+  user       User       @relation(fields: [userId], references: [id])
+  positions  Position[]
+}
+
+model Position {
+  id             String   @id @default(cuid())
+  portfolioId    String
+  symbol         String
+  shares         Int
+  costBasis      Float
+  wheelState     String
+  openOptionType String?
+  optionStrike   Float?
+  optionExpiry   DateTime?
+  portfolio      Portfolio @relation(fields: [portfolioId], references: [id])
+}
+
+model Waitlist {
+  id         String   @id @default(cuid())
+  userId     String?  @unique
+  email      String   @unique
+  notes      String?
+  createdAt  DateTime @default(now())
+  user       User?    @relation(fields: [userId], references: [id])
+}
+
+  positions  Position[]
+}
+
+model Position {
+  id             String   @id @default(cuid())
+  portfolioId    String
+  symbol         String
+  shares         Int
+  costBasis      Float
+  wheelState     String
+  openOptionType String?
+  optionStrike   Float?
+  optionExpiry   DateTime?
+  portfolio      Portfolio @relation(fields: [portfolioId], references: [id])
+}
+
+model Waitlist {
+  id         String   @id @default(cuid())
+  userId     String?  @unique
+  email      String   @unique
+  notes      String?
+  createdAt  DateTime @default(now())
+  user       User?    @relation(fields: [userId], references: [id])
+}

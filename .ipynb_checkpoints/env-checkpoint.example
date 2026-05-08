@@ -1,0 +1,21 @@
+# App
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+NODE_ENV=development
+
+# Database
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/wheeldesk
+
+# Auth
+AUTH_SECRET=replace_me
+
+# Billing
+STRIPE_SECRET_KEY=sk_test_placeholder
+STRIPE_WEBHOOK_SECRET=whsec_placeholder
+
+# Market data providers
+POLYGON_API_KEY=replace_me
+THETADATA_API_KEY=replace_me
+
+# Email/notifications
+RESEND_API_KEY=re_placeholder
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/replace_me
