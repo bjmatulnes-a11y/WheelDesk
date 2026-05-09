@@ -43,7 +43,24 @@ function toFiniteNumber(value: unknown): number | null {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
+function firstFiniteNumber(...values: unknown[]): number | null {
+  for (const value of values) {
+    const n = toFiniteNumber(value);
+    if (n !== null) return n;
+  }
 
+  return null;
+}
+function calculateDte(snapshotDate: string | null, expiration: string | null): number | null {
+  if (!snapshotDate || !expiration) return null;
+
+  const start = new Date(`${snapshotDate}T00:00:00Z`);
+  const end = new Date(`${expiration}T00:00:00Z`);
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+
+  return Math.max(0, Math.round((end.getTime() - start.getTime()) / 86_400_000));
+}
 function normalizeTicker(value: unknown): string {
   return String(value ?? "").trim().toUpperCase();
 }
@@ -144,8 +161,11 @@ function rowIv(row: AnyRecord, side: "call" | "put"): number | null {
     return toFiniteNumber(
       row.iv ??
         row.impliedVolatility ??
+        row.impliedVol ??
+        row.volatility ??
         row.callIv ??
         row.callIV ??
+        row.callImpliedVolatility ??
         row.call_implied_volatility
     );
   }
@@ -153,8 +173,11 @@ function rowIv(row: AnyRecord, side: "call" | "put"): number | null {
   return toFiniteNumber(
     row.iv ??
       row.impliedVolatility ??
+      row.impliedVol ??
+      row.volatility ??
       row.putIv ??
       row.putIV ??
+      row.putImpliedVolatility ??
       row.put_implied_volatility
   );
 }
@@ -336,12 +359,21 @@ function mapChainRowToDbRow(args: {
     dateOnly(args.row.expiration ?? args.row.expirationDate ?? args.row.expiry) ??
     args.selectedExpiration;
 
+  const dte =
+  firstFiniteNumber(
+    args.row.dte,
+    args.row.DTE,
+    args.row.daysToExpiration,
+    args.row.days_to_expiration,
+    args.selectedDte
+  ) ?? calculateDte(args.snapshotDate, expiration);  
+
   return {
     snapshot_id: args.snapshotId,
     ticker: args.ticker,
     snapshot_date: args.snapshotDate,
     expiration,
-    dte: toFiniteNumber(args.row.dte ?? args.row.daysToExpiration ?? args.row.DTE) ?? args.selectedDte,
+    dte,
 
     strike,
     side,
@@ -350,16 +382,32 @@ function mapChainRowToDbRow(args: {
     volume: rowVolume(args.row, side),
     iv: rowIv(args.row, side),
 
-    delta: toFiniteNumber(args.row.delta),
-    gamma: toFiniteNumber(args.row.gamma),
-    theta: toFiniteNumber(args.row.theta),
-    vega: toFiniteNumber(args.row.vega),
+    delta: firstFiniteNumber(args.row.delta, args.row.greeks?.delta),
+gamma: firstFiniteNumber(args.row.gamma, args.row.greeks?.gamma),
+theta: firstFiniteNumber(args.row.theta, args.row.greeks?.theta),
+vega: firstFiniteNumber(args.row.vega, args.row.greeks?.vega),
 
-    bid: toFiniteNumber(args.row.bid),
-    ask: toFiniteNumber(args.row.ask),
-    last: toFiniteNumber(args.row.last ?? args.row.lastPrice),
-    change: toFiniteNumber(args.row.change),
-    percent_change: toFiniteNumber(args.row.percentChange ?? args.row.percent_change),
+bid: firstFiniteNumber(args.row.bid, args.row.bidPrice, args.row.bestBid),
+ask: firstFiniteNumber(args.row.ask, args.row.askPrice, args.row.bestAsk),
+last: firstFiniteNumber(
+  args.row.last,
+  args.row.lastPrice,
+  args.row.lastTradePrice,
+  args.row.regularMarketPrice,
+  args.row.mark,
+  args.row.mid
+),
+change: firstFiniteNumber(
+  args.row.change,
+  args.row.priceChange,
+  args.row.regularMarketChange
+),
+percent_change: firstFiniteNumber(
+  args.row.percentChange,
+  args.row.percent_change,
+  args.row.changePercent,
+  args.row.regularMarketChangePercent
+),
 
     raw: safeJson(args.row),
   };
@@ -395,19 +443,43 @@ export async function saveSurfaceSnapshotToSupabase(
       s.primaryExpiration
   );
 
-  const selectedDte = toFiniteNumber(
-    s.selectedDte ??
-      s.dte ??
-      s.DTE ??
-      s.daysToExpiration
-  );
+const selectedDte = firstFiniteNumber(
+  s.selectedDte,
+  s.selectedDTE,
+  s.dte,
+  s.DTE,
+  s.daysToExpiration,
+  s.days_to_expiration,
+  s.dailyStructure?.selectedDte,
+  s.dailyStructure?.selectedDTE,
+  s.dailyStructure?.dte
+);
 
   const parentPayload = {
     ticker,
     snapshot_date: snapshotDate,
     surface_key: surfaceKey,
 
-    spot: toFiniteNumber(s.spot ?? s.currentPrice ?? s.underlyingPrice),
+    spot: firstFiniteNumber(
+  s.spot,
+  s.currentPrice,
+  s.underlyingPrice,
+  s.price,
+  s.analysisPrice,
+  s.livePrice,
+  s.lastPrice,
+  s.mark,
+  s.dailyStructure?.spot,
+  s.dailyStructure?.currentPrice,
+  s.dailyStructure?.analysisPrice,
+  s.summary?.spot,
+  s.summary?.currentPrice,
+  s.quote?.price,
+  s.quote?.regularMarketPrice,
+  s.quote?.regular_market_price,
+  s.quote?.postMarketPrice,
+  s.quote?.preMarketPrice
+),
     selected_expiration: selectedExpiration,
     selected_dte: selectedDte,
 

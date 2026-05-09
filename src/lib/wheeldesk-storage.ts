@@ -1,3 +1,6 @@
+import { saveSurfaceSnapshotViaApi } from "./surface-snapshot-api-client";
+
+
 export type CandleRecord = {
   date: string;
   open?: number;
@@ -601,6 +604,23 @@ export function getChainFromSurface(args: {
     surface.chains.find((chain) => chain.expiration === args.expiration) ?? null
   );
 }
+function mirrorSurfaceSnapshotToSupabase(snapshot: OptionSurfaceSnapshot): void {
+  if (typeof window === "undefined") return;
+
+  void saveSurfaceSnapshotViaApi(snapshot)
+    .then((result) => {
+      console.info(
+        `[WheelDesk] Supabase mirror saved ${result.ticker} ${result.snapshotDate} ` +
+          `(${result.chainRowCount} OI rows)`
+      );
+    })
+    .catch((error) => {
+      console.warn("[WheelDesk] Supabase mirror failed:", error);
+    });
+}
+
+
+
 
 /**
  * SOURCE-OF-TRUTH WRITER
@@ -646,6 +666,10 @@ export function saveOptionSurfaceSnapshot(
     ...storage,
     optionSurfaceSnapshots: nextSurfaceSnapshots,
   });
+ 
+  mirrorSurfaceSnapshotToSupabase(normalized);
+
+    
 }
 
 /**
