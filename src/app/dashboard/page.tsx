@@ -17,6 +17,7 @@ import { PrevailingStructureLadderCard } from "../../components/PrevailingStruct
 import { StructureQualityCard } from "../../components/StructureQualityCard";
 import DealerPressureCard from "../../components/DealerPressureCard";
 import { buildDealerPressureSummary } from "../../lib/dealer-pressure-engine";
+import { hydrateSurfaceSnapshotsFromSupabase } from "../../lib/surface-snapshot-hydration";
 import {
   deleteChainSnapshots,
   getSavedChainSnapshots,
@@ -1364,6 +1365,35 @@ setStatus(`Saved full OI surface snapshot ${snapshotDate} for ${ticker}.`);
   useEffect(() => {
   setMounted(true);
 }, []);
+  useEffect(() => {
+  if (!mounted || !ticker) return;
+
+  let cancelled = false;
+  const requestedTicker = ticker;
+
+  hydrateSurfaceSnapshotsFromSupabase(requestedTicker, 50)
+    .then((result) => {
+      if (cancelled) return;
+
+      if (result.fetched > 0) {
+        reloadSurfaceSnapshots();
+
+        console.info(
+          `[WheelDesk] Hydrated ${result.fetched} Supabase surface snapshots for ${result.ticker}. ` +
+            `Added ${result.added}, updated ${result.updated}.`
+        );
+      }
+    })
+    .catch((error) => {
+      console.warn("[WheelDesk] Supabase surface hydration failed:", error);
+    });
+
+  return () => {
+    cancelled = true;
+  };
+}, [mounted, ticker]);
+
+    
   useEffect(() => {
     let cancelled = false;
     const requestedTicker = ticker;
