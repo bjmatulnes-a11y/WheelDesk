@@ -330,7 +330,7 @@ function FlowIntelligenceCard({
             {allLevels.slice(0, 6).map((level) => (
               <tr key={`${level.side}-${level.strike}`} style={{ borderBottom: "1px solid #f3f4f6" }}>
                 <td style={{ padding: 6 }}>{level.side}</td>
-                <td style={{ padding: 6 }}>{level.strike.toFixed(2)}</td>
+                <td style={{ padding: 6 }}>{fmtFixed(level.strike, 2)}</td>
                 <td style={{ padding: 6 }}>{level.pressureType.toUpperCase()}</td>
                 <td style={{ padding: 6 }}>{Math.round(level.openInterest).toLocaleString()}</td>
                 <td style={{ padding: 6 }}>{formatChange(level.oiChange)}</td>
@@ -1197,7 +1197,7 @@ function TraderEdgeSummaryCard({
           <div>Cushion target: {formatMoney(edge.coveredCallCushionTarget)}</div>
           <div>Executable zone floor: <strong>{formatMoney(edge.executableCoveredCallFloor)}</strong></div>
           <div style={{ color: "#6b7280", marginTop: 4 }}>
-            Uses {edge.cushionPct.toFixed(1)}% cushion and snaps to the next available strike at or above target.
+            Uses {fmtFixed(edge.cushionPct, 1)}% cushion and snaps to the next available strike at or above target.
           </div>
         </div>
         <div style={{ border: "1px solid #e5e7eb", borderRadius: 6, padding: "0.65rem" }}>
@@ -2288,7 +2288,7 @@ const canSaveSnapshot = Boolean(
     <div>Surface Date: {primarySurfaceDate || selectedSnapshotDate || asOfDate || "N/A"}</div>
     <div>Expiration: {selectedExpiration || "N/A"}</div>
     <div>DTE: {derivedDte ?? "N/A"}</div>
-    <div>Score: {activeChain?.summary.prevailingScore?.toFixed(2) ?? "N/A"}</div>
+    <div>Score: {fmtFixed(activeChain?.summary.prevailingScore,2)}</div>
     <div>Saved surfaces: {mounted ? surfaceSnapshots.length : 0}</div>
     <div>Chains in surface: {selectedSurface?.chains?.length ?? fetchedSnapshot?.chains?.length ?? 0}</div>
   </div>
