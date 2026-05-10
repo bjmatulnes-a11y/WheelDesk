@@ -86,7 +86,10 @@ const defaultOverlays: OverlayFlags = {
   showWalls: true,
   showOiZones: false
 };
-
+function fmtFixed(value: unknown, digits = 2, fallback = "N/A"): string {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(digits) : fallback;
+}
 
 
 function summarizeTickerPositions(ticker: string, positions: PortfolioPosition[]) {
@@ -207,13 +210,13 @@ function OIIntelligenceCard({
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 8, fontSize: 13 }}>
         <div>
-          <strong>Active Call Wall:</strong> {report.adjustedCallWall.toFixed(2)}
+          <strong>Active Call Wall:</strong> {fmtFixed(report.adjustedCallWall, 2)}
         </div>
         <div>
-          <strong>Active Put Wall:</strong> {report.adjustedPutWall.toFixed(2)}
+          <strong>Active Put Wall:</strong> {fmtFixed(report.adjustedPutWall, 2)}
         </div>
         <div>
-          <strong>Active Center:</strong> {report.adjustedCenter.toFixed(2)}
+          <strong>Active Center:</strong> {fmtFixed(report.adjustedCenter, 2)}
         </div>
       </div>
 
@@ -273,7 +276,7 @@ function FlowIntelligenceCard({
 
   const formatPressure = (value?: number) => {
     const n = typeof value === "number" && Number.isFinite(value) ? value : 0;
-    return `${n.toFixed(0)} / 100`;
+    return `$${fmtFixed(n, 0)} / 100`;
   };
 
   const allLevels = [
@@ -289,19 +292,19 @@ function FlowIntelligenceCard({
         <div>
           <strong>Primary Support:</strong>{" "}
           {levels.support
-            ? `${levels.support.strike.toFixed(2)} · ${levels.support.pressureType} · ΔOI ${formatChange(levels.support.oiChange)}`
+            ? `${fmtFixed(levels.support?.strike, 2)} · ${levels.support.pressureType} · ΔOI ${formatChange(levels.support.oiChange)}`
             : "N/A"}
         </div>
 
         <div>
           <strong>Primary Resistance:</strong>{" "}
           {levels.resistance
-            ? `${levels.resistance.strike.toFixed(2)} · ${levels.resistance.pressureType} · ΔOI ${formatChange(levels.resistance.oiChange)}`
+            ? `${fmtFixed(levels.resistance?.strike, 2)} · ${levels.resistance.pressureType} · ΔOI ${formatChange(levels.resistance.oiChange)}`
             : "N/A"}
         </div>
 
         <div>
-          <strong>Magnet:</strong> {levels.magnet.strike.toFixed(2)}
+          <strong>Magnet:</strong> {fmtFixed(levels.magnet?.strike, 2)}
         </div>
       </div>
 
@@ -332,7 +335,7 @@ function FlowIntelligenceCard({
                 <td style={{ padding: 6 }}>{Math.round(level.openInterest).toLocaleString()}</td>
                 <td style={{ padding: 6 }}>{formatChange(level.oiChange)}</td>
                 <td style={{ padding: 6 }}>{Math.round(level.volume).toLocaleString()}</td>
-                <td style={{ padding: 6 }}>{level.volumeToOi.toFixed(2)}</td>
+                <td style={{ padding: 6 }}>{fmtFixed(level.volumeToOi, 2)}</td>
                 <td style={{ padding: 6 }}>{formatPressure(level.pressureScore)}</td>
               </tr>
             ))}
@@ -354,12 +357,12 @@ function FlowIntelligenceCard({
 
 function formatPct(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return "N/A";
-  return `${value.toFixed(1)}%`;
+ return `${fmtFixed(value, 1)}%`;
 }
 
 function formatMoney(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return "N/A";
-  return value.toFixed(2);
+ return fmtFixed(value, 2);
 }
 
 function formatVolumeThrust(edge: { volumeThrust?: number | null; volumeThrustSource?: string }): string {
@@ -371,7 +374,7 @@ function formatVolumeThrust(edge: { volumeThrust?: number | null; volumeThrustSo
       ? "x stock volume"
       : "x";
 
-  return `${edge.volumeThrust.toFixed(2)}${suffix}`;
+ return `${fmtFixed(edge.volumeThrust, 2)}${suffix}`;
 }
 
 function getSnapshotSpot(surface: OptionSurfaceSnapshot | null, fallback: number): number {
@@ -1106,7 +1109,7 @@ function TraderEdgeSummaryCard({
       >
         <div>
           <strong>Dominant Edge Score</strong>
-          <div style={{ fontSize: 24, fontWeight: 800 }}>{edge.edgeScore.toFixed(0)} / 100</div>
+          <div style={{ fontSize: 24, fontWeight: 800 }}>{fmtFixed(edge.edgeScore, 0)} / 100</div>
         </div>
         <div>
           <strong>{edge.actionBucket}</strong>
@@ -1130,23 +1133,23 @@ function TraderEdgeSummaryCard({
       <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 10, fontSize: 12 }}>
         <div style={{ border: "1px solid #e5e7eb", borderRadius: 6, padding: "0.55rem" }}>
           <strong>Wheel</strong><br />
-          <span style={{ ...scoreTone(edge.wheelScore), padding: "2px 6px", borderRadius: 999 }}>{edge.wheelScore.toFixed(0)}</span>
+          <span style={{ ...scoreTone(edge.wheelScore), padding: "2px 6px", borderRadius: 999 }}>{fmtFixed(edge.wheelScore, 0)}</span>
         </div>
         <div style={{ border: "1px solid #e5e7eb", borderRadius: 6, padding: "0.55rem" }}>
           <strong>CSP</strong><br />
-          <span style={{ ...scoreTone(edge.cspScore), padding: "2px 6px", borderRadius: 999 }}>{edge.cspScore.toFixed(0)}</span>
+          <span style={{ ...scoreTone(edge.cspScore), padding: "2px 6px", borderRadius: 999 }}>{fmtFixed(edge.cspScore, 0)}</span>
         </div>
         <div style={{ border: "1px solid #e5e7eb", borderRadius: 6, padding: "0.55rem" }}>
           <strong>Covered Call</strong><br />
-          <span style={{ ...scoreTone(edge.coveredCallScore), padding: "2px 6px", borderRadius: 999 }}>{edge.coveredCallScore.toFixed(0)}</span>
+          <span style={{ ...scoreTone(edge.coveredCallScore), padding: "2px 6px", borderRadius: 999 }}>{fmtFixed(edge.coveredCallScore, 0)}</span>
         </div>
         <div style={{ border: "1px solid #e5e7eb", borderRadius: 6, padding: "0.55rem" }}>
           <strong>Trap Risk</strong><br />
-          <span style={{ ...trapTone, padding: "2px 6px", borderRadius: 999 }}>{edge.trapRisk.toFixed(0)}</span>
+          <span style={{ ...trapTone, padding: "2px 6px", borderRadius: 999 }}>{fmtFixed(edge.trapRisk, 0)}</span>
         </div>
         <div style={{ border: "1px solid #e5e7eb", borderRadius: 6, padding: "0.55rem" }}>
           <strong>Data Quality</strong><br />
-          <span style={{ ...scoreTone(edge.dataQualityScore), padding: "2px 6px", borderRadius: 999 }}>{edge.dataQualityScore.toFixed(0)}</span>
+          <span style={{ ...scoreTone(edge.dataQualityScore), padding: "2px 6px", borderRadius: 999 }}>{fmtFixed(edge.dataQualityScore, 0)}</span>
         </div>
       </div>
 
@@ -1174,17 +1177,17 @@ function TraderEdgeSummaryCard({
       </div>
 
       <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 10, fontSize: 12 }}>
-        <div><strong>Support Evidence</strong><br />Score: {edge.supportEvidenceScore.toFixed(0)}</div>
-        <div><strong>Resistance Evidence</strong><br />Score: {edge.resistanceEvidenceScore.toFixed(0)}</div>
-        <div><strong>Price Confluence</strong><br />Score: {edge.priceConfluenceScore.toFixed(0)}</div>
-        <div><strong>Pin / Snap Risk</strong><br />Score: {edge.pinSnapRiskScore.toFixed(0)}</div>
+        <div><strong>Support Evidence</strong><br />Score: {fmtFixed(edge.supportEvidenceScore, 0)}</div>
+        <div><strong>Resistance Evidence</strong><br />Score: {fmtFixed(edge.resistanceEvidenceScore, 0)}</div>
+        <div><strong>Price Confluence</strong><br />Score: {fmtFixed(edge.priceConfluenceScore, 0)}</div>
+        <div><strong>Pin / Snap Risk</strong><br />Score: {fmtFixed(edge.pinSnapRiskScore, 0)}</div>
       </div>
 
       <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 10, fontSize: 12 }}>
         <div><strong>Realized Vol</strong><br />{formatPct(edge.realizedVolPct)}</div>
         <div><strong>ATR</strong><br />{formatPct(edge.atrPct)}</div>
         <div><strong>Volume / Flow Thrust</strong><br />{formatVolumeThrust(edge)}</div>
-        <div><strong>Premium Proxy</strong><br />{edge.premiumProxyScore.toFixed(0)}</div>
+        <div><strong>Premium Proxy</strong><br />{fmtFixed(edge.premiumProxyScore, 0)}</div>
       </div>
 
       <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: 10, fontSize: 13 }}>
@@ -1203,7 +1206,7 @@ function TraderEdgeSummaryCard({
           <div>Cushion target: {formatMoney(edge.cspCushionTarget)}</div>
           <div>Executable zone ceiling: <strong>{formatMoney(edge.executableCspCeiling)}</strong></div>
           <div style={{ color: "#6b7280", marginTop: 4 }}>
-            Uses {edge.cushionPct.toFixed(1)}% cushion and snaps to the next available strike at or below target.
+            Uses {fmtFixed(edge.cushionPct, 1)}% cushion and snaps to the next available strike at or below target.
           </div>
         </div>
       </div>
@@ -2292,9 +2295,9 @@ const canSaveSnapshot = Boolean(
 
     {surfacePrevailingLevels && (
   <div style={{ marginTop: 6, display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8 }}>
-    <div>Surface Support: {surfacePrevailingLevels.support?.strike.toFixed(2) ?? "N/A"}</div>
-    <div>Surface Resistance: {surfacePrevailingLevels.resistance?.strike.toFixed(2) ?? "N/A"}</div>
-    <div>Surface Magnet: {surfacePrevailingLevels.magnet?.strike?.toFixed(2) ?? "N/A"}</div>
+    <div>Surface Support: {fmtFixed(surfacePrevailingLevels.support?.strike, 2)}</div>
+    <div>Surface Resistance:{fmtFixed(surfacePrevailingLevels.resistance?.strike, 2)}</div>
+    <div>Surface Magnet: {fmtFixed(surfacePrevailingLevels.magnet?.strike, 2)}</div>
     <div>
       Source:{" "}
       {selectedSurface

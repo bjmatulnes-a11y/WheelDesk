@@ -9,7 +9,79 @@ export type CandleRecord = {
   close: number;
   volume?: number;
 };
+export function mergeOptionSurfaceSnapshotsIntoLocalCache(
+  snapshots: OptionSurfaceSnapshot[]
+): {
+  added: number;
+  updated: number;
+  total: number;
+} {
+  if (typeof window === "undefined") {
+    return { added: 0, updated: 0, total: 0 };
+  }
 
+  const incoming = snapshots
+    .map((snapshot) => normalizeSurfaceSnapshot(snapshot))
+    .filter((snapshot): snapshot is OptionSurfaceSnapshot => snapshot !== null);
+
+  const storage = readWheelDeskStorage();
+
+  if (!incoming.length) {
+    return {
+      added: 0,
+      updated: 0,
+      total: storage.optionSurfaceSnapshots.length,
+    };
+  }
+
+  const existingByKey = new Map<string, OptionSurfaceSnapshot>();
+
+  for (const snapshot of storage.optionSurfaceSnapshots ?? []) {
+    existingByKey.set(snapshot.surfaceKey, snapshot);
+  }
+
+  let added = 0;
+  let updated = 0;
+
+  for (const snapshot of incoming) {
+    const existing = existingByKey.get(snapshot.surfaceKey);
+
+    if (existing) {
+      updated += 1;
+    } else {
+      added += 1;
+    }
+
+    existingByKey.set(snapshot.surfaceKey, {
+      ...existing,
+      ...snapshot,
+      metadata: {
+        ...(existing as any)?.metadata,
+        ...(snapshot as any)?.metadata,
+        hydratedFromSupabase: true,
+        hydratedAt: new Date().toISOString(),
+      },
+    });
+  }
+
+  const optionSurfaceSnapshots = Array.from(existingByKey.values()).sort((a, b) => {
+    const tickerCompare = a.ticker.localeCompare(b.ticker);
+    if (tickerCompare !== 0) return tickerCompare;
+
+    return b.snapshotDate.localeCompare(a.snapshotDate);
+  });
+
+  writeWheelDeskStorage({
+    ...storage,
+    optionSurfaceSnapshots,
+  });
+
+  return {
+    added,
+    updated,
+    total: optionSurfaceSnapshots.length,
+  };
+}
 export type DailyStructureSnapshot = {
   ticker: string;
   snapshotDate: string;
@@ -527,88 +599,6 @@ export function normalizeSurfaceSnapshot(
   };
 }
 
-export function mergeOptionSurfaceSnapshotsIntoLocalCache(
-  snapshots: OptionSurfaceSnapshot[]
-): {
-  added: number;
-  updated: number;
-  total: number;
-} {
-  if (typeof window === "undefined") {
-    return { added: 0, updated: 0, total: 0 };
-  }
-
-  const incoming = snapshots
-    .map((snapshot) => normalizeSurfaceSnapshot(snapshot))
-    .filter((snapshot): snapshot is OptionSurfaceSnapshot => snapshot !== null);
-
-  if (!incoming.length) {
-    const storage = readWheelDeskStorage();
-    return {
-      added: 0,
-      updated: 0,
-      total: storage.optionSurfaceSnapshots.length,
-    };
-  }
-
-  const storage = readWheelDeskStorage();
-
-  const existingByKey = new Map<string, OptionSurfaceSnapshot>();
-
-  for (const snapshot of storage.optionSurfaceSnapshots ?? []) {
-    existingByKey.set(snapshot.surfaceKey, snapshot);
-  }
-
-  let added = 0;
-  let updated = 0;
-
-  for (const snapshot of incoming) {
-    const existing = existingByKey.get(snapshot.surfaceKey);
-
-    if (existing) {
-      updated += 1;
-    } else {
-      added += 1;
-    }
-
-    existingByKey.set(snapshot.surfaceKey, {
-      ...existing,
-      ...snapshot,
-      metadata: {
-        ...(existing as any)?.metadata,
-        ...(snapshot as any)?.metadata,
-        hydratedFromSupabase: true,
-        hydratedAt: new Date().toISOString(),
-      },
-    });
-  }
-
-  const optionSurfaceSnapshots = Array.from(existingByKey.values()).sort((a, b) => {
-    const tickerCompare = a.ticker.localeCompare(b.ticker);
-    if (tickerCompare !== 0) return tickerCompare;
-
-    return b.snapshotDate.localeCompare(a.snapshotDate);
-  });
-
-  writeWheelDeskStorage({
-    ...storage,
-    optionSurfaceSnapshots,
-  });
-
-  return {
-    added,
-    updated,
-    total: optionSurfaceSnapshots.length,
-  };
-}
-
-
-
-
-
-
-
-
 /**
  * SOURCE-OF-TRUTH READERS
  */
@@ -731,7 +721,7 @@ export function saveOptionSurfaceSnapshot(
     updatedAt: nowIso(),
   });
 
-  if (!normalized) return;
+  if (!normalized) return
 
   const nextSurfaceSnapshots = [
     ...storage.optionSurfaceSnapshots.filter(
