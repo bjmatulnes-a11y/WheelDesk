@@ -167,23 +167,19 @@ export function analyzeOIIntelligence(args: {
   }
 
   if (adjustedCallWall !== summary.callWall) {
-    intelligenceReadout.push(
-      `Raw call wall ${summary.callWall.toFixed(2)} differs from adjusted active call wall ${adjustedCallWall.toFixed(2)}; raw wall may be distorted by deep ITM or far OTM OI.`
-    );
+   intelligenceReadout.push(
+  `Raw call wall ${safeFixed(summary?.callWall, 2)} differs from adjusted active call wall ${safeFixed(adjustedCallWall,2)}; raw wall may be distorted by deep ITM or far OTM OI.`);
   }
 
   if (adjustedPutWall !== summary.putWall) {
-    intelligenceReadout.push(
-      `Raw put wall ${summary.putWall.toFixed(2)} differs from adjusted active put wall ${adjustedPutWall.toFixed(2)}; raw wall may be distorted by non-active structure.`
-    );
+  intelligenceReadout.push(
+  `Raw put wall ${safeFixed(summary?.putWall, 2)} differs from adjusted active put wall ${safeFixed(adjustedPutWall,2)}; raw wall may be distorted by non-active structure.`);
   }
 
-  intelligenceReadout.push(
-    `Adjusted active center is ${adjustedCenter.toFixed(2)}, compared with raw center ${summary.combinedCenter.toFixed(2)}.`
-  );
+  intelligenceReadout.push(`Adjusted active center is ${safeFixed(adjustedCenter, 2)}, compared with raw center ${safeFixed(summary?.combinedCenter,2)}.`);
 
   return {
-    activeStructureSummary: `Active structure uses strikes from ${(currentPrice * 0.5).toFixed(2)} to ${(currentPrice * 1.75).toFixed(2)}.`,
+    activeStructureSummary: `Active structure uses strikes from ${safeFixed(Number(currentPrice) * 0.5,2)} to ${safeFixed(Number(currentPrice) * 1.75, 2)}.`,
     anomalySummary: anomalies.length
       ? "Anomalies detected. Raw OI should be separated from active trading structure."
       : "No major anomaly adjustment required.",
