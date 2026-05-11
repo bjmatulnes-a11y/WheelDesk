@@ -7,6 +7,7 @@ import {
   Timeframe
 } from "./types";
 import { PortfolioPosition, PortfolioProfile } from "./portfolio-types";
+import { safeFixed } from "./format";
 
 type EngineContext = {
   currentPrice: number;
@@ -60,15 +61,14 @@ export function runPositionEngine(ctx: EngineContext): DecisionOutput {
   const callAnchor = Math.min(upperBand, Math.max(ctx.oi.combinedCenter, ctx.oi.upperRange, ctx.oi.callWall));
   const putAnchor = Math.max(lowerBand, Math.min(ctx.oi.combinedCenter, ctx.oi.lowerRange, ctx.oi.putWall));
 
-  const coveredCallZone = `${(callAnchor * 0.99).toFixed(2)} - ${(callAnchor * 1.02).toFixed(2)}`;
+  const coveredCallZone = `${safeFixed(Number(callAnchor) * 0.99, 2)} - ${safeFixed(Number(callAnchor) * 1.02, 2)}`;
 
   const supportWeakening = ctx.structureComparison?.interpretation.supportState === "weakening";
   const cspLowMultiplier = supportWeakening ? 0.95 : 0.97;
-  const cspZone = `${(putAnchor * cspLowMultiplier).toFixed(2)} - ${(putAnchor * 1.01).toFixed(2)}`;
+  const cspZone = `${safeFixed(Number(putAnchor) * Number(cspLowMultiplier), 2)} - ${safeFixed(Number(putAnchor) * 1.01,2)}`;
 
-  const reasoningBullets = [
-    `${ctx.ticker} ${ctx.timeframe}: price ${ctx.currentPrice.toFixed(2)} vs OI center ${ctx.oi.combinedCenter.toFixed(2)}.`,
-    `Selected chain walls: Call ${ctx.oi.callWall.toFixed(2)} / Put ${ctx.oi.putWall.toFixed(2)} with range ${ctx.oi.lowerRange.toFixed(2)}-${ctx.oi.upperRange.toFixed(2)}.`
+  const reasoningBullets = [`${ctx.ticker} ${ctx.timeframe}: price ${safeFixed(ctx.currentPrice, 2)} vs OI center ${safeFixed(
+    ctx.oi?.combinedCenter, 2)}.`, `Selected chain walls: Call ${safeFixed(ctx.oi?.callWall, 2)} / Put ${safeFixed(ctx.oi?.putWall,2)} with range ${safeFixed(ctx.oi?.lowerRange, 2)}-${safeFixed(ctx.oi?.upperRange, 2)}.`,
   ];
 
   if (!exposure.hasPosition) {
@@ -84,9 +84,8 @@ export function runPositionEngine(ctx: EngineContext): DecisionOutput {
   if (ctx.structureComparison) {
     reasoningBullets.push(`Snapshot structure: ${ctx.structureComparison.interpretation.narrative}`);
     reasoningBullets.push(`Tactical layer: ${ctx.structureComparison.tacticalDecision.tacticalSummary}`);
-    reasoningBullets.push(
-      `Execution anchors: CSP ${ctx.structureComparison.executionPlan.cspCandidateRange.low.toFixed(2)}-${ctx.structureComparison.executionPlan.cspCandidateRange.high.toFixed(2)}, CC ${ctx.structureComparison.executionPlan.coveredCallCandidateRange.low.toFixed(2)}-${ctx.structureComparison.executionPlan.coveredCallCandidateRange.high.toFixed(2)} (${ctx.structureComparison.executionPlan.confidence} confidence).`
-    );
+    reasoningBullets.push(`Execution anchors: CSP ${safeFixed(ctx.structureComparison?.executionPlan?.cspCandidateRange?.low, 2)}-${safeFixed(ctx.structureComparison?.executionPlan?.cspCandidateRange?.high,2)}, CC ${safeFixed(ctx.structureComparison?.executionPlan?.coveredCallCandidateRange?.low, 2)}-${safeFixed(ctx.structureComparison?.executionPlan?.coveredCallCandidateRange?.high,2)} (${ctx.structureComparison?.executionPlan?.confidence ?? "N/A"} confidence).`
+);
   }
 
   let primaryAction = "Monitor structure and wait for confirmation.";
