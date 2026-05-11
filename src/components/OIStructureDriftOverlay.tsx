@@ -14,6 +14,9 @@ type Props = {
 function clamp(value: number, low: number, high: number): number {
   return Math.max(low, Math.min(high, value));
 }
+function canDrawSvgLine(...values: unknown[]): boolean {
+  return values.every((value) => typeof value === "number" && Number.isFinite(value));
+}
 
 function drawDriftLine(args: {
   id: string;
@@ -33,16 +36,18 @@ function drawDriftLine(args: {
 
   return (
     <g key={args.id}>
-      <line
-        x1={args.plotLeft}
-        x2={args.plotRight}
-        y1={y}
-        y2={y}
-        stroke={args.color}
-        strokeWidth={args.dashed ? 1.1 : 1.8}
-        strokeOpacity={args.dashed ? 0.45 : 0.85}
-        strokeDasharray={args.dashed ? "6 5" : undefined}
-      />
+      {canDrawSvgLine(args?.plotLeft, y, args?.plotRight, y) ? (
+  <line
+    x1={args.plotLeft}
+    x2={args.plotRight}
+    y1={y}
+    y2={y}
+    stroke={args.color}
+    strokeWidth={args.dashed ? 1.1 : 1.8}
+    strokeOpacity={args.dashed ? 0.45 : 0.85}
+    strokeDasharray={args.dashed ? "6 5" : undefined}
+  />
+) : null}
 
       <text
         x={args.plotLeft - 50}

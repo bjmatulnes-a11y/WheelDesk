@@ -66,7 +66,9 @@ function placeLabel(args: {
 
   return y;
 }
-
+function canDrawSvgLine(...values: unknown[]): boolean {
+  return values.every((value) => typeof value === "number" && Number.isFinite(value));
+}
 export function ChainGraph({ rows, summary, currentPrice }: Props) {
   const width = 940;
   const height = 300;
@@ -136,7 +138,17 @@ export function ChainGraph({ rows, summary, currentPrice }: Props) {
       <svg width="100%" viewBox={`0 0 ${width} ${height}`}>
         {yTicks.map((v) => (
           <g key={`y-${v}`}>
-            <line x1={padding} y1={toY(v)} x2={width - padding} y2={toY(v)} stroke="#ececec" />
+            {(() => {
+              const y = toY(v);
+              const x1 = padding;
+              const x2 = width - padding;
+
+              return Number.isFinite(x1) &&
+                Number.isFinite(y) &&
+                Number.isFinite(x2) ? (
+                <line x1={x1} y1={y} x2={x2} y2={y} stroke="#ececec" />
+  ) : null;
+})()}
             <text x={padding - 5} y={toY(v) + 3} fontSize="10" textAnchor="end" fill="#6b7280">
               {safeInt(v)}
             </text>
@@ -148,22 +160,53 @@ export function ChainGraph({ rows, summary, currentPrice }: Props) {
 
           return (
             <g key={`line-${r.strike}`}>
-              <line
-                x1={toX(prev.strike)}
-                y1={toY(prev.callOi)}
-                x2={toX(r.strike)}
-                y2={toY(r.callOi)}
-                stroke="#dc2626"
-                strokeWidth="1.2"
-              />
-              <line
-                x1={toX(prev.strike)}
-                y1={toY(prev.putOi)}
-                x2={toX(r.strike)}
-                y2={toY(r.putOi)}
-                stroke="#2563eb"
-                strokeWidth="1.2"
-              />
+              {(() => {
+  const callX1 = toX(prev.strike);
+  const callY1 = toY(prev.callOi);
+  const callX2 = toX(r.strike);
+  const callY2 = toY(r.callOi);
+
+  const canDrawCall =
+    Number.isFinite(callX1) &&
+    Number.isFinite(callY1) &&
+    Number.isFinite(callX2) &&
+    Number.isFinite(callY2);
+
+  return canDrawCall ? (
+    <line
+      x1={callX1}
+      y1={callY1}
+      x2={callX2}
+      y2={callY2}
+      stroke="#dc2626"
+      strokeWidth="1.2"
+    />
+  ) : null;
+})()}
+
+{(() => {
+  const putX1 = toX(prev.strike);
+  const putY1 = toY(prev.putOi);
+  const putX2 = toX(r.strike);
+  const putY2 = toY(r.putOi);
+
+  const canDrawPut =
+    Number.isFinite(putX1) &&
+    Number.isFinite(putY1) &&
+    Number.isFinite(putX2) &&
+    Number.isFinite(putY2);
+
+  return canDrawPut ? (
+    <line
+      x1={putX1}
+      y1={putY1}
+      x2={putX2}
+      y2={putY2}
+      stroke="#2563eb"
+      strokeWidth="1.2"
+    />
+  ) : null;
+})()}
             </g>
           );
         })}
@@ -195,14 +238,22 @@ export function ChainGraph({ rows, summary, currentPrice }: Props) {
 
         {placedMarkerLabels.map((m) => (
           <g key={m.label}>
-            <line
-              x1={toX(m.value)}
-              y1={padding}
-              x2={toX(m.value)}
-              y2={height - padding}
-              stroke={m.color}
-              strokeDasharray="6 4"
-            />
+          {(() => {
+  const x = toX(m.value);
+  const y1 = padding;
+  const y2 = height - padding;
+
+  return canDrawSvgLine(x, y1, x, y2) ? (
+    <line
+      x1={x}
+      y1={y1}
+      x2={x}
+      y2={y2}
+      stroke={m.color}
+      strokeDasharray="6 4"
+    />
+  ) : null;
+})()}
             <text x={m.labelX} y={m.labelY} fontSize="10" fill={m.color}>
               {m.label}
             </text>

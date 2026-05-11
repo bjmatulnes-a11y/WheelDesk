@@ -16,6 +16,9 @@ function clamp(value: number, low: number, high: number): number {
   return Math.max(low, Math.min(high, value));
 }
 
+function canDrawSvgLine(...values: unknown[]): boolean {
+  return values.every((value) => typeof value === "number" && Number.isFinite(value));
+}
 function drawLineWithLeftLabel(args: {
   id: string;
   label: string;
@@ -33,16 +36,18 @@ function drawLineWithLeftLabel(args: {
 
   return (
     <g key={args.id}>
-      <line
-        x1={args.plotLeft}
-        x2={args.plotRight}
-        y1={y}
-        y2={y}
-        stroke={args.stroke}
-        strokeWidth={1.6}
-        strokeOpacity={0.85}
-        strokeDasharray={args.dashed ? "5 5" : undefined}
-      />
+  {canDrawSvgLine(args?.plotLeft, y, args?.plotRight, y) ? (
+  <line
+    x1={args.plotLeft}
+    x2={args.plotRight}
+    y1={y}
+    y2={y}
+    stroke={args.stroke}
+    strokeWidth={1.6}
+    strokeOpacity={0.85}
+    strokeDasharray={args.dashed ? "5 5" : undefined}
+  />
+) : null}
 
       {/* Price label just left of chart axis */}
 
