@@ -1,4 +1,5 @@
 import { RankedCandidate } from "../lib/analytics/types";
+import { safeFixed, safePct } from "../lib/format";
 
 type Props = { title: string; items: RankedCandidate[] };
 
@@ -23,9 +24,9 @@ export function CandidateTable({ title, items }: Props) {
               <td>{item.contract.symbol}</td>
               <td>{item.contract.strike}</td>
               <td>{item.contract.dte}</td>
-              <td>{(item.annualizedYield * 100).toFixed(2)}%</td>
+              <td>{safePct(Number(item.annualizedYield) * 100, 2)}</td>
               <td>{item.assignmentRiskBand}</td>
-              <td>{item.score.toFixed(2)}</td>
+              <td>{safeFixed(item.score, 2)}</td>
             </tr>
           ))}
         </tbody>

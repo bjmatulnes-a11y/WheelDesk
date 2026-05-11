@@ -1,5 +1,5 @@
 import { SnapshotComparison, SnapshotComparisonResult } from "../lib/types";
-
+import { safeFixed, safeInt } from "../lib/format";
 type Props = {
   comparison: SnapshotComparison | null;
   reason: SnapshotComparisonResult["reason"];
@@ -13,7 +13,11 @@ export function SnapshotComparisonCard({ comparison, reason, message }: Props) {
       {items.length ? (
         <ul style={{ marginTop: 4 }}>
           {items.map((move) => (
-            <li key={`${title}-${move.strike}`}>Strike {move.strike.toFixed(2)}: {move.delta > 0 ? "+" : ""}{move.delta}</li>
+            <li key={`${title}-${move.strike}`}>
+  Strike {safeFixed(move?.strike, 2)}:{" "}
+  {Number(move?.delta) > 0 ? "+" : ""}
+  {move?.delta ?? "N/A"}
+</li>
           ))}
         </ul>
       ) : (
@@ -42,16 +46,16 @@ export function SnapshotComparisonCard({ comparison, reason, message }: Props) {
           <p style={{ marginTop: 0, color: "#4b5563" }}>{comparison.comparisonNotes}</p>
           <h4 style={{ marginBottom: 4 }}>What changed?</h4>
           <ul>
-            <li>Total Call OI Δ: {comparison.totalCallOiDelta.toFixed(0)}</li>
-            <li>Total Put OI Δ: {comparison.totalPutOiDelta.toFixed(0)}</li>
-            <li>Call Weighted Strike Δ: {comparison.callWeightedStrikeDelta.toFixed(2)}</li>
-            <li>Put Weighted Strike Δ: {comparison.putWeightedStrikeDelta.toFixed(2)}</li>
-            <li>OI Center Δ: {comparison.oiCenterDelta.toFixed(2)}</li>
-            <li>OI Lower Range Δ: {comparison.lowerRangeDelta.toFixed(2)}</li>
-            <li>OI Upper Range Δ: {comparison.upperRangeDelta.toFixed(2)}</li>
-            <li>Call Wall Δ: {comparison.callWallDelta.toFixed(2)}</li>
-            <li>Put Wall Δ: {comparison.putWallDelta.toFixed(2)}</li>
-            <li>OI Range Width Δ: {comparison.oiRangeWidthDelta.toFixed(2)}</li>
+            <li>Total Call OI Δ: {safeInt(comparison?.totalCallOiDelta)}</li>
+            <li>Total Put OI Δ: {safeInt(comparison?.totalPutOiDelta)}</li>
+            <li>Call Weighted Strike Δ: {safeFixed(comparison?.callWeightedStrikeDelta, 2)}</li>
+            <li>Put Weighted Strike Δ: {safeFixed(comparison?.putWeightedStrikeDelta, 2)}</li>
+            <li>OI Center Δ: {safeFixed(comparison?.oiCenterDelta, 2)}</li>
+            <li>OI Lower Range Δ: {safeFixed(comparison?.lowerRangeDelta, 2)}</li>
+            <li>OI Upper Range Δ: {safeFixed(comparison?.upperRangeDelta, 2)}</li>
+            <li>Call Wall Δ: {safeFixed(comparison?.callWallDelta, 2)}</li>
+            <li>Put Wall Δ: {safeFixed(comparison?.putWallDelta, 2)}</li>
+            <li>OI Range Width Δ: {safeFixed(comparison?.oiRangeWidthDelta, 2)}</li>
           </ul>
           <h4 style={{ marginBottom: 4 }}>What does it mean?</h4>
           <ul>
@@ -81,8 +85,17 @@ export function SnapshotComparisonCard({ comparison, reason, message }: Props) {
             </>
           )}
           <h4 style={{ marginBottom: 4 }}>Execution Plan</h4>
-          <p style={{ marginTop: 0 }}><strong>CSP candidates:</strong> {comparison.executionPlan.cspCandidateRange.low.toFixed(2)} - {comparison.executionPlan.cspCandidateRange.high.toFixed(2)}</p>
-          <p style={{ marginTop: 0 }}><strong>Covered call candidates:</strong> {comparison.executionPlan.coveredCallCandidateRange.low.toFixed(2)} - {comparison.executionPlan.coveredCallCandidateRange.high.toFixed(2)}</p>
+         <p style={{ marginTop: 0 }}>
+  <strong>CSP candidates:</strong>{" "}
+  {safeFixed(comparison?.executionPlan?.cspCandidateRange?.low, 2)} -{" "}
+  {safeFixed(comparison?.executionPlan?.cspCandidateRange?.high, 2)}
+</p>
+
+<p style={{ marginTop: 0 }}>
+  <strong>Covered call candidates:</strong>{" "}
+  {safeFixed(comparison?.executionPlan?.coveredCallCandidateRange?.low, 2)} -{" "}
+  {safeFixed(comparison?.executionPlan?.coveredCallCandidateRange?.high, 2)}
+</p>
           <p style={{ marginTop: 0 }}><strong>Confidence:</strong> {comparison.executionPlan.confidence}</p>
           <p style={{ marginTop: 0 }}>{comparison.executionPlan.executionSummary}</p>
           <h4 style={{ marginBottom: 4 }}>Triggers</h4>

@@ -1,4 +1,5 @@
 import { DailyStructureDrift } from "../lib/daily-structure-compare";
+import { safeFixed } from "../lib/format";
 
 type Props = {
   drift: DailyStructureDrift | null;
@@ -42,19 +43,19 @@ export function OIStructureDriftCard({ drift }: Props) {
           </span>
         </div>
         <div>
-          <strong>Spot:</strong> {drift.current.spot.toFixed(2)}
+          <strong>Spot:</strong> {safeFixed(drift?.current?.spot, 2)}
         </div>
       </div>
 
       <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 8, fontSize: 13 }}>
         <div>
-          <strong>Support:</strong> {drift.current.support?.toFixed(2) ?? "N/A"}
+          <strong>Support:</strong> {safeFixed(drift?.current?.support, 2)}
         </div>
         <div>
-          <strong>Resistance:</strong> {drift.current.resistance?.toFixed(2) ?? "N/A"}
+          <strong>Resistance:</strong> {safeFixed(drift?.current?.resistance, 2)}
         </div>
         <div>
-          <strong>OI Magnet:</strong> {drift.current.magnet.toFixed(2)}
+          <strong>OI Magnet:</strong> {safeFixed(drift?.current?.magnet, 2)}
         </div>
       </div>
 

@@ -1,4 +1,5 @@
 import { PrevailingLevels, PrevailingLevel } from "../lib/oi-prevailing-levels";
+import { safeFixed } from "../lib/format";
 
 type Props = {
   levels: PrevailingLevels | null;
@@ -7,12 +8,12 @@ type Props = {
 
 function fmt(value?: number | null): string {
   if (value == null || !Number.isFinite(value)) return "N/A";
-  return value.toFixed(2);
+  return safeFixed(value, 2);
 }
 
 function pct(value?: number | null): string {
   if (value == null || !Number.isFinite(value)) return "N/A";
-  return `${(value * 100).toFixed(1)}%`;
+  return `${safeFixed(Number(value) * 100, 1)}%`;
 }
 
 function distancePct(strike: number, currentPrice: number): number {
@@ -36,7 +37,7 @@ function LevelRow({
       <td style={{ padding: "4px 6px", fontWeight: 700 }}>{rank}</td>
       <td style={{ padding: "4px 6px", fontWeight: 700 }}>{fmt(level.strike)}</td>
       <td style={{ padding: "4px 6px" }}>{level.openInterest.toLocaleString()}</td>
-      <td style={{ padding: "4px 6px" }}>{level.score.toFixed(2)}</td>
+      <td style={{ padding: "4px 6px" }}>{safeFixed(level?.score, 2)}</td>
       <td style={{ padding: "4px 6px" }}>{pct(dist)}</td>
     </tr>
   );

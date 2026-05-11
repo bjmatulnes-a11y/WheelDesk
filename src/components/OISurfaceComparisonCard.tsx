@@ -2,16 +2,17 @@
 
 import { useEffect, useState } from "react";
 import { OISurfaceComparison } from "../lib/oi-surface-compare";
+import { safeFixed, safeInt } from "../lib/format";
 
 function fmt(value?: number | null): string {
   if (value == null || !Number.isFinite(value)) return "N/A";
-  return value.toFixed(2);
+  return safeFixed(value, 2)
 }
 
 function fmtDelta(value?: number | null): string {
   if (value == null || !Number.isFinite(value)) return "N/A";
   if (Math.abs(value) < 0.005) return "0.00";
-  return `${value > 0 ? "+" : ""}${value.toFixed(2)}`;
+  return `${Number(value) > 0 ? "+" : ""}${safeFixed(value, 2)}`;
 }
 
 function directionColor(direction: string): string {
@@ -116,13 +117,13 @@ export function OISurfaceComparisonCard({
 
         <div>
           <strong>Edge Score</strong>
-          <div style={{ fontSize: 18, fontWeight: 800 }}>{data.current.edgeScore.toFixed(0)} / 100</div>
+          <div style={{ fontSize: 18, fontWeight: 800 }}>{safeFixed(data?.current?.edgeScore, 0)}/ 100</div>
           <div style={{ fontSize: 12, color: "#4b5563" }}>Δ {fmtDelta(data.edgeScoreDelta)}</div>
         </div>
 
         <div>
           <strong>Data Quality</strong>
-          <div style={{ fontSize: 18, fontWeight: 800 }}>{data.current.dataQualityScore.toFixed(0)} / 100</div>
+          <div style={{ fontSize: 18, fontWeight: 800 }}>{safeFixed(data?.current?.dataQualityScore, 0)}/ 100</div>
           <div style={{ fontSize: 12, color: "#4b5563" }}>validated levels</div>
         </div>
       </div>

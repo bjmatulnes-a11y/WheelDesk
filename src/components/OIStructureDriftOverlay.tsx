@@ -1,4 +1,5 @@
 import { DailyStructureDrift } from "../lib/daily-structure-compare";
+import { safeFixed } from "../lib/format";
 
 type Props = {
   drift: DailyStructureDrift | null;
@@ -74,7 +75,7 @@ export function OIStructureDriftOverlay({
       {drift.prior &&
         drawDriftLine({
           id: "prior-resistance",
-          label: `R ${drift.prior.resistance?.toFixed(2) ?? "N/A"}`,
+          label: `R ${safeFixed(drift?.prior?.resistance, 2)}`,
           value: drift.prior.resistance,
           color: "#dc2626",
           dashed: true,
@@ -88,7 +89,7 @@ export function OIStructureDriftOverlay({
       {drift.prior &&
         drawDriftLine({
           id: "prior-support",
-          label: `S ${drift.prior.support?.toFixed(2) ?? "N/A"}`,
+          label: `S ${safeFixed(drift?.prior?.support, 2)}`,
           value: drift.prior.support,
           color: "#2563eb",
           dashed: true,
@@ -102,7 +103,7 @@ export function OIStructureDriftOverlay({
       {drift.prior &&
         drawDriftLine({
           id: "prior-magnet",
-          label: `M ${drift.prior.magnet.toFixed(2)}`,
+          label: `M ${safeFixed(drift?.prior?.magnet, 2)}`,
           value: drift.prior.magnet,
           color: "#7c3aed",
           dashed: true,

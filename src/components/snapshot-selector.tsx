@@ -1,5 +1,5 @@
 import { ExpirationChain } from "../lib/types";
-
+import { safeFixed } from "../lib/format";
 type Props = {
   snapshotDates: string[];
   selectedDate: string;
@@ -53,7 +53,7 @@ export function SnapshotSelector({
             chains.map((c) => {
               return (
               <option key={c.expiration} value={c.expiration}>
-                {c.expiration} | score {c.summary.prevailingScore.toFixed(2)}
+               {c.expiration} | score {safeFixed(c?.summary?.prevailingScore, 2)}
               </option>
               );
             })

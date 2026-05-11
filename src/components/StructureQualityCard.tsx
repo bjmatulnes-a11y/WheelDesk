@@ -1,4 +1,5 @@
 import { PrevailingLevels } from "../lib/oi-prevailing-levels";
+import { safeFixed } from "../lib/format";
 
 type Props = {
   levels: PrevailingLevels | null;
@@ -7,12 +8,13 @@ type Props = {
 
 function fmt(value?: number | null): string {
   if (value == null || !Number.isFinite(value)) return "N/A";
-  return value.toFixed(2);
+  return safeFixed(value, 2);
 }
 
 function pct(value?: number | null): string {
   if (value == null || !Number.isFinite(value)) return "N/A";
-  return `${(value * 100).toFixed(1)}%`;
+  const n = Number(value);
+  return Number.isFinite(n) ? `${safeFixed(n * 100, 1)}%` : "N/A";
 }
 
 function distancePct(level?: number | null, currentPrice?: number | null): number | null {

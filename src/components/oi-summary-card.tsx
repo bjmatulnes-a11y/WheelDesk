@@ -1,4 +1,5 @@
 import { ExpirationSummary } from "../lib/types";
+import { safeFixed } from "../lib/format";
 
 type Props = {
   summary: ExpirationSummary;
@@ -18,11 +19,15 @@ export function OISummaryCard({ summary, currentPrice }: Props) {
       <ul>
         <li>Total Call OI: {summary.totalCallOi.toLocaleString()}</li>
         <li>Total Put OI: {summary.totalPutOi.toLocaleString()}</li>
-        <li>Call Weighted Strike: {summary.callWeightedStrike.toFixed(2)}</li>
-        <li>Put Weighted Strike: {summary.putWeightedStrike.toFixed(2)}</li>
-        <li>Combined OI Center: {summary.combinedCenter.toFixed(2)}</li>
-        <li>OI Range: {summary.lowerRange.toFixed(2)} - {summary.upperRange.toFixed(2)}</li>
-        <li>Call Wall: {summary.callWall.toFixed(2)} | Put Wall: {summary.putWall.toFixed(2)}</li>
+        <li>Call Weighted Strike: {safeFixed(summary?.callWeightedStrike, 2)}</li>
+        <li>Put Weighted Strike: {safeFixed(summary?.putWeightedStrike, 2)}</li>
+        <li>Combined OI Center: {safeFixed(summary?.combinedCenter, 2)}</li>
+        <li>
+              OI Range: {safeFixed(summary?.lowerRange, 2)} - {safeFixed(summary?.upperRange, 2)}
+        </li>
+<li>
+  Call Wall: {safeFixed(summary?.callWall, 2)} | Put Wall: {safeFixed(summary?.putWall, 2)}
+</li>
         <li>Price relation: <strong>{relation}</strong></li>
       </ul>
     </section>

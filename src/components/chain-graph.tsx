@@ -2,7 +2,7 @@
 
 import { useMemo, useState, type MouseEvent } from "react";
 import { ChainRow, ExpirationSummary } from "../lib/types";
-
+import { safeFixed, safeInt } from "../lib/format";
 type Props = {
   rows: ChainRow[];
   summary: ExpirationSummary;
@@ -218,7 +218,7 @@ export function ChainGraph({ rows, summary, currentPrice }: Props) {
             textAnchor="middle"
             fill="#6b7280"
           >
-            {r.strike.toFixed(0)}
+            {safeFixed(r?.strike, 0)}
           </text>
         ))}
 
@@ -244,7 +244,7 @@ export function ChainGraph({ rows, summary, currentPrice }: Props) {
             pointerEvents: "none"
           }}
         >
-          {hover.side.toUpperCase()} • Strike {hover.strike.toFixed(2)} • OI {hover.oi.toLocaleString()}
+          {String(hover?.side ?? "").toUpperCase()} • Strike {safeFixed(hover?.strike, 2)} • OI {safeInt(hover?.oi)}
         </div>
       )}
 

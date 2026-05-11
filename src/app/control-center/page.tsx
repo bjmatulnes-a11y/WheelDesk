@@ -20,6 +20,7 @@ import { buildIVSurfaceSummary } from "../../lib/iv-surface-engine";
 import { listPortfolioProfiles } from "../../lib/portfolio-store";
 import { type PortfolioProfile } from "../../lib/portfolio-types";
 import { buildTraderEdgeSummary } from "../../lib/trader-edge-engine";
+import { hydrateSurfaceSnapshotsFromSupabase } from "../../lib/surface-snapshot-hydration";
 import { type ChainSnapshot, SUPPORTED_TICKERS } from "../../lib/types";
 import {
   readCandles,

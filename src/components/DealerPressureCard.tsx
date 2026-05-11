@@ -1,6 +1,7 @@
 "use client";
 
 import { type DealerPressureSummary } from "../lib/dealer-pressure-engine";
+import { safeFixed } from "../lib/format";
 
 type DealerPressureCardProps = {
   summary: DealerPressureSummary | null;
@@ -9,12 +10,12 @@ type DealerPressureCardProps = {
 
 function score(value?: number | null): string {
   if (value == null || !Number.isFinite(value)) return "N/A";
-  return `${value.toFixed(0)} / 100`;
+ return `$${safeFixed(value, 0)} / 100`;
 }
 
 function pct(value?: number | null): string {
   if (value == null || !Number.isFinite(value)) return "N/A";
-  return `${value.toFixed(1)}%`;
+  return `${safeFixed(value, 1)}%`;
 }
 
 function money(value?: number | null): string {

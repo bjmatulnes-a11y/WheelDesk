@@ -16,6 +16,7 @@ import { PrevailingLevels } from "../lib/oi-prevailing-levels";
 import { DailyStructureDrift } from "../lib/daily-structure-compare";
 import { ExpirationSummary } from "../lib/types";
 import { OIProjectionReport } from "../lib/oi-projection-engine";
+import { safeFixed } from "../lib/format";
 import { type OIImpliedPathResult, type OIPathDisplayMode } from "../lib/oi-implied-path-engine";
 
 type Candle = {
@@ -53,7 +54,7 @@ function toChartTime(candle: Candle): UTCTimestamp {
 
 function fmt(value?: number | null): string {
   if (value == null || !Number.isFinite(value)) return "N/A";
-  return value.toFixed(2);
+  return safeFixed(value, 2);
 }
 
 function formatOiCount(level?: { openInterest?: number | null; totalOi?: number | null; oi?: number | null } | null): string {
@@ -350,7 +351,7 @@ if (oiPathSeries) {
       addLine({
         price: enhancedOIPath.invalidAbove,
         color: "rgba(22,163,74,0.65)",
-        title: enhancedOIPath.invalidAbove != null ? `Bullish unlock only above ${enhancedOIPath.invalidAbove.toFixed(2)}` : "Bullish unlock only above",
+        title: enhancedOIPath?.invalidAbove != null ? `Bullish unlock only above ${safeFixed(enhancedOIPath.invalidAbove, 2)}` : "Bullish unlock only above",
         dashed: true,
         axisLabelVisible: true,
         width: 1
@@ -359,7 +360,7 @@ if (oiPathSeries) {
       addLine({
         price: enhancedOIPath.invalidBelow,
         color: "rgba(220,38,38,0.65)",
-        title: enhancedOIPath.invalidBelow != null ? `Bearish failure only below ${enhancedOIPath.invalidBelow.toFixed(2)}` : "Bearish failure only below",
+        title: enhancedOIPath?.invalidBelow != null ? `Bearish failure below ${safeFixed(enhancedOIPath.invalidBelow, 2)}` : "Bearish failure below",
         dashed: true,
         axisLabelVisible: true,
         width: 1
@@ -370,7 +371,7 @@ if (oiPathSeries) {
       addLine({
         price: summary.callWall,
         color: "#ef4444",
-        title: `Chain Call Wall ${summary.callWall.toFixed(2)}`,
+        title: `Chain Call Wall ${safeFixed(summary?.callWall, 2)}`,
         dashed: true,
         axisLabelVisible: true,
         width: 1
@@ -379,7 +380,7 @@ if (oiPathSeries) {
       addLine({
         price: summary.putWall,
         color: "#3b82f6",
-        title: `Chain Put Wall ${summary.putWall.toFixed(2)}`,
+        title: `Chain Put Wall ${safeFixed(summary?.putWall, 2)}`,
         dashed: true,
         axisLabelVisible: true,
         width: 1
@@ -388,7 +389,7 @@ if (oiPathSeries) {
       addLine({
         price: summary.upperRange,
         color: "rgba(239,68,68,0.55)",
-        title: `Chain Upper ${summary.upperRange.toFixed(2)}`,
+        title: `Chain Upper ${safeFixed(summary?.upperRange, 2)}`,
         dashed: true,
         axisLabelVisible: false,
         width: 1
@@ -397,7 +398,7 @@ if (oiPathSeries) {
       addLine({
         price: summary.lowerRange,
         color: "rgba(37,99,235,0.55)",
-        title: `Chain Lower ${summary.lowerRange.toFixed(2)}`,
+        title: `Chain Lower ${safeFixed(summary?.lowerRange, 2)}`,
         dashed: true,
         axisLabelVisible: false,
         width: 1
@@ -406,7 +407,7 @@ if (oiPathSeries) {
       addLine({
         price: summary.combinedCenter,
         color: "rgba(124,58,237,0.55)",
-        title: `Chain Center ${summary.combinedCenter.toFixed(2)}`,
+        title: `Chain Center ${safeFixed(summary?.combinedCenter, 2)}`,
         dashed: true,
         axisLabelVisible: false,
         width: 1

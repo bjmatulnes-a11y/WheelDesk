@@ -1,4 +1,5 @@
 import { OIProjectionReport } from "../lib/oi-projection-engine";
+import { safeFixed } from "../lib/format";
 
 type Props = {
   report: OIProjectionReport | null;
@@ -40,7 +41,7 @@ export function OIProjectionCard({ report }: Props) {
           </span>
         </div>
         <div>
-          <strong>Slope:</strong> {report.slope.toFixed(4)} / day
+         <strong>Slope:</strong> {safeFixed(report?.slope, 4)} / day
         </div>
       </div>
 
@@ -73,13 +74,13 @@ export function OIProjectionCard({ report }: Props) {
               <tr key={p.expiration}>
                 <td style={{ padding: 4 }}>{p.expiration}</td>
                 <td style={{ padding: 4 }}>{p.dte}</td>
-                <td style={{ padding: 4 }}>{p.rawCenter.toFixed(2)}</td>
-                <td style={{ padding: 4, fontWeight: 700 }}>{p.adjustedCenter.toFixed(2)}</td>
-                <td style={{ padding: 4 }}>{p.lowerRange.toFixed(2)}</td>
-                <td style={{ padding: 4 }}>{p.upperRange.toFixed(2)}</td>
-                <td style={{ padding: 4 }}>{p.callWall.toFixed(2)}</td>
-                <td style={{ padding: 4 }}>{p.putWall.toFixed(2)}</td>
-                <td style={{ padding: 4 }}>{p.prevailingScore.toFixed(2)}</td>
+                <td style={{ padding: 4 }}>{safeFixed(p?.rawCenter, 2)}</td>
+                <td style={{ padding: 4, fontWeight: 700 }}>{safeFixed(p?.adjustedCenter, 2)}</td>
+                <td style={{ padding: 4 }}>{safeFixed(p?.lowerRange, 2)}</td>
+                <td style={{ padding: 4 }}>{safeFixed(p?.upperRange, 2)}</td>
+                <td style={{ padding: 4 }}>{safeFixed(p?.callWall, 2)}</td>
+                <td style={{ padding: 4 }}>{safeFixed(p?.putWall, 2)}</td>
+                <td style={{ padding: 4 }}>{safeFixed(p?.prevailingScore, 2)}</td>
                 <td style={{ padding: 4 }}>{p.anomalyCount}</td>
               </tr>
             ))}

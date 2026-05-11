@@ -6,6 +6,7 @@ import { SnapshotStructurePoint } from "../lib/chart-overlay";
 import { PrevailingLevels } from "../lib/oi-prevailing-levels";
 import { OIZonesOverlay } from "./OIZonesOverlay";
 import { OIStructureDriftOverlay } from "./OIStructureDriftOverlay";
+import { safeFixed } from "../lib/format";
 
 type Props = {
   candles: Candle[];
@@ -437,13 +438,13 @@ export function ChartPanel({
         </h3>
 
         <div style={{ fontSize: 12, color: "#4b5563" }}>
-          Wheel: time zoom • Shift+Wheel: price zoom • Alt+Wheel: price pan • X{zoomLevel} Y{yZoom.toFixed(2)}
+          Wheel time zoom • ShiftWheel price zoom • AltWheel price pan • X{zoomLevel} Y{safeFixed(yZoom, 2)}
         </div>
       </div>
 
       {hovered && (
         <div style={{ fontSize: 13, marginBottom: 4 }}>
-          O:{hovered.open.toFixed(2)} H:{hovered.high.toFixed(2)} L:{hovered.low.toFixed(2)} C:{hovered.close.toFixed(2)}
+          O: {safeFixed(hovered?.open, 2)} H: {safeFixed(hovered?.high, 2)} L: {safeFixed(hovered?.low, 2)} C: {safeFixed(hovered?.close, 2)}
         </div>
       )}
 
@@ -461,7 +462,7 @@ export function ChartPanel({
             
 
             <text x={plotRight + 8} y={tick.y + 3} fontSize="10" textAnchor="start" fill="#6b7280">
-              {tick.value.toFixed(2)}
+              {safeFixed(tick?.value, 2)}
             </text>
           </g>
         ))}
@@ -559,7 +560,7 @@ export function ChartPanel({
             />
 
             <text x={plotRight + 10} y={label.y + 3} fontSize="10" textAnchor="start" fill={label.color}>
-              {label.label} {label.value.toFixed(2)}
+              {label.label} {safeFixed(label?.value, 2)}
             </text>
           </g>
         ))}

@@ -1,5 +1,5 @@
 import { ChainRow } from "../lib/types";
-
+import { safeFixed, safeInt } from "../lib/format";
 type Props = { rows: ChainRow[] };
 
 export function OIChainTable({ rows }: Props) {
@@ -21,12 +21,12 @@ export function OIChainTable({ rows }: Props) {
           <tbody>
             {rows.map((r) => (
               <tr key={r.strike} style={{ borderTop: "1px solid #eee" }}>
-                <td>{r.strike.toFixed(2)}</td>
+                <td>{safeFixed(r.strike, 2)}</td>
                 <td align="right">{r.callOi.toLocaleString()}</td>
                 <td align="right">{r.putOi.toLocaleString()}</td>
                 <td align="right">{(r.callVolume ?? 0).toLocaleString()}</td>
                 <td align="right">{(r.putVolume ?? 0).toLocaleString()}</td>
-                <td align="right">{(r.iv ?? 0).toFixed(3)}</td>
+                <td align="right">{safeFixed(r.iv, 3)}</td>
               </tr>
             ))}
           </tbody>

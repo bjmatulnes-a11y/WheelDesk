@@ -1,4 +1,5 @@
 import { PrevailingLevels } from "../lib/oi-prevailing-levels";
+import { safeFixed } from "../lib/format";
 
 type OIZoneOverlayProps = {
   currentPrice: number;
@@ -56,7 +57,7 @@ function drawLineWithLeftLabel(args: {
       fill={args.text}
       fontWeight={700}
     >
-      {args.value.toFixed(2)}
+     {safeFixed(args?.value, 2)}
     </text>
 
     // SECOND LINE (descriptor)
