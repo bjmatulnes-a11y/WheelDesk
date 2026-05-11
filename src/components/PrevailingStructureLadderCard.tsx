@@ -1,5 +1,5 @@
 import { PrevailingLevels, PrevailingLevel } from "../lib/oi-prevailing-levels";
-import { safeFixed } from "../lib/format";
+import { safeFixed, safeInt } from "../lib/format";
 
 type Props = {
   levels: PrevailingLevels | null;
@@ -36,7 +36,7 @@ function LevelRow({
     <tr>
       <td style={{ padding: "4px 6px", fontWeight: 700 }}>{rank}</td>
       <td style={{ padding: "4px 6px", fontWeight: 700 }}>{fmt(level.strike)}</td>
-      <td style={{ padding: "4px 6px" }}>{level.openInterest.toLocaleString()}</td>
+      <td style={{ padding: "4px 6px" }}>{safeInt(level?.openInterest)}</td>
       <td style={{ padding: "4px 6px" }}>{safeFixed(level?.score, 2)}</td>
       <td style={{ padding: "4px 6px" }}>{pct(dist)}</td>
     </tr>

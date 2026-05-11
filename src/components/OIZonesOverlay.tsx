@@ -1,5 +1,5 @@
 import { PrevailingLevels } from "../lib/oi-prevailing-levels";
-import { safeFixed } from "../lib/format";
+import { safeFixed, safeInt } from "../lib/format";
 
 type OIZoneOverlayProps = {
   currentPrice: number;
@@ -99,7 +99,7 @@ export function OIZonesOverlay({
       {resistance &&
         drawLineWithLeftLabel({
           id: "resistance",
-          label: `Resistance · Call OI ${resistance.openInterest.toLocaleString()}`,
+          label: `Resistance · Call OI ${safeInt(resistance?.openInterest)}`,
           value: resistance.strike,
           stroke: "#dc2626",
           text: "#dc2626",
@@ -113,7 +113,7 @@ export function OIZonesOverlay({
       {support &&
         drawLineWithLeftLabel({
           id: "support",
-          label: `Support · Put OI ${support.openInterest.toLocaleString()}`,
+          label: `Support · Put OI ${safeInt(support?.openInterest)}`,
           value: support.strike,
           stroke: "#2563eb",
           text: "#2563eb",

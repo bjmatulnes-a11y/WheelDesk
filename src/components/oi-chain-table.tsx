@@ -22,11 +22,11 @@ export function OIChainTable({ rows }: Props) {
             {rows.map((r) => (
               <tr key={r.strike} style={{ borderTop: "1px solid #eee" }}>
                 <td>{safeFixed(r.strike, 2)}</td>
-                <td align="right">{r.callOi.toLocaleString()}</td>
-                <td align="right">{r.putOi.toLocaleString()}</td>
-                <td align="right">{(r.callVolume ?? 0).toLocaleString()}</td>
-                <td align="right">{(r.putVolume ?? 0).toLocaleString()}</td>
-                <td align="right">{safeFixed(r.iv, 3)}</td>
+                <td align="right">{safeInt(r?.callOi)}</td>
+                <td align="right">{safeInt(r?.putOi)}</td>
+                <td align="right">{safeInt(r?.callVolume)}</td>
+                <td align="right">{safeInt(r?.putVolume)}</td>
+                <td align="right">{safeFixed(r?.iv, 3)}</td>
               </tr>
             ))}
           </tbody>

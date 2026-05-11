@@ -16,7 +16,7 @@ import { PrevailingLevels } from "../lib/oi-prevailing-levels";
 import { DailyStructureDrift } from "../lib/daily-structure-compare";
 import { ExpirationSummary } from "../lib/types";
 import { OIProjectionReport } from "../lib/oi-projection-engine";
-import { safeFixed } from "../lib/format";
+import { safeFixed, safeInt } from "../lib/format";
 import { type OIImpliedPathResult, type OIPathDisplayMode } from "../lib/oi-implied-path-engine";
 
 type Candle = {
@@ -59,7 +59,7 @@ function fmt(value?: number | null): string {
 
 function formatOiCount(level?: { openInterest?: number | null; totalOi?: number | null; oi?: number | null } | null): string {
   const value = level?.openInterest ?? level?.totalOi ?? level?.oi;
-  return typeof value === "number" && Number.isFinite(value) ? value.toLocaleString() : "N/A";
+  return safeInt(value);
 }
 
 function dateToChartTime(date: string): UTCTimestamp {

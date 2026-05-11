@@ -138,7 +138,7 @@ export function ChainGraph({ rows, summary, currentPrice }: Props) {
           <g key={`y-${v}`}>
             <line x1={padding} y1={toY(v)} x2={width - padding} y2={toY(v)} stroke="#ececec" />
             <text x={padding - 5} y={toY(v) + 3} fontSize="10" textAnchor="end" fill="#6b7280">
-              {v.toLocaleString()}
+              {safeInt(v)}
             </text>
           </g>
         ))}

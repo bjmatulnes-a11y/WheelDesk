@@ -18,6 +18,7 @@ import { StructureQualityCard } from "../../components/StructureQualityCard";
 import DealerPressureCard from "../../components/DealerPressureCard";
 import { buildDealerPressureSummary } from "../../lib/dealer-pressure-engine";
 import { hydrateSurfaceSnapshotsFromSupabase } from "../../lib/surface-snapshot-hydration";
+import { safeInt } from "../../lib/format";
 import {
   deleteChainSnapshots,
   getSavedChainSnapshots,
@@ -175,7 +176,7 @@ function PortfolioContextCard({
           <div>
             <strong>{ticker} exposure:</strong>
           </div>
-          <div>Shares: {summary.shares.toLocaleString()}</div>
+          <div>Shares: {safeInt(summary?.shares)}</div>
           <div>
             Short Calls:{" "}
             {summary.shortCalls.length
@@ -247,8 +248,8 @@ function OIIntelligenceCard({
                 <div>
                   <strong>{a.severity.toUpperCase()}:</strong> {a.description}
                 </div>
-                <div>OI: {a.openInterest.toLocaleString()} contracts</div>
-                <div>Share equivalent: {a.shareEquivalent.toLocaleString()} shares</div>
+                <div>OI: {safeInt(a?.openInterest)} contracts</div>
+                <div>Share equivalent: {safeInt(a?.shareEquivalent)} shares</div>
                 <div>{a.interpretation}</div>
                 <div>
                   <strong>Action:</strong> {a.action}
@@ -271,7 +272,7 @@ function FlowIntelligenceCard({
   const formatChange = (value?: number) => {
     const n = typeof value === "number" && Number.isFinite(value) ? value : 0;
     const sign = n > 0 ? "+" : "";
-    return `${sign}${Math.round(n).toLocaleString()}`;
+    return `${sign}${safeInt(n)}`;
   };
 
   const formatPressure = (value?: number) => {
@@ -332,9 +333,9 @@ function FlowIntelligenceCard({
                 <td style={{ padding: 6 }}>{level.side}</td>
                 <td style={{ padding: 6 }}>{fmtFixed(level.strike, 2)}</td>
                 <td style={{ padding: 6 }}>{level.pressureType.toUpperCase()}</td>
-                <td style={{ padding: 6 }}>{Math.round(level.openInterest).toLocaleString()}</td>
+                <td style={{ padding: 6 }}>{safeInt(level?.openInterest)}</td>
                 <td style={{ padding: 6 }}>{formatChange(level.oiChange)}</td>
-                <td style={{ padding: 6 }}>{Math.round(level.volume).toLocaleString()}</td>
+                <td style={{ padding: 6 }}>{safeInt(level?.volume)}</td>
                 <td style={{ padding: 6 }}>{fmtFixed(level.volumeToOi, 2)}</td>
                 <td style={{ padding: 6 }}>{formatPressure(level.pressureScore)}</td>
               </tr>

@@ -1,7 +1,7 @@
 "use client";
 
 import { type DealerPressureSummary } from "../lib/dealer-pressure-engine";
-import { safeFixed } from "../lib/format";
+import { safeFixed, safeLocaleNumber } from "../lib/format";
 
 type DealerPressureCardProps = {
   summary: DealerPressureSummary | null;
@@ -20,8 +20,14 @@ function pct(value?: number | null): string {
 
 function money(value?: number | null): string {
   if (value == null || !Number.isFinite(value)) return "N/A";
-  if (Math.abs(value) >= 1000) return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
-  return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  const n = Number(value);
+if (!Number.isFinite(n)) return "N/A";
+
+if (Math.abs(n) >= 1000) {
+  return safeLocaleNumber(n, { maximumFractionDigits: 0 });
+}
+
+return safeLocaleNumber(n, { maximumFractionDigits: 2 });
 }
 
 function badgeColor(text: string): { background: string; color: string; borderColor: string } {

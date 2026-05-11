@@ -1,5 +1,5 @@
 import { ExpirationSummary } from "../lib/types";
-import { safeFixed } from "../lib/format";
+import { safeFixed, safeInt } from "../lib/format";
 
 type Props = {
   summary: ExpirationSummary;
@@ -17,8 +17,8 @@ export function OISummaryCard({ summary, currentPrice }: Props) {
     <section style={{ border: "1px solid #d1d5db", borderRadius: 8, background: "#fff", padding: "0.9rem" }}>
       <h3 style={{ marginTop: 0 }}>OI Summary ({summary.expiration})</h3>
       <ul>
-        <li>Total Call OI: {summary.totalCallOi.toLocaleString()}</li>
-        <li>Total Put OI: {summary.totalPutOi.toLocaleString()}</li>
+        <li>Total Call OI: {safeInt(summary?.totalCallOi)}</li>
+        <li>Total Put OI: {safeInt(summary?.totalPutOi)}</li>
         <li>Call Weighted Strike: {safeFixed(summary?.callWeightedStrike, 2)}</li>
         <li>Put Weighted Strike: {safeFixed(summary?.putWeightedStrike, 2)}</li>
         <li>Combined OI Center: {safeFixed(summary?.combinedCenter, 2)}</li>
