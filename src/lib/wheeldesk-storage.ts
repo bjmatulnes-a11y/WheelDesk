@@ -20,9 +20,10 @@ export function mergeOptionSurfaceSnapshotsIntoLocalCache(
     return { added: 0, updated: 0, total: 0 };
   }
 
-  const incoming = snapshots
-    .map((snapshot) => normalizeSurfaceSnapshot(snapshot))
-    .filter((snapshot): snapshot is OptionSurfaceSnapshot => snapshot !== null);
+const incoming = snapshots
+  .map((snapshot) => normalizeSurfaceSnapshot(snapshot))
+  .filter((snapshot): snapshot is OptionSurfaceSnapshot => snapshot !== null)
+  .map((snapshot) => makeOptionSurfaceLocalManifest(snapshot));
 
   const storage = readWheelDeskStorage();
 
@@ -73,7 +74,7 @@ export function mergeOptionSurfaceSnapshotsIntoLocalCache(
 
   writeWheelDeskStorage({
     ...storage,
-    optionSurfaceSnapshots,
+    optionSurfaceSnapshots: capLocalOptionSurfaceManifests(optionSurfaceSnapshots),
   });
 
   return {
@@ -691,7 +692,76 @@ function mirrorSurfaceSnapshotToSupabase(snapshot: OptionSurfaceSnapshot): void 
     });
 }
 
+const MAX_LOCAL_SURFACE_MANIFESTS_PER_TICKER = 3;
 
+function countOptionSurfaceRows(snapshot: OptionSurfaceSnapshot): number {
+  return (snapshot.chains ?? []).reduce((sum: number, chain: any) => {
+    return sum + ((chain?.rows ?? []).length || 0);
+  }, 0);
+}
+
+function makeOptionSurfaceLocalManifest(
+  snapshot: OptionSurfaceSnapshot
+): OptionSurfaceSnapshot {
+  const originalRowCount = countOptionSurfaceRows(snapshot);
+
+  return {
+    ...snapshot,
+
+    // Keep the chain shells/summaries locally, but do not keep 10k-25k rows
+    // in wheeldesk_storage_v2.
+    chains: (snapshot.chains ?? []).map((chain: any) => {
+      const chainRowCount = (chain?.rows ?? []).length || 0;
+
+      return {
+        ...chain,
+        rows: [],
+        metadata: {
+          ...(chain?.metadata ?? {}),
+          localRowsOmitted: true,
+          originalRowCount: chainRowCount,
+        },
+      };
+    }),
+
+    metadata: {
+      ...((snapshot as any).metadata ?? {}),
+      savedToSupabase: true,
+      localManifestOnly: true,
+      originalRowCount,
+      chainCount: snapshot.chains?.length ?? 0,
+      localManifestUpdatedAt: new Date().toISOString(),
+    },
+  };
+}
+
+function capLocalOptionSurfaceManifests(
+  snapshots: OptionSurfaceSnapshot[]
+): OptionSurfaceSnapshot[] {
+  const byTicker = new Map<string, OptionSurfaceSnapshot[]>();
+
+  for (const snapshot of snapshots) {
+    const ticker = String(snapshot.ticker ?? "").toUpperCase();
+    const list = byTicker.get(ticker) ?? [];
+
+    list.push(snapshot);
+    byTicker.set(ticker, list);
+  }
+
+  return Array.from(byTicker.values()).flatMap((list) =>
+    list
+      .sort((a, b) => {
+        const dateCompare = String(b.snapshotDate ?? "").localeCompare(
+          String(a.snapshotDate ?? "")
+        );
+
+        if (dateCompare !== 0) return dateCompare;
+
+        return String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? ""));
+      })
+      .slice(0, MAX_LOCAL_SURFACE_MANIFESTS_PER_TICKER)
+  );
+}
 
 
 /**
@@ -723,27 +793,27 @@ export function saveOptionSurfaceSnapshot(
 
   if (!normalized) return
 
-  const nextSurfaceSnapshots = [
-    ...storage.optionSurfaceSnapshots.filter(
-      (item) => item.surfaceKey !== normalized.surfaceKey,
+const localManifest = makeOptionSurfaceLocalManifest(normalized);
+
+const nextSurfaceSnapshots = capLocalOptionSurfaceManifests(
+  [
+    ...(storage.optionSurfaceSnapshots ?? []).filter(
+      (item) => item.surfaceKey !== localManifest.surfaceKey
     ),
-    normalized,
+    localManifest,
   ].sort((a, b) => {
-    const tickerCompare = a.ticker.localeCompare(b.ticker);
+    const tickerCompare = String(a.ticker ?? "").localeCompare(String(b.ticker ?? ""));
     if (tickerCompare !== 0) return tickerCompare;
-    return a.snapshotDate.localeCompare(b.snapshotDate);
-  });
 
-  writeWheelDeskStorage({
-    ...storage,
-    optionSurfaceSnapshots: nextSurfaceSnapshots,
-  });
- 
-  mirrorSurfaceSnapshotToSupabase(normalized);
+    return String(b.snapshotDate ?? "").localeCompare(String(a.snapshotDate ?? ""));
+  })
+);
 
-    
+writeWheelDeskStorage({
+  ...storage,
+  optionSurfaceSnapshots: nextSurfaceSnapshots,
+});
 }
-
 /**
  * Compatibility readers.
  * These do NOT read old standalone v2 fields anymore.
