@@ -428,11 +428,16 @@ export default function ForecastChartPanel({
       return;
     }
 
-    const baseData = makeAnchoredPath(path?.basePath, lastTime, lastClose);
-    const upperData = makeAnchoredPath(path?.upperBand, lastTime, lastClose);
-    const lowerData = makeAnchoredPath(path?.lowerBand, lastTime, lastClose);
-    const bullData = makeStandalonePath(path?.bullishUnlockPath, lastTime);
-    const bearData = makeStandalonePath(path?.bearishFailurePath, lastTime);
+    const showPath = Boolean(path);
+    const showIvSurface = Boolean(ivSurface);
+    const showEdge = Boolean(edge);
+    const showMatrix = Boolean(matrix);
+
+    const baseData = showPath ? makeAnchoredPath(path?.basePath, lastTime, lastClose) : [];
+    const upperData = showPath ? makeAnchoredPath(path?.upperBand, lastTime, lastClose) : [];
+    const lowerData = showPath ? makeAnchoredPath(path?.lowerBand, lastTime, lastClose) : [];
+    const bullData = showPath ? makeStandalonePath(path?.bullishUnlockPath, lastTime) : [];
+    const bearData = showPath ? makeStandalonePath(path?.bearishFailurePath, lastTime) : [];
 
     baseRef.current?.setData(baseData);
     upperRef.current?.setData(upperData);
@@ -441,13 +446,13 @@ export default function ForecastChartPanel({
     bearRef.current?.setData(bearData);
 
     const horizon = Number(ivSurface?.horizonDays ?? path?.horizonDays ?? path?.horizonSessions ?? 14);
-    const times = futureTimesFromPath(path, lastTime, horizon);
-    const em = ivSurface?.expectedMove;
+    const times = showIvSurface ? futureTimesFromPath(path, lastTime, horizon) : [];
+    const em = showIvSurface ? ivSurface?.expectedMove : null;
 
-    ivUpperRef.current?.setData(horizontalBand(times, em?.upperOneSigma));
-    ivLowerRef.current?.setData(horizontalBand(times, em?.lowerOneSigma));
-    ivHalfUpperRef.current?.setData(horizontalBand(times, em?.upperHalfSigma));
-    ivHalfLowerRef.current?.setData(horizontalBand(times, em?.lowerHalfSigma));
+    ivUpperRef.current?.setData(showIvSurface ? horizontalBand(times, em?.upperOneSigma) : []);
+    ivLowerRef.current?.setData(showIvSurface ? horizontalBand(times, em?.lowerOneSigma) : []);
+    ivHalfUpperRef.current?.setData(showIvSurface ? horizontalBand(times, em?.upperHalfSigma) : []);
+    ivHalfLowerRef.current?.setData(showIvSurface ? horizontalBand(times, em?.lowerHalfSigma) : []);
 
     const addPriceLine = ({
       price,
@@ -474,13 +479,53 @@ export default function ForecastChartPanel({
       priceLinesRef.current.push(line);
     };
 
-    addPriceLine({ price: edge?.magnet ?? path?.magnet ?? matrix?.expectedValueTarget, color: "#fbbf24", title: `Magnet ${fmt(edge?.magnet ?? path?.magnet ?? matrix?.expectedValueTarget)}` });
-    addPriceLine({ price: edge?.resistance ?? path?.callWall ?? path?.invalidAbove, color: "#d946ef", title: `Call wall ${fmt(edge?.resistance ?? path?.callWall ?? path?.invalidAbove)}` });
-    addPriceLine({ price: edge?.support ?? path?.putWall ?? path?.invalidBelow, color: "#d946ef", title: `Put wall ${fmt(edge?.support ?? path?.putWall ?? path?.invalidBelow)}` });
-    addPriceLine({ price: path?.invalidAbove ?? matrix?.bullishUnlock, color: "#22c55e", title: `▲ Bullish trigger ${fmt(path?.invalidAbove ?? matrix?.bullishUnlock)}`, width: 2 });
-    addPriceLine({ price: path?.invalidBelow ?? matrix?.bearishFailure, color: "#fb7185", title: `▼ Bearish trigger ${fmt(path?.invalidBelow ?? matrix?.bearishFailure)}`, width: 2 });
-    addPriceLine({ price: em?.upperOneSigma, color: "#22d3ee", title: `▲ ${horizon || 14}D IV upper ${fmt(em?.upperOneSigma)}`, width: 2 });
-    addPriceLine({ price: em?.lowerOneSigma, color: "#22d3ee", title: `▼ ${horizon || 14}D IV lower ${fmt(em?.lowerOneSigma)}`, width: 2 });
+    if (showEdge || showPath || showMatrix) {
+      addPriceLine({
+        price:
+          (showEdge ? edge?.magnet : null) ??
+          (showPath ? path?.magnet : null) ??
+          (showMatrix ? matrix?.expectedValueTarget : null),
+        color: "#fbbf24",
+        title: `Magnet ${fmt(
+          (showEdge ? edge?.magnet : null) ??
+            (showPath ? path?.magnet : null) ??
+            (showMatrix ? matrix?.expectedValueTarget : null)
+        )}`
+      });
+    }
+
+    if (showEdge || showPath) {
+      addPriceLine({
+        price: (showEdge ? edge?.resistance : null) ?? (showPath ? path?.callWall ?? path?.invalidAbove : null),
+        color: "#d946ef",
+        title: `Call wall ${fmt((showEdge ? edge?.resistance : null) ?? (showPath ? path?.callWall ?? path?.invalidAbove : null))}`
+      });
+      addPriceLine({
+        price: (showEdge ? edge?.support : null) ?? (showPath ? path?.putWall ?? path?.invalidBelow : null),
+        color: "#d946ef",
+        title: `Put wall ${fmt((showEdge ? edge?.support : null) ?? (showPath ? path?.putWall ?? path?.invalidBelow : null))}`
+      });
+    }
+
+    if (showPath || showMatrix) {
+      addPriceLine({
+        price: (showPath ? path?.invalidAbove : null) ?? (showMatrix ? matrix?.bullishUnlock : null),
+        color: "#22c55e",
+        title: `▲ Bullish trigger ${fmt((showPath ? path?.invalidAbove : null) ?? (showMatrix ? matrix?.bullishUnlock : null))}`,
+        width: 2
+      });
+      addPriceLine({
+        price: (showPath ? path?.invalidBelow : null) ?? (showMatrix ? matrix?.bearishFailure : null),
+        color: "#fb7185",
+        title: `▼ Bearish trigger ${fmt((showPath ? path?.invalidBelow : null) ?? (showMatrix ? matrix?.bearishFailure : null))}`,
+        width: 2
+      });
+    }
+
+    if (showIvSurface) {
+      addPriceLine({ price: em?.upperOneSigma, color: "#22d3ee", title: `▲ ${horizon || 14}D IV upper ${fmt(em?.upperOneSigma)}`, width: 2 });
+      addPriceLine({ price: em?.lowerOneSigma, color: "#22d3ee", title: `▼ ${horizon || 14}D IV lower ${fmt(em?.lowerOneSigma)}`, width: 2 });
+    }
 
     chart.timeScale().fitContent();
     chart.timeScale().scrollToPosition(8, false);
@@ -496,7 +541,7 @@ export default function ForecastChartPanel({
         <div>
           <h2 style={{ margin: 0, color: colors.text, fontSize: 20, fontWeight: 950 }}>{ticker} Forecast Cone</h2>
           <div style={{ color: colors.muted, fontSize: 12, marginTop: 2 }}>
-            Live candlestick chart + OI path + matched IV band over {horizon || 14} sessions
+            Live candlestick chart{path ? " + OI path" : ""}{ivSurface ? " + matched IV band" : ""} over {horizon || 14} sessions
           </div>
           {expectedMove ? (
             <div style={{ color: colors.teal, fontSize: 12, fontWeight: 900, marginTop: 6 }}>
@@ -543,13 +588,14 @@ export default function ForecastChartPanel({
       </div>
 
       <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", color: colors.muted, fontSize: 11, marginTop: "0.65rem", alignItems: "center" }}>
-        <span><strong style={{ color: colors.text }}>Dashed white</strong> base path</span>
-        <span><strong style={{ color: colors.green }}>Green</strong> bullish unlock</span>
-        <span><strong style={{ color: colors.red }}>Red</strong> bearish failure</span>
-        <span><strong style={{ color: colors.teal }}>Cyan</strong> matched IV band</span>
-        <span><strong style={{ color: colors.amber }}>Amber</strong> magnet</span>
-        <span><strong style={{ color: "#d946ef" }}>Purple</strong> OI walls</span>
-        <span>Regime: <strong style={{ color: colors.text }}>{pathRegime(path)}</strong></span>
+        {path ? <span><strong style={{ color: colors.text }}>Dashed white</strong> base path</span> : null}
+        {path ? <span><strong style={{ color: colors.green }}>Green</strong> bullish unlock</span> : null}
+        {path ? <span><strong style={{ color: colors.red }}>Red</strong> bearish failure</span> : null}
+        {ivSurface ? <span><strong style={{ color: colors.teal }}>Cyan</strong> matched IV band</span> : null}
+        {edge || path || matrix ? <span><strong style={{ color: colors.amber }}>Amber</strong> magnet</span> : null}
+        {edge || path ? <span><strong style={{ color: "#d946ef" }}>Purple</strong> OI walls</span> : null}
+        {path ? <span>Regime: <strong style={{ color: colors.text }}>{pathRegime(path)}</strong></span> : null}
+        {!path && !ivSurface && !edge && !matrix ? <span>Overlays hidden: candles only</span> : null}
       </div>
     </section>
   );
