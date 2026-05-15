@@ -20,6 +20,7 @@ type ForecastChartPanelProps = {
   ticker: string;
   candles: CandleRecord[];
   edge?: any;
+  edgeLabelMode?: "control" | "oi";
   path?: any;
   matrix?: any;
   ivSurface?: IVSurfaceSummary | null;
@@ -120,17 +121,21 @@ function uniqueAscending(rows: ChartLinePoint[]): ChartLinePoint[] {
 }
 
 function makeAnchoredPath(points: LinePoint[] | undefined, lastTime: UTCTimestamp, lastClose: number): ChartLinePoint[] {
-  const rows: ChartLinePoint[] = [{ time: lastTime, value: lastClose }];
+  if (!Array.isArray(points) || points.length === 0) return [];
 
-  for (const point of points ?? []) {
+  const futureRows: ChartLinePoint[] = [];
+
+  for (const point of points) {
     const time = pointToTime(point);
     const value = pointToValue(point);
     if (time == null || value == null) continue;
     if (Number(time) <= Number(lastTime)) continue;
-    rows.push({ time, value });
+    futureRows.push({ time, value });
   }
 
-  return uniqueAscending(rows);
+  if (!futureRows.length) return [];
+
+  return uniqueAscending([{ time: lastTime, value: lastClose }, ...futureRows]);
 }
 
 function makeStandalonePath(points: LinePoint[] | undefined, lastTime?: UTCTimestamp): ChartLinePoint[] {
@@ -201,6 +206,7 @@ export default function ForecastChartPanel({
   ticker,
   candles,
   edge,
+  edgeLabelMode = "control",
   path,
   matrix,
   ivSurface,
@@ -286,7 +292,6 @@ export default function ForecastChartPanel({
       lineStyle: LineStyle.Dashed,
       priceLineVisible: false,
       lastValueVisible: false,
-      title: "Base OI path"
     });
 
     const upperSeries = chart.addSeries(LineSeries, {
@@ -295,7 +300,6 @@ export default function ForecastChartPanel({
       lineStyle: LineStyle.Dotted,
       priceLineVisible: false,
       lastValueVisible: false,
-      title: "Upper cone"
     });
 
     const lowerSeries = chart.addSeries(LineSeries, {
@@ -304,7 +308,6 @@ export default function ForecastChartPanel({
       lineStyle: LineStyle.Dotted,
       priceLineVisible: false,
       lastValueVisible: false,
-      title: "Lower cone"
     });
 
     const bullSeries = chart.addSeries(LineSeries, {
@@ -313,7 +316,6 @@ export default function ForecastChartPanel({
       lineStyle: LineStyle.Dashed,
       priceLineVisible: false,
       lastValueVisible: false,
-      title: "Bullish unlock"
     });
 
     const bearSeries = chart.addSeries(LineSeries, {
@@ -322,7 +324,6 @@ export default function ForecastChartPanel({
       lineStyle: LineStyle.Dashed,
       priceLineVisible: false,
       lastValueVisible: false,
-      title: "Bearish failure"
     });
 
     const ivUpper = chart.addSeries(LineSeries, {
@@ -331,7 +332,6 @@ export default function ForecastChartPanel({
       lineStyle: LineStyle.Dashed,
       priceLineVisible: false,
       lastValueVisible: false,
-      title: "IV upper"
     });
 
     const ivLower = chart.addSeries(LineSeries, {
@@ -340,7 +340,6 @@ export default function ForecastChartPanel({
       lineStyle: LineStyle.Dashed,
       priceLineVisible: false,
       lastValueVisible: false,
-      title: "IV lower"
     });
 
     const ivHalfUpper = chart.addSeries(LineSeries, {
@@ -349,7 +348,6 @@ export default function ForecastChartPanel({
       lineStyle: LineStyle.Dotted,
       priceLineVisible: false,
       lastValueVisible: false,
-      title: "IV half upper"
     });
 
     const ivHalfLower = chart.addSeries(LineSeries, {
@@ -358,7 +356,6 @@ export default function ForecastChartPanel({
       lineStyle: LineStyle.Dotted,
       priceLineVisible: false,
       lastValueVisible: false,
-      title: "IV half lower"
     });
 
     chartRef.current = chart;
@@ -479,47 +476,30 @@ export default function ForecastChartPanel({
       priceLinesRef.current.push(line);
     };
 
-    if (showEdge || showPath || showMatrix) {
-      addPriceLine({
-        price:
-          (showEdge ? edge?.magnet : null) ??
-          (showPath ? path?.magnet : null) ??
-          (showMatrix ? matrix?.expectedValueTarget : null),
-        color: "#fbbf24",
-        title: `Magnet ${fmt(
-          (showEdge ? edge?.magnet : null) ??
-            (showPath ? path?.magnet : null) ??
-            (showMatrix ? matrix?.expectedValueTarget : null)
-        )}`
-      });
+    if (showEdge) {
+      if (edgeLabelMode === "oi") {
+        addPriceLine({ price: edge?.magnet, color: "#fbbf24", title: `Active center ${fmt(edge?.magnet)}` });
+        addPriceLine({ price: edge?.resistance, color: "#d946ef", title: `Active call wall ${fmt(edge?.resistance)}` });
+        addPriceLine({ price: edge?.support, color: "#d946ef", title: `Active put wall ${fmt(edge?.support)}` });
+      } else {
+        addPriceLine({ price: edge?.magnet, color: "#fbbf24", title: `Control magnet ${fmt(edge?.magnet)}` });
+        addPriceLine({ price: edge?.resistance, color: "#22c55e", title: `Resistance ${fmt(edge?.resistance)}` });
+        addPriceLine({ price: edge?.support, color: "#fb7185", title: `Support ${fmt(edge?.support)}` });
+      }
     }
 
-    if (showEdge || showPath) {
-      addPriceLine({
-        price: (showEdge ? edge?.resistance : null) ?? (showPath ? path?.callWall ?? path?.invalidAbove : null),
-        color: "#d946ef",
-        title: `Call wall ${fmt((showEdge ? edge?.resistance : null) ?? (showPath ? path?.callWall ?? path?.invalidAbove : null))}`
-      });
-      addPriceLine({
-        price: (showEdge ? edge?.support : null) ?? (showPath ? path?.putWall ?? path?.invalidBelow : null),
-        color: "#d946ef",
-        title: `Put wall ${fmt((showEdge ? edge?.support : null) ?? (showPath ? path?.putWall ?? path?.invalidBelow : null))}`
-      });
+    if (showPath) {
+      addPriceLine({ price: path?.magnet, color: "#fbbf24", title: `Magnet ${fmt(path?.magnet)}` });
+      addPriceLine({ price: path?.callWall ?? path?.invalidAbove, color: "#d946ef", title: `Call wall ${fmt(path?.callWall ?? path?.invalidAbove)}` });
+      addPriceLine({ price: path?.putWall ?? path?.invalidBelow, color: "#d946ef", title: `Put wall ${fmt(path?.putWall ?? path?.invalidBelow)}` });
+      addPriceLine({ price: path?.invalidAbove, color: "#22c55e", title: `▲ Bullish trigger ${fmt(path?.invalidAbove)}`, width: 2 });
+      addPriceLine({ price: path?.invalidBelow, color: "#fb7185", title: `▼ Bearish trigger ${fmt(path?.invalidBelow)}`, width: 2 });
     }
 
-    if (showPath || showMatrix) {
-      addPriceLine({
-        price: (showPath ? path?.invalidAbove : null) ?? (showMatrix ? matrix?.bullishUnlock : null),
-        color: "#22c55e",
-        title: `▲ Bullish trigger ${fmt((showPath ? path?.invalidAbove : null) ?? (showMatrix ? matrix?.bullishUnlock : null))}`,
-        width: 2
-      });
-      addPriceLine({
-        price: (showPath ? path?.invalidBelow : null) ?? (showMatrix ? matrix?.bearishFailure : null),
-        color: "#fb7185",
-        title: `▼ Bearish trigger ${fmt((showPath ? path?.invalidBelow : null) ?? (showMatrix ? matrix?.bearishFailure : null))}`,
-        width: 2
-      });
+    if (showMatrix) {
+      addPriceLine({ price: matrix?.expectedValueTarget, color: "#fbbf24", title: `Matrix target ${fmt(matrix?.expectedValueTarget)}` });
+      addPriceLine({ price: matrix?.bullishUnlock, color: "#22c55e", title: `▲ Bullish trigger ${fmt(matrix?.bullishUnlock)}`, width: 2 });
+      addPriceLine({ price: matrix?.bearishFailure, color: "#fb7185", title: `▼ Bearish trigger ${fmt(matrix?.bearishFailure)}`, width: 2 });
     }
 
     if (showIvSurface) {
@@ -529,7 +509,7 @@ export default function ForecastChartPanel({
 
     chart.timeScale().fitContent();
     chart.timeScale().scrollToPosition(8, false);
-  }, [candles, edge, path, matrix, ivSurface]);
+  }, [candles, edge, edgeLabelMode, path, matrix, ivSurface]);
 
   const lastClose = candles?.length ? toNumber(candles[candles.length - 1]?.close) : null;
   const horizon = Number(ivSurface?.horizonDays ?? path?.horizonDays ?? path?.horizonSessions ?? 14);
@@ -541,7 +521,7 @@ export default function ForecastChartPanel({
         <div>
           <h2 style={{ margin: 0, color: colors.text, fontSize: 20, fontWeight: 950 }}>{ticker} Forecast Cone</h2>
           <div style={{ color: colors.muted, fontSize: 12, marginTop: 2 }}>
-            Live candlestick chart{path ? " + OI path" : ""}{ivSurface ? " + matched IV band" : ""} over {horizon || 14} sessions
+            Live candlestick chart + OI path + matched IV band over {horizon || 14} sessions
           </div>
           {expectedMove ? (
             <div style={{ color: colors.teal, fontSize: 12, fontWeight: 900, marginTop: 6 }}>
@@ -595,7 +575,7 @@ export default function ForecastChartPanel({
         {edge || path || matrix ? <span><strong style={{ color: colors.amber }}>Amber</strong> magnet</span> : null}
         {edge || path ? <span><strong style={{ color: "#d946ef" }}>Purple</strong> OI walls</span> : null}
         {path ? <span>Regime: <strong style={{ color: colors.text }}>{pathRegime(path)}</strong></span> : null}
-        {!path && !ivSurface && !edge && !matrix ? <span>Overlays hidden: candles only</span> : null}
+        {!path && !ivSurface && !edge && !matrix ? <span>Candles only</span> : null}
       </div>
     </section>
   );

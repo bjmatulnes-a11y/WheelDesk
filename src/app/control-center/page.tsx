@@ -24,6 +24,7 @@ import { buildWallMigrationSummary, findPriorSurfaceForTicker } from "../../lib/
 import { getPriceSeries } from "../../lib/data-provider";
 import { safeFixed } from "../../lib/format";
 import type { CandleRecord, OptionSurfaceSnapshot } from "../../lib/wheeldesk-storage";
+import OIIntelligenceCard from "../../components/control-center/OIIntelligenceCard";
 
 const selectedProfileStorageKey = "wheelDesk.selectedPortfolioProfileId";
 const TIMEFRAMES = ["daily", "weekly", "1h", "30m", "15m", "5m"] as const;
@@ -813,106 +814,12 @@ export default function ControlCenterPage() {
                 </div>
               </div>
             </section>
-                        <section style={{ ...cardStyle, padding: "1rem", marginTop: "1rem" }}>
-              <h3 style={{ marginTop: 0, color: colors.text }}>Level Source Verification</h3>
-
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: "1rem",
-                  color: colors.muted,
-                  fontSize: 13,
-                }}
-              >
-                <div>
-                  <h4 style={{ color: colors.teal, marginTop: 0 }}>Prevailing Surface Source</h4>
-
-                  <div>
-                    Ticker:{" "}
-                    <strong style={{ color: colors.text }}>
-                      {fullSurfaceForAnalysis?.ticker ?? "N/A"}
-                    </strong>
-                  </div>
-
-                  <div>
-                    Snapshot date:{" "}
-                    <strong style={{ color: colors.text }}>
-                      {fullSurfaceForAnalysis?.snapshotDate ?? "N/A"}
-                    </strong>
-                  </div>
-
-                  <div>
-                    Chains used:{" "}
-                    <strong style={{ color: colors.text }}>
-                      {fullSurfaceForAnalysis?.chains?.length ?? 0}
-                    </strong>
-                  </div>
-
-                  <div>
-                    Rows used:{" "}
-                    <strong style={{ color: colors.text }}>
-                      {countSurfaceRows(fullSurfaceForAnalysis)}
-                    </strong>
-                  </div>
-
-                  <div>
-                    Expiration span:{" "}
-                    <strong style={{ color: colors.text }}>
-                      {firstLastExpiration(fullSurfaceForAnalysis)}
-                    </strong>
-                  </div>
-
-                  <div style={{ marginTop: 8, color: colors.green, fontWeight: 900 }}>
-                    Expected behavior: stable when expiration changes.
-                  </div>
-                </div>
-
-                <div>
-                  <h4 style={{ color: colors.amber, marginTop: 0 }}>Selected Chain Source</h4>
-
-                  <div>
-                    Selected expiration:{" "}
-                    <strong style={{ color: colors.text }}>
-                      {selectedExpiration || "N/A"}
-                    </strong>
-                  </div>
-
-                  <div>
-                    DTE:{" "}
-                    <strong style={{ color: colors.text }}>
-                      {selectedChain?.dteAtCapture ?? "N/A"}
-                    </strong>
-                  </div>
-
-                  <div>
-                    Chains used:{" "}
-                    <strong style={{ color: colors.text }}>
-                      {selectedChainSurface?.chains?.length ?? 0}
-                    </strong>
-                  </div>
-
-                  <div>
-                    Rows used:{" "}
-                    <strong style={{ color: colors.text }}>
-                      {countSurfaceRows(selectedChainSurface)}
-                    </strong>
-                  </div>
-
-                  <div>
-                    Chain score:{" "}
-                    <strong style={{ color: colors.text }}>
-                      {activeChainScore != null ? safeFixed(activeChainScore, 2) : "N/A"}
-                    </strong>
-                  </div>
-
-                  <div style={{ marginTop: 8, color: colors.amber, fontWeight: 900 }}>
-                    Expected behavior: changes when expiration changes.
-                  </div>
-                </div>
-              </div>
-            </section>
-                        
+                       
+                <OIIntelligenceCard
+  surface={selectedChainSurface}
+  currentPrice={analysisPrice}
+  title="Selected Expiration OI Intelligence"
+/>        
 
               
 
@@ -921,6 +828,7 @@ export default function ControlCenterPage() {
                 key={`${ticker}-${selectedSurfaceDate}-${selectedExpiration}-${candleTimeframe}-${String(overlays.prevailingSurfaceLevels)}-${String(overlays.selectedChainLevels)}-${String(overlays.selectedChainPath)}-${String(overlays.selectedChainIvSurface)}-${String(overlays.dealerPressure)}-${String(overlays.wallMigration)}`}
                 ticker={ticker}
                 candles={candles}
+                edgeLabelMode={overlays.selectedChainLevels ? "oi" : "control"}  
                 edge={chartEdge}
                 path={chartPath}
                 matrix={chartMatrix}
