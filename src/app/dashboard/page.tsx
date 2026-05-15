@@ -126,6 +126,11 @@ function buildSurfaceSnapshotFromSavedEntries(args: {
     chains
   } as ChainSnapshot;
 }
+function snapshotHasRows(snapshot: any): boolean {
+  return Boolean(
+    snapshot?.chains?.some((chain: any) => Array.isArray(chain?.rows) && chain.rows.length > 0)
+  );
+}
 function PortfolioContextCard({
   ticker,
   profiles,
@@ -1691,15 +1696,23 @@ const surfaceSnapshotDates = useMemo(() => {
 }, [surfaceSnapshots]);
 
 const activeSurfaceSnapshot = useMemo(() => {
-  if (selectedSurface?.chains?.length) {
+  // Fresh fetch has full rows and should always win.
+  // Local saved surfaces are now manifest-only after Supabase save.
+  if (snapshotHasRows(fetchedSnapshot)) {
+    return fetchedSnapshot;
+  }
+
+  // Only use selected saved surface if it actually has rows.
+  // Manifest-only surfaces have chain shells/summaries but rows are intentionally omitted locally.
+  if (snapshotHasRows(selectedSurface)) {
     return {
       ticker: selectedSurface.ticker,
       snapshotDate: selectedSurface.snapshotDate,
-      chains: selectedSurface.chains.map((chain) => ({
+      chains: selectedSurface.chains.map((chain: any) => ({
         expiration: chain.expiration,
-        rows: chain.rows,
-        summary: chain.summary
-      }))
+        rows: chain.rows ?? [],
+        summary: chain.summary ?? {},
+      })),
     } as ChainSnapshot;
   }
 
@@ -2054,9 +2067,9 @@ const canSaveSnapshot = Boolean(
   ticker &&
     asOfDate &&
     hasFetchedChain &&
+    snapshotHasRows(fetchedSnapshot) &&
     fetchedSnapshot?.chains?.length &&
-    oiProjectionReport &&
-    surfacePrevailingLevels
+   // surfacePrevailingLevels
 );
 
   const saveSnapshot = () => {
@@ -2214,9 +2227,17 @@ const canSaveSnapshot = Boolean(
           </label>
 
           <button onClick={fetchChain}>Fetch Option Chain</button>
-          <button onClick={handleSaveDailySurfaceSnapshot} disabled={!canSaveSnapshot}>
-            Save Daily OI Surface
-          </button>
+         <button
+  onClick={handleSaveDailySurfaceSnapshot}
+  disabled={!canSaveSnapshot}
+  title={
+    canSaveSnapshot
+      ? "Save the current fetched option surface to Supabase"
+      : "Fetch an option chain before saving"
+  }
+>
+  Save Daily OI Surface
+</button>
           <button onClick={deleteSnapshotsForChain} disabled={!selectedExpiration}>
             Delete chain snapshots
           </button>
