@@ -511,10 +511,8 @@ const selectedDte = firstFiniteNumber(
 
   const snapshotId = String(parent.id);
 
-  // Replace all rows for this ticker/date, not only rows tied to this parent id.
-  // Earlier builds can leave orphaned/partial rows under a different snapshot_id while
-  // still sharing the same ticker + snapshot_date. Reading by snapshot_id alone then
-  // returns an incomplete chain set for some tickers.
+  // Replace all rows for this logical market snapshot. Older builds can leave
+  // partial rows under a different snapshot_id while sharing the same ticker/date.
   const { error: deleteError } = await supabaseServer
     .from("option_chain_rows")
     .delete()
@@ -693,6 +691,74 @@ function mapParentAndRowsToSnapshot(
   return reconstructed as OptionSurfaceSnapshot;
 }
 
+
+async function readAllChainRowsBySnapshotIds(snapshotIds: string[]): Promise<AnyRecord[]> {
+  if (!snapshotIds.length) return [];
+
+  const pageSize = 1000;
+  const allRows: AnyRecord[] = [];
+
+  for (let from = 0; ; from += pageSize) {
+    const to = from + pageSize - 1;
+
+    const { data, error } = await supabaseServer
+      .from("option_chain_rows")
+      .select("*")
+      .in("snapshot_id", snapshotIds)
+      .order("expiration", { ascending: true })
+      .order("strike", { ascending: true })
+      .order("side", { ascending: true })
+      .range(from, to);
+
+    if (error) {
+      throw new Error(`Failed to read option chain rows by snapshot id: ${error.message}`);
+    }
+
+    const rows = data ?? [];
+    allRows.push(...rows);
+
+    if (rows.length < pageSize) break;
+  }
+
+  return allRows;
+}
+
+async function readAllChainRowsByTickerDates(
+  ticker: string,
+  snapshotDates: string[]
+): Promise<AnyRecord[]> {
+  if (!ticker || !snapshotDates.length) return [];
+
+  const pageSize = 1000;
+  const allRows: AnyRecord[] = [];
+
+  for (let from = 0; ; from += pageSize) {
+    const to = from + pageSize - 1;
+
+    const { data, error } = await supabaseServer
+      .from("option_chain_rows")
+      .select("*")
+      .eq("ticker", ticker)
+      .in("snapshot_date", snapshotDates)
+      .order("snapshot_date", { ascending: false })
+      .order("expiration", { ascending: true })
+      .order("strike", { ascending: true })
+      .order("side", { ascending: true })
+      .range(from, to);
+
+    if (error) {
+      throw new Error(`Failed to read option chain rows by ticker/date: ${error.message}`);
+    }
+
+    const rows = data ?? [];
+    allRows.push(...rows);
+
+    if (rows.length < pageSize) break;
+  }
+
+  return allRows;
+}
+
 export async function readSurfaceSnapshotsFromSupabase(
   ticker: string,
   limit = 50
@@ -715,7 +781,7 @@ export async function readSurfaceSnapshotsFromSupabase(
 
   if (!parents?.length) return [];
 
-  const snapshotIds = parents.map((parent) => parent.id);
+  const snapshotIds = parents.map((parent) => String(parent.id));
   const snapshotDates = Array.from(
     new Set(
       parents
@@ -724,45 +790,25 @@ export async function readSurfaceSnapshotsFromSupabase(
     )
   );
 
-  // Read by parent id for the normal path.
-  const { data: rowsByIdData, error: rowsByIdError } = await supabaseServer
-    .from("option_chain_rows")
-    .select("*")
-    .in("snapshot_id", snapshotIds)
-    .order("expiration", { ascending: true })
-    .order("strike", { ascending: true });
-
-  if (rowsByIdError) {
-    throw new Error(`Failed to read option chain rows by snapshot id: ${rowsByIdError.message}`);
-  }
-
-  // Also read by ticker + snapshot_date. This protects against earlier saves that left
-  // rows under a different snapshot_id while the logical market snapshot is still the
-  // same ticker/date. Some tickers then looked like they only had 3 chains even though
-  // option_chain_rows had 20+ expirations for the date.
-  const { data: rowsByDateData, error: rowsByDateError } = await supabaseServer
-    .from("option_chain_rows")
-    .select("*")
-    .eq("ticker", normalizedTicker)
-    .in("snapshot_date", snapshotDates)
-    .order("expiration", { ascending: true })
-    .order("strike", { ascending: true });
-
-  if (rowsByDateError) {
-    throw new Error(`Failed to read option chain rows by snapshot date: ${rowsByDateError.message}`);
-  }
+  // Important: Supabase/PostgREST commonly returns only the first 1,000 rows
+  // unless range pagination is used. Large surfaces like AMD, SPY, and ^SPX
+  // can otherwise look like they only have the first few expiration chains.
+  const [rowsByIdData, rowsByDateData] = await Promise.all([
+    readAllChainRowsBySnapshotIds(snapshotIds),
+    readAllChainRowsByTickerDates(normalizedTicker, snapshotDates),
+  ]);
 
   const rowsBySnapshotId = new Map<string, AnyRecord[]>();
   const rowsBySnapshotDate = new Map<string, AnyRecord[]>();
 
-  for (const row of rowsByIdData ?? []) {
+  for (const row of rowsByIdData) {
     const key = String(row.snapshot_id);
     const list = rowsBySnapshotId.get(key) ?? [];
     list.push(row);
     rowsBySnapshotId.set(key, list);
   }
 
-  for (const row of rowsByDateData ?? []) {
+  for (const row of rowsByDateData) {
     const key = dateOnly(row.snapshot_date) ?? String(row.snapshot_date ?? "");
     if (!key) continue;
 
@@ -775,8 +821,8 @@ export async function readSurfaceSnapshotsFromSupabase(
     const idRows = rowsBySnapshotId.get(String(parent.id)) ?? [];
     const dateRows = rowsBySnapshotDate.get(dateOnly(parent.snapshot_date) ?? "") ?? [];
 
-    // Prefer the fuller row set. This keeps current clean saves working while repairing
-    // reads for legacy/partial parent ids.
+    // Prefer the fuller logical ticker/date set. This fixes both legacy
+    // snapshot_id splits and 1,000-row truncation.
     const rowsForParent = dateRows.length > idRows.length ? dateRows : idRows;
 
     return mapParentAndRowsToSnapshot(parent, rowsForParent);
