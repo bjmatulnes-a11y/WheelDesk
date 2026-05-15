@@ -25,6 +25,7 @@ import { getPriceSeries } from "../../lib/data-provider";
 import { safeFixed } from "../../lib/format";
 import type { CandleRecord, OptionSurfaceSnapshot } from "../../lib/wheeldesk-storage";
 import OIIntelligenceCard from "../../components/control-center/OIIntelligenceCard";
+import { buildOIIntelligenceView } from "../../lib/oi-intelligence-view";
 
 const selectedProfileStorageKey = "wheelDesk.selectedPortfolioProfileId";
 const TIMEFRAMES = ["daily", "weekly", "1h", "30m", "15m", "5m"] as const;
@@ -606,6 +607,14 @@ export default function ControlCenterPage() {
     });
   }, [selectedChainSurface, analysisPrice, forecastHorizonDays, candles]);
 
+  const chainOIIntelligence = useMemo(() => {
+  return buildOIIntelligenceView({
+    surface: selectedChainSurface,
+    currentPrice: analysisPrice,
+  });
+}, [selectedChainSurface, analysisPrice]);
+
+    
   const predictiveMatrix = useMemo(() => {
     return buildPredictiveMatrix({
       path: chainOIPath,
@@ -627,11 +636,23 @@ export default function ControlCenterPage() {
     });
   }, [ticker, selectedProfile, chainOIPath, predictiveMatrix, chainDealerPressure, chainTraderEdge, chainWallMigration]);
 
-  const chartEdge = overlays.prevailingSurfaceLevels
+const selectedChainOIChartEdge = chainOIIntelligence?.report
+  ? ({
+      support: chainOIIntelligence.report.adjustedPutWall,
+      magnet: chainOIIntelligence.report.adjustedCenter,
+      resistance: chainOIIntelligence.report.adjustedCallWall,
+      source: "oi",
+      labelMode: "oi",
+    } as any)
+  : null;
+
+const chartEdge = overlays.selectedChainLevels
+  ? selectedChainOIChartEdge
+  : overlays.prevailingSurfaceLevels
     ? surfaceTraderEdge
-    : overlays.selectedChainLevels
-      ? chainTraderEdge
-      : null;
+    : null;
+
+const chartEdgeLabelMode = overlays.selectedChainLevels ? "oi" : "control";
 
   const chartPath = overlays.selectedChainPath ? chainOIPath : null;
   const chartIvSurface = overlays.selectedChainIvSurface ? chainIVSurface : null;
@@ -808,9 +829,9 @@ export default function ControlCenterPage() {
                   Uses only {selectedExpiration || "the selected expiration"}. These should move as the expiration changes.
                 </p>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "0.75rem" }}>
-                  <MetricPill label="Chain support" value={money(chainSupport)} tone={colors.red} />
-                  <MetricPill label="Chain magnet" value={money(chainMagnet)} tone={colors.amber} />
-                  <MetricPill label="Chain resistance" value={money(chainResistance)} tone={colors.green} />
+                    <MetricPill label="Active Put Wall" value={money(chainOIIntelligence?.report?.adjustedPutWall)} tone={colors.red}/>
+                    <MetricPill label="Active OI Center" value={money(chainOIIntelligence?.report?.adjustedCenter)} tone={colors.amber}/>
+                    <MetricPill label="Active Call Wall" value={money(chainOIIntelligence?.report?.adjustedCallWall)} tone={colors.green}/>
                 </div>
               </div>
             </section>
@@ -828,8 +849,8 @@ export default function ControlCenterPage() {
                 key={`${ticker}-${selectedSurfaceDate}-${selectedExpiration}-${candleTimeframe}-${String(overlays.prevailingSurfaceLevels)}-${String(overlays.selectedChainLevels)}-${String(overlays.selectedChainPath)}-${String(overlays.selectedChainIvSurface)}-${String(overlays.dealerPressure)}-${String(overlays.wallMigration)}`}
                 ticker={ticker}
                 candles={candles}
-                edgeLabelMode={overlays.selectedChainLevels ? "oi" : "control"}  
                 edge={chartEdge}
+                edgeLabelMode={chartEdgeLabelMode}  
                 path={chartPath}
                 matrix={chartMatrix}
                 ivSurface={chartIvSurface}
