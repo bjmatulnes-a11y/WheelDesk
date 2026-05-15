@@ -21,6 +21,7 @@ import { listPortfolioProfiles } from "../../lib/portfolio-store";
 import { type PortfolioProfile } from "../../lib/portfolio-types";
 import { buildTraderEdgeSummary } from "../../lib/trader-edge-engine";
 import { hydrateSurfaceSnapshotsFromSupabase } from "../../lib/surface-snapshot-hydration";
+import { WheelDeskSideNav } from "../../components/WheelDeskSideNav";
 import { type ChainSnapshot, SUPPORTED_TICKERS } from "../../lib/types";
 import {
   readCandles,
@@ -289,7 +290,7 @@ export default function ControlCenterPage() {
   if (!mounted) {
     return (
       <main style={{ display: "flex", minHeight: "100vh", background: `radial-gradient(circle at top left, rgba(34, 211, 238, 0.12), transparent 28%), ${colors.bg}` }}>
-        <ControlCenterSidebar />
+       <WheelDeskSideNav active="control-center" />
         <div style={{ flex: 1, padding: "1.1rem 1.4rem 2rem", minWidth: 0 }}>
           <section style={{ ...cardStyle, padding: "1.25rem" }}>
             <h1 style={{ margin: 0, color: colors.text }}>Control Center</h1>
@@ -302,7 +303,7 @@ export default function ControlCenterPage() {
 
   return (
     <main style={{ display: "flex", minHeight: "100vh", background: `radial-gradient(circle at top left, rgba(34, 211, 238, 0.12), transparent 28%), ${colors.bg}` }}>
-      <ControlCenterSidebar />
+      <WheelDeskSideNav active="control-center" />
 
       <div style={{ flex: 1, padding: "1.1rem 1.4rem 2rem", minWidth: 0 }}>
         <ControlCenterHeader
