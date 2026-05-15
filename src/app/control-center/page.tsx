@@ -234,6 +234,29 @@ function EmptyState({ ticker, status }: { ticker: string; status: string }) {
     </section>
   );
 }
+function countSurfaceRows(surface: any): number {
+  return (surface?.chains ?? []).reduce((sum: number, chain: any) => {
+    return sum + ((chain?.rows ?? []).length || 0);
+  }, 0);
+}
+
+function firstLastExpiration(surface: any): string {
+  const expirations = (surface?.chains ?? [])
+    .map((chain: any) => expirationOf(chain))
+    .filter(Boolean)
+    .sort();
+
+  if (!expirations.length) return "N/A";
+
+  return `${expirations[0]} → ${expirations[expirations.length - 1]}`;
+}
+
+
+
+function pressureValue(value: unknown): string {
+  const n = Number(value);
+  return Number.isFinite(n) ? safeFixed(n, 2) : "N/A";
+}
 
 function Toggle({
   checked,
@@ -790,6 +813,248 @@ export default function ControlCenterPage() {
                 </div>
               </div>
             </section>
+                        <section style={{ ...cardStyle, padding: "1rem", marginTop: "1rem" }}>
+              <h3 style={{ marginTop: 0, color: colors.text }}>Level Source Verification</h3>
+
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: "1rem",
+                  color: colors.muted,
+                  fontSize: 13,
+                }}
+              >
+                <div>
+                  <h4 style={{ color: colors.teal, marginTop: 0 }}>Prevailing Surface Source</h4>
+
+                  <div>
+                    Ticker:{" "}
+                    <strong style={{ color: colors.text }}>
+                      {fullSurfaceForAnalysis?.ticker ?? "N/A"}
+                    </strong>
+                  </div>
+
+                  <div>
+                    Snapshot date:{" "}
+                    <strong style={{ color: colors.text }}>
+                      {fullSurfaceForAnalysis?.snapshotDate ?? "N/A"}
+                    </strong>
+                  </div>
+
+                  <div>
+                    Chains used:{" "}
+                    <strong style={{ color: colors.text }}>
+                      {fullSurfaceForAnalysis?.chains?.length ?? 0}
+                    </strong>
+                  </div>
+
+                  <div>
+                    Rows used:{" "}
+                    <strong style={{ color: colors.text }}>
+                      {countSurfaceRows(fullSurfaceForAnalysis)}
+                    </strong>
+                  </div>
+
+                  <div>
+                    Expiration span:{" "}
+                    <strong style={{ color: colors.text }}>
+                      {firstLastExpiration(fullSurfaceForAnalysis)}
+                    </strong>
+                  </div>
+
+                  <div style={{ marginTop: 8, color: colors.green, fontWeight: 900 }}>
+                    Expected behavior: stable when expiration changes.
+                  </div>
+                </div>
+
+                <div>
+                  <h4 style={{ color: colors.amber, marginTop: 0 }}>Selected Chain Source</h4>
+
+                  <div>
+                    Selected expiration:{" "}
+                    <strong style={{ color: colors.text }}>
+                      {selectedExpiration || "N/A"}
+                    </strong>
+                  </div>
+
+                  <div>
+                    DTE:{" "}
+                    <strong style={{ color: colors.text }}>
+                      {selectedChain?.dteAtCapture ?? "N/A"}
+                    </strong>
+                  </div>
+
+                  <div>
+                    Chains used:{" "}
+                    <strong style={{ color: colors.text }}>
+                      {selectedChainSurface?.chains?.length ?? 0}
+                    </strong>
+                  </div>
+
+                  <div>
+                    Rows used:{" "}
+                    <strong style={{ color: colors.text }}>
+                      {countSurfaceRows(selectedChainSurface)}
+                    </strong>
+                  </div>
+
+                  <div>
+                    Chain score:{" "}
+                    <strong style={{ color: colors.text }}>
+                      {activeChainScore != null ? safeFixed(activeChainScore, 2) : "N/A"}
+                    </strong>
+                  </div>
+
+                  <div style={{ marginTop: 8, color: colors.amber, fontWeight: 900 }}>
+                    Expected behavior: changes when expiration changes.
+                  </div>
+                </div>
+              </div>
+            </section>
+                          <section style={{ ...cardStyle, padding: "1rem", marginTop: "1rem" }}>
+              <h3 style={{ marginTop: 0, color: colors.text }}>Dealer Pressure Verification</h3>
+
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: "1rem",
+                  color: colors.muted,
+                  fontSize: 13,
+                }}
+              >
+                <div>
+                  <h4 style={{ color: colors.teal, marginTop: 0 }}>Surface Dealer Pressure</h4>
+
+                  <div>
+                    Source:{" "}
+                    <strong style={{ color: colors.text }}>
+                      Full surface / all chains
+                    </strong>
+                  </div>
+
+                  <div>
+                    Chains used:{" "}
+                    <strong style={{ color: colors.text }}>
+                      {fullSurfaceForAnalysis?.chains?.length ?? 0}
+                    </strong>
+                  </div>
+
+                  <div>
+                    Rows used:{" "}
+                    <strong style={{ color: colors.text }}>
+                      {countSurfaceRows(fullSurfaceForAnalysis)}
+                    </strong>
+                  </div>
+
+                  <div>
+                    Support:{" "}
+                    <strong style={{ color: colors.red }}>
+                      {money(surfaceDealerPressure?.support)}
+                    </strong>
+                  </div>
+
+                  <div>
+                    Magnet:{" "}
+                    <strong style={{ color: colors.amber }}>
+                      {money(surfaceDealerPressure?.magnet)}
+                    </strong>
+                  </div>
+
+                  <div>
+                    Resistance:{" "}
+                    <strong style={{ color: colors.green }}>
+                      {money(surfaceDealerPressure?.resistance)}
+                    </strong>
+                  </div>
+
+                  <div>
+                    Net pressure:{" "}
+                    <strong style={{ color: colors.text }}>
+                      {pressureValue(
+                        (surfaceDealerPressure as any)?.netPressure ??
+                          (surfaceDealerPressure as any)?.dealerPressure ??
+                          (surfaceDealerPressure as any)?.pressureScore
+                      )}
+                    </strong>
+                  </div>
+
+                  <div style={{ marginTop: 8, color: colors.green, fontWeight: 900 }}>
+                    Expected behavior: stable when expiration changes.
+                  </div>
+                </div>
+
+                <div>
+                  <h4 style={{ color: colors.amber, marginTop: 0 }}>Selected-Chain Dealer Pressure</h4>
+
+                  <div>
+                    Source:{" "}
+                    <strong style={{ color: colors.text }}>
+                      Selected expiration only
+                    </strong>
+                  </div>
+
+                  <div>
+                    Selected expiration:{" "}
+                    <strong style={{ color: colors.text }}>
+                      {selectedExpiration || "N/A"}
+                    </strong>
+                  </div>
+
+                  <div>
+                    Chains used:{" "}
+                    <strong style={{ color: colors.text }}>
+                      {selectedChainSurface?.chains?.length ?? 0}
+                    </strong>
+                  </div>
+
+                  <div>
+                    Rows used:{" "}
+                    <strong style={{ color: colors.text }}>
+                      {countSurfaceRows(selectedChainSurface)}
+                    </strong>
+                  </div>
+
+                  <div>
+                    Support:{" "}
+                    <strong style={{ color: colors.red }}>
+                      {money(chainDealerPressure?.support)}
+                    </strong>
+                  </div>
+
+                  <div>
+                    Magnet:{" "}
+                    <strong style={{ color: colors.amber }}>
+                      {money(chainDealerPressure?.magnet)}
+                    </strong>
+                  </div>
+
+                  <div>
+                    Resistance:{" "}
+                    <strong style={{ color: colors.green }}>
+                      {money(chainDealerPressure?.resistance)}
+                    </strong>
+                  </div>
+
+                  <div>
+                    Net pressure:{" "}
+                    <strong style={{ color: colors.text }}>
+                      {pressureValue(
+                        (chainDealerPressure as any)?.netPressure ??
+                          (chainDealerPressure as any)?.dealerPressure ??
+                          (chainDealerPressure as any)?.pressureScore
+                      )}
+                    </strong>
+                  </div>
+
+                  <div style={{ marginTop: 8, color: colors.amber, fontWeight: 900 }}>
+                    Expected behavior: changes when expiration changes.
+                  </div>
+                </div>
+              </div>
+            </section>
+              
 
             <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 340px", gap: "1rem", alignItems: "start", marginTop: "1rem" }}>
               <ForecastChartPanel
