@@ -1704,17 +1704,17 @@ const activeSurfaceSnapshot = useMemo(() => {
 
   // Only use selected saved surface if it actually has rows.
   // Manifest-only surfaces have chain shells/summaries but rows are intentionally omitted locally.
-  if (snapshotHasRows(selectedSurface)) {
-    return {
-      ticker: selectedSurface.ticker,
-      snapshotDate: selectedSurface.snapshotDate,
-      chains: selectedSurface.chains.map((chain: any) => ({
-        expiration: chain.expiration,
-        rows: chain.rows ?? [],
-        summary: chain.summary ?? {},
-      })),
-    } as ChainSnapshot;
-  }
+if (selectedSurface && snapshotHasRows(selectedSurface)) {
+  return {
+    ticker: selectedSurface.ticker,
+    snapshotDate: selectedSurface.snapshotDate,
+    chains: selectedSurface.chains.map((chain: any) => ({
+      expiration: chain.expiration,
+      rows: chain.rows ?? [],
+      summary: chain.summary ?? {},
+    })),
+  } as ChainSnapshot;
+}
 
   return fetchedSnapshot;
 }, [selectedSurface, fetchedSnapshot]);
@@ -2068,8 +2068,8 @@ const canSaveSnapshot = Boolean(
     asOfDate &&
     hasFetchedChain &&
     snapshotHasRows(fetchedSnapshot) &&
-    fetchedSnapshot?.chains?.length &&
-   // surfacePrevailingLevels
+    fetchedSnapshot?.chains?.length
+  
 );
 
   const saveSnapshot = () => {
