@@ -12,7 +12,7 @@ type WheelDeskSideNavProps = {
 const navItems: Array<NavItem & { key: WheelDeskSideNavProps["active"] }> = [
   { key: "dashboard", href: "/dashboard", label: "Dashboard" },
   { key: "scanner", href: "/dashboard/scanner", label: "Scanner" },
-  { key: "positions", href: "/positions", label: "Positions" },
+  { key: "positions", href: "/portfolio", label: "Positions" },
   { key: "wheel", href: "/dashboard/wheel", label: "Wheel" },
   { key: "control-center", href: "/control-center", label: "Control Center" },
   { key: "validation", href: "/validation", label: "Validation" },
