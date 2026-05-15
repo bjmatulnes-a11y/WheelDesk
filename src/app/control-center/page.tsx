@@ -29,9 +29,10 @@ const selectedProfileStorageKey = "wheelDesk.selectedPortfolioProfileId";
 const TIMEFRAMES = ["daily", "weekly", "1h", "30m", "15m", "5m"] as const;
 
 type OverlayFlags = {
-  prevailingLevels: boolean;
-  oiImpliedPath: boolean;
-  ivSurface: boolean;
+  prevailingSurfaceLevels: boolean;
+  selectedChainLevels: boolean;
+  selectedChainPath: boolean;
+  selectedChainIvSurface: boolean;
   dealerPressure: boolean;
   wallMigration: boolean;
 };
@@ -185,6 +186,30 @@ function toChainSnapshot(surface: OptionSurfaceSnapshot | null): ChainSnapshot |
   } as ChainSnapshot;
 }
 
+function makeSingleChainSurface(
+  surface: OptionSurfaceSnapshot | null,
+  chain: any | null
+): OptionSurfaceSnapshot | null {
+  if (!surface || !chain) return null;
+
+  return {
+    ...surface,
+    chains: [chain],
+  } as OptionSurfaceSnapshot;
+}
+
+function findMatchingExpirationSurface(
+  surface: OptionSurfaceSnapshot | null,
+  expiration: string
+): OptionSurfaceSnapshot | null {
+  if (!surface || !expiration) return null;
+
+  const matchingChain = (surface.chains as any[] | undefined)?.find((chain) => expirationOf(chain) === expiration);
+  if (!matchingChain) return null;
+
+  return makeSingleChainSurface(surface, matchingChain);
+}
+
 function MetricPill({ label, value, tone = colors.teal }: { label: string; value: string; tone?: string }) {
   return (
     <div style={{ ...cardStyle, padding: "0.85rem" }}>
@@ -203,7 +228,7 @@ function EmptyState({ ticker, status }: { ticker: string; status: string }) {
         to Control Center to analyze the saved surface.
       </p>
       {status ? <p style={{ color: colors.amber }}>{status}</p> : null}
-      <a href={`/dashboard`} style={{ color: colors.teal, fontWeight: 900 }}>
+      <a href="/dashboard" style={{ color: colors.teal, fontWeight: 900 }}>
         Open Dashboard Harvest
       </a>
     </section>
@@ -250,13 +275,15 @@ export default function ControlCenterPage() {
   const [profiles, setProfiles] = useState<PortfolioProfile[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState("");
   const [status, setStatus] = useState("");
-const [overlays, setOverlays] = useState<OverlayFlags>({
-  prevailingLevels: false,
-  oiImpliedPath: false,
-  ivSurface: false,
-  dealerPressure: false,
-  wallMigration: false,
-});
+  const [overlays, setOverlays] = useState<OverlayFlags>({
+    prevailingSurfaceLevels: true,
+    selectedChainLevels: false,
+    selectedChainPath: true,
+    selectedChainIvSurface: true,
+    dealerPressure: true,
+    wallMigration: true,
+  });
+
   useEffect(() => {
     setMounted(true);
 
@@ -423,14 +450,29 @@ const [overlays, setOverlays] = useState<OverlayFlags>({
     );
   }, [selectedSurface, selectedExpiration]);
 
-  const selectedSurfaceForAnalysis = useMemo(() => {
-    if (!selectedSurface || !selectedChain) return selectedSurface;
+  // Core separation:
+  // 1. selectedSurface = full ticker/date surface. This drives prevailing levels and should NOT move with expiration.
+  // 2. selectedChainSurface = one expiration only. This drives selected-chain OI/IV/path/pressure and SHOULD move.
+  const fullSurfaceForAnalysis = selectedSurface;
 
-    return {
-      ...selectedSurface,
-      chains: [selectedChain],
-    } as OptionSurfaceSnapshot;
-  }, [selectedSurface, selectedChain]);
+  const selectedChainSurface = useMemo(
+    () => makeSingleChainSurface(selectedSurface, selectedChain),
+    [selectedSurface, selectedChain]
+  );
+
+  const priorFullSurface = useMemo(() => {
+    if (!fullSurfaceForAnalysis) return null;
+
+    return findPriorSurfaceForTicker(
+      surfaceSnapshots,
+      fullSurfaceForAnalysis.ticker,
+      fullSurfaceForAnalysis.snapshotDate
+    );
+  }, [fullSurfaceForAnalysis, surfaceSnapshots]);
+
+  const priorSelectedChainSurface = useMemo(() => {
+    return findMatchingExpirationSurface(priorFullSurface, selectedExpiration);
+  }, [priorFullSurface, selectedExpiration]);
 
   const selectedProfile = useMemo(
     () => profiles.find((profile) => profile.id === selectedProfileId),
@@ -440,110 +482,147 @@ const [overlays, setOverlays] = useState<OverlayFlags>({
   const analysisPrice = useMemo(() => {
     return (
       candles.at(-1)?.close ??
-      selectedSurfaceForAnalysis?.price?.close ??
-      selectedSurfaceForAnalysis?.dailyStructure?.spot ??
+      fullSurfaceForAnalysis?.price?.close ??
+      fullSurfaceForAnalysis?.dailyStructure?.spot ??
       0
     );
-  }, [candles, selectedSurfaceForAnalysis]);
+  }, [candles, fullSurfaceForAnalysis]);
 
-  const activeChainSnapshot = useMemo(() => toChainSnapshot(selectedSurfaceForAnalysis), [selectedSurfaceForAnalysis]);
+  const fullSurfaceSnapshot = useMemo(() => toChainSnapshot(fullSurfaceForAnalysis), [fullSurfaceForAnalysis]);
+  const selectedChainSnapshot = useMemo(() => toChainSnapshot(selectedChainSurface), [selectedChainSurface]);
 
-  const traderEdge = useMemo(() => {
-    if (!selectedSurfaceForAnalysis) return null;
+  const surfaceTraderEdge = useMemo(() => {
+    if (!fullSurfaceForAnalysis) return null;
 
     return buildTraderEdgeSummary({
       ticker,
-      surface: selectedSurfaceForAnalysis,
+      surface: fullSurfaceForAnalysis,
       candles,
       livePrice: analysisPrice,
     });
-  }, [ticker, selectedSurfaceForAnalysis, candles, analysisPrice]);
+  }, [ticker, fullSurfaceForAnalysis, candles, analysisPrice]);
 
-  const wallMigration = useMemo(() => {
-    if (!selectedSurfaceForAnalysis) return null;
+  const chainTraderEdge = useMemo(() => {
+    if (!selectedChainSurface) return null;
 
-    const prior = findPriorSurfaceForTicker(
-      surfaceSnapshots,
-      selectedSurfaceForAnalysis.ticker,
-      selectedSurfaceForAnalysis.snapshotDate
-    );
+    return buildTraderEdgeSummary({
+      ticker,
+      surface: selectedChainSurface,
+      candles,
+      livePrice: analysisPrice,
+    });
+  }, [ticker, selectedChainSurface, candles, analysisPrice]);
+
+  const surfaceWallMigration = useMemo(() => {
+    if (!fullSurfaceForAnalysis) return null;
 
     return buildWallMigrationSummary({
-      currentSurface: selectedSurfaceForAnalysis,
-      priorSurface: prior,
+      currentSurface: fullSurfaceForAnalysis,
+      priorSurface: priorFullSurface,
     });
-  }, [selectedSurfaceForAnalysis, surfaceSnapshots]);
+  }, [fullSurfaceForAnalysis, priorFullSurface]);
 
-  const dealerPressure = useMemo(() => {
+  const chainWallMigration = useMemo(() => {
+    if (!selectedChainSurface) return null;
+
+    return buildWallMigrationSummary({
+      currentSurface: selectedChainSurface,
+      priorSurface: priorSelectedChainSurface,
+    });
+  }, [selectedChainSurface, priorSelectedChainSurface]);
+
+  const surfaceDealerPressure = useMemo(() => {
     return buildDealerPressureSummary({
-      surface: selectedSurfaceForAnalysis,
-      edge: traderEdge,
-      wallMigration,
+      surface: fullSurfaceForAnalysis,
+      edge: surfaceTraderEdge,
+      wallMigration: surfaceWallMigration,
       candles,
       livePrice: analysisPrice,
     });
-  }, [selectedSurfaceForAnalysis, traderEdge, wallMigration, candles, analysisPrice]);
+  }, [fullSurfaceForAnalysis, surfaceTraderEdge, surfaceWallMigration, candles, analysisPrice]);
 
-  const oiProjection = useMemo(() => {
+  const chainDealerPressure = useMemo(() => {
+    return buildDealerPressureSummary({
+      surface: selectedChainSurface,
+      edge: chainTraderEdge,
+      wallMigration: chainWallMigration,
+      candles,
+      livePrice: analysisPrice,
+    });
+  }, [selectedChainSurface, chainTraderEdge, chainWallMigration, candles, analysisPrice]);
+
+  const chainOIProjection = useMemo(() => {
     return buildOIProjectionReport({
-      snapshot: activeChainSnapshot,
+      snapshot: selectedChainSnapshot,
       currentPrice: analysisPrice,
     });
-  }, [activeChainSnapshot, analysisPrice]);
+  }, [selectedChainSnapshot, analysisPrice]);
 
-  const oiPath = useMemo(() => {
+  const chainOIPath = useMemo(() => {
     return buildOIImpliedPath({
-      projectionReport: oiProjection,
-      edgeSummary: traderEdge,
-      wallMigration,
+      projectionReport: chainOIProjection,
+      edgeSummary: chainTraderEdge,
+      wallMigration: chainWallMigration,
       currentPrice: analysisPrice,
     });
-  }, [oiProjection, traderEdge, wallMigration, analysisPrice]);
+  }, [chainOIProjection, chainTraderEdge, chainWallMigration, analysisPrice]);
 
   const forecastHorizonDays = useMemo(() => {
-    const explicit = Number((oiPath as any)?.horizonDays ?? (oiPath as any)?.horizonSessions ?? 14);
+    const explicit = Number((chainOIPath as any)?.horizonDays ?? (chainOIPath as any)?.horizonSessions ?? 14);
     if (Number.isFinite(explicit) && explicit > 0) return Math.max(1, Math.min(60, Math.round(explicit)));
     return 14;
-  }, [oiPath]);
+  }, [chainOIPath]);
 
-  const ivSurface = useMemo(() => {
+  const chainIVSurface = useMemo(() => {
     return buildIVSurfaceSummary({
-      surface: selectedSurfaceForAnalysis,
+      surface: selectedChainSurface,
       currentPrice: analysisPrice,
       horizonDays: forecastHorizonDays,
       candles,
     });
-  }, [selectedSurfaceForAnalysis, analysisPrice, forecastHorizonDays, candles]);
+  }, [selectedChainSurface, analysisPrice, forecastHorizonDays, candles]);
 
   const predictiveMatrix = useMemo(() => {
     return buildPredictiveMatrix({
-      path: oiPath,
-      dealerPressure,
-      edgeSummary: traderEdge,
-      wallMigration,
+      path: chainOIPath,
+      dealerPressure: chainDealerPressure,
+      edgeSummary: chainTraderEdge,
+      wallMigration: chainWallMigration,
     });
-  }, [oiPath, dealerPressure, traderEdge, wallMigration]);
+  }, [chainOIPath, chainDealerPressure, chainTraderEdge, chainWallMigration]);
 
   const adaptiveControl = useMemo(() => {
     return buildAdaptivePositionControl({
       ticker,
       positions: selectedProfile?.positions ?? [],
-      path: oiPath,
+      path: chainOIPath,
       predictiveMatrix,
-      dealerPressure,
-      edgeSummary: traderEdge,
-      wallMigration,
+      dealerPressure: chainDealerPressure,
+      edgeSummary: chainTraderEdge,
+      wallMigration: chainWallMigration,
     });
-  }, [ticker, selectedProfile, oiPath, predictiveMatrix, dealerPressure, traderEdge, wallMigration]);
+  }, [ticker, selectedProfile, chainOIPath, predictiveMatrix, chainDealerPressure, chainTraderEdge, chainWallMigration]);
 
-  const chartEdge = overlays.prevailingLevels ? traderEdge : null;
-  const chartPath = overlays.oiImpliedPath ? oiPath : null;
-  const chartIvSurface = overlays.ivSurface ? ivSurface : null;
-  const activeChainScore = chainScore(selectedChain);
+  const chartEdge = overlays.prevailingSurfaceLevels
+    ? surfaceTraderEdge
+    : overlays.selectedChainLevels
+      ? chainTraderEdge
+      : null;
+
+  const chartPath = overlays.selectedChainPath ? chainOIPath : null;
+  const chartIvSurface = overlays.selectedChainIvSurface ? chainIVSurface : null;
   const chartMatrix =
-  overlays.oiImpliedPath || overlays.dealerPressure || overlays.wallMigration
-    ? predictiveMatrix
-    : null;  
+    overlays.dealerPressure || overlays.wallMigration || overlays.selectedChainLevels ? predictiveMatrix : null;
+
+  const activeChainScore = chainScore(selectedChain);
+
+  const surfaceSupport = surfaceTraderEdge?.support ?? surfaceDealerPressure?.support;
+  const surfaceResistance = surfaceTraderEdge?.resistance ?? surfaceDealerPressure?.resistance;
+  const surfaceMagnet = surfaceTraderEdge?.magnet ?? surfaceDealerPressure?.magnet;
+
+  const chainSupport = chainTraderEdge?.support ?? chainDealerPressure?.support;
+  const chainResistance = chainTraderEdge?.resistance ?? chainDealerPressure?.resistance;
+  const chainMagnet = chainTraderEdge?.magnet ?? chainDealerPressure?.magnet;
 
   return (
     <main
@@ -560,7 +639,7 @@ const [overlays, setOverlays] = useState<OverlayFlags>({
           <div>
             <h1 style={{ margin: 0, color: colors.text, fontSize: 28, letterSpacing: "-0.04em" }}>Control Center</h1>
             <p style={{ color: colors.muted, margin: "0.35rem 0 0" }}>
-              Supabase-driven OI surface analysis, candle timeframe control, and chart overlay toggles.
+              Supabase-driven OI surface analysis. Prevailing levels use the full surface; chain OI/IV/path uses the selected expiration.
             </p>
           </div>
 
@@ -638,19 +717,24 @@ const [overlays, setOverlays] = useState<OverlayFlags>({
         <section style={{ ...cardStyle, marginTop: "1rem", padding: "0.85rem 1rem", display: "flex", justifyContent: "space-between", gap: "1rem", alignItems: "center", flexWrap: "wrap" }}>
           <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
             <Toggle
-              checked={overlays.prevailingLevels}
-              label="Prevailing levels"
-              onChange={(checked) => setOverlays((current) => ({ ...current, prevailingLevels: checked }))}
+              checked={overlays.prevailingSurfaceLevels}
+              label="Prevailing surface levels"
+              onChange={(checked) => setOverlays((current) => ({ ...current, prevailingSurfaceLevels: checked }))}
             />
             <Toggle
-              checked={overlays.oiImpliedPath}
-              label="OI implied path"
-              onChange={(checked) => setOverlays((current) => ({ ...current, oiImpliedPath: checked }))}
+              checked={overlays.selectedChainLevels}
+              label="Selected chain OI levels"
+              onChange={(checked) => setOverlays((current) => ({ ...current, selectedChainLevels: checked }))}
             />
             <Toggle
-              checked={overlays.ivSurface}
-              label="IV surface / band"
-              onChange={(checked) => setOverlays((current) => ({ ...current, ivSurface: checked }))}
+              checked={overlays.selectedChainPath}
+              label="Selected chain OI path"
+              onChange={(checked) => setOverlays((current) => ({ ...current, selectedChainPath: checked }))}
+            />
+            <Toggle
+              checked={overlays.selectedChainIvSurface}
+              label="Selected chain IV band"
+              onChange={(checked) => setOverlays((current) => ({ ...current, selectedChainIvSurface: checked }))}
             />
             <Toggle
               checked={overlays.dealerPressure}
@@ -675,28 +759,54 @@ const [overlays, setOverlays] = useState<OverlayFlags>({
           <ControlSummaryCards control={adaptiveControl} matrix={predictiveMatrix} />
         </div>
 
-        {!selectedSurfaceForAnalysis ? (
+        {!selectedSurface ? (
           <div style={{ marginTop: "1rem" }}>
             <EmptyState ticker={ticker} status={status} />
           </div>
         ) : (
           <>
+            <section style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginTop: "1rem" }}>
+              <div style={{ ...cardStyle, padding: "1rem" }}>
+                <h3 style={{ marginTop: 0, color: colors.text }}>Prevailing Surface Levels</h3>
+                <p style={{ color: colors.muted, marginTop: -6, fontSize: 12 }}>
+                  Uses all chains in the selected surface. These should stay stable when the expiration dropdown changes.
+                </p>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "0.75rem" }}>
+                  <MetricPill label="Surface support" value={money(surfaceSupport)} tone={colors.red} />
+                  <MetricPill label="Surface magnet" value={money(surfaceMagnet)} tone={colors.amber} />
+                  <MetricPill label="Surface resistance" value={money(surfaceResistance)} tone={colors.green} />
+                </div>
+              </div>
+
+              <div style={{ ...cardStyle, padding: "1rem" }}>
+                <h3 style={{ marginTop: 0, color: colors.text }}>Selected Expiration Chain Levels</h3>
+                <p style={{ color: colors.muted, marginTop: -6, fontSize: 12 }}>
+                  Uses only {selectedExpiration || "the selected expiration"}. These should move as the expiration changes.
+                </p>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "0.75rem" }}>
+                  <MetricPill label="Chain support" value={money(chainSupport)} tone={colors.red} />
+                  <MetricPill label="Chain magnet" value={money(chainMagnet)} tone={colors.amber} />
+                  <MetricPill label="Chain resistance" value={money(chainResistance)} tone={colors.green} />
+                </div>
+              </div>
+            </section>
+
             <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 340px", gap: "1rem", alignItems: "start", marginTop: "1rem" }}>
-             <ForecastChartPanel
-  key={`${ticker}-${selectedSurfaceDate}-${selectedExpiration}-${candleTimeframe}-${String(overlays.prevailingLevels)}-${String(overlays.oiImpliedPath)}-${String(overlays.ivSurface)}-${String(overlays.dealerPressure)}-${String(overlays.wallMigration)}`}
-  ticker={ticker}
-  candles={candles}
-  edge={chartEdge}
-  path={chartPath}
-  matrix={chartMatrix}
-  ivSurface={chartIvSurface}
-  isLoading={candleLoading || surfaceLoading}
-/>
+              <ForecastChartPanel
+                key={`${ticker}-${selectedSurfaceDate}-${selectedExpiration}-${candleTimeframe}-${String(overlays.prevailingSurfaceLevels)}-${String(overlays.selectedChainLevels)}-${String(overlays.selectedChainPath)}-${String(overlays.selectedChainIvSurface)}-${String(overlays.dealerPressure)}-${String(overlays.wallMigration)}`}
+                ticker={ticker}
+                candles={candles}
+                edge={chartEdge}
+                path={chartPath}
+                matrix={chartMatrix}
+                ivSurface={chartIvSurface}
+                isLoading={candleLoading || surfaceLoading}
+              />
 
               <div style={{ display: "grid", gap: "1rem" }}>
                 <ScenarioPlaybookCard control={adaptiveControl} />
-                <IVSurfaceCard summary={ivSurface} />
-                {overlays.dealerPressure ? <ModelReadoutCard dealer={dealerPressure} matrix={predictiveMatrix} /> : null}
+                <IVSurfaceCard summary={chainIVSurface} />
+                {overlays.dealerPressure ? <ModelReadoutCard dealer={chainDealerPressure} matrix={predictiveMatrix} /> : null}
               </div>
             </div>
 
@@ -707,11 +817,11 @@ const [overlays, setOverlays] = useState<OverlayFlags>({
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: "0.85rem", marginTop: "1rem" }}>
               <MetricPill label="Current / Analysis Price" value={money(analysisPrice)} tone={colors.green} />
-              <MetricPill label="Expected Move" value={ivSurface ? `±${money(ivSurface.expectedMove.oneSigma)}` : "N/A"} tone={colors.teal} />
-              <MetricPill label="ATM IV" value={pct(ivSurface?.atmIv)} tone={colors.teal} />
-              <MetricPill label="Magnet" value={money(traderEdge?.magnet ?? dealerPressure?.magnet)} tone={colors.amber} />
-              <MetricPill label="Support / Put Wall" value={money(traderEdge?.support ?? dealerPressure?.support)} tone={colors.red} />
-              <MetricPill label="Resistance / Call Wall" value={money(traderEdge?.resistance ?? dealerPressure?.resistance)} tone={colors.green} />
+              <MetricPill label="Expected Move" value={chainIVSurface ? `±${money(chainIVSurface.expectedMove.oneSigma)}` : "N/A"} tone={colors.teal} />
+              <MetricPill label="ATM IV" value={pct(chainIVSurface?.atmIv)} tone={colors.teal} />
+              <MetricPill label="Chain Magnet" value={money(chainMagnet)} tone={colors.amber} />
+              <MetricPill label="Chain Support" value={money(chainSupport)} tone={colors.red} />
+              <MetricPill label="Chain Resistance" value={money(chainResistance)} tone={colors.green} />
             </div>
 
             {overlays.wallMigration && adaptiveControl?.riskNotes?.length ? (
