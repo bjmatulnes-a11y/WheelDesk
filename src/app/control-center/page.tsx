@@ -691,7 +691,7 @@ const [overlays, setOverlays] = useState<OverlayFlags>({
   matrix={chartMatrix}
   ivSurface={chartIvSurface}
   isLoading={candleLoading || surfaceLoading}
-/>>
+/>
 
               <div style={{ display: "grid", gap: "1rem" }}>
                 <ScenarioPlaybookCard control={adaptiveControl} />
