@@ -24,6 +24,7 @@ type ForecastChartPanelProps = {
   path?: any;
   matrix?: any;
   ivSurface?: IVSurfaceSummary | null;
+  flowOverlay?: any;
   isLoading?: boolean;
 };
 
@@ -54,20 +55,27 @@ function pct(value?: number | null): string {
   return `${value.toFixed(1)}%`;
 }
 
-function normalizeDateOnly(value: unknown): string | null {
+function dateToTime(value: unknown): UTCTimestamp | null {
   if (!value) return null;
+
+  if (typeof value === "number") {
+    const millis = value > 1_000_000_000_000 ? value : value * 1000;
+    const t = Math.floor(millis / 1000);
+    return Number.isFinite(t) ? (t as UTCTimestamp) : null;
+  }
+
   const raw = String(value).trim();
   if (!raw) return null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const t = Math.floor(new Date(`${raw}T00:00:00Z`).getTime() / 1000);
+    return Number.isFinite(t) ? (t as UTCTimestamp) : null;
+  }
+
   const parsed = new Date(raw);
   if (Number.isNaN(parsed.getTime())) return null;
-  return parsed.toISOString().slice(0, 10);
-}
 
-function dateToTime(value: unknown): UTCTimestamp | null {
-  const date = normalizeDateOnly(value);
-  if (!date) return null;
-  const t = Math.floor(new Date(`${date}T00:00:00Z`).getTime() / 1000);
+  const t = Math.floor(parsed.getTime() / 1000);
   return Number.isFinite(t) ? (t as UTCTimestamp) : null;
 }
 
@@ -210,6 +218,7 @@ export default function ForecastChartPanel({
   path,
   matrix,
   ivSurface,
+  flowOverlay,
   isLoading = false
 }: ForecastChartPanelProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -263,7 +272,7 @@ export default function ForecastChartPanel({
       leftPriceScale: { visible: false },
       timeScale: {
         borderColor: "rgba(148,163,184,0.22)",
-        timeVisible: false,
+        timeVisible: true,
         secondsVisible: false,
         rightOffset: 10,
         barSpacing: 8,
@@ -429,6 +438,7 @@ export default function ForecastChartPanel({
     const showIvSurface = Boolean(ivSurface);
     const showEdge = Boolean(edge);
     const showMatrix = Boolean(matrix);
+    const showFlowOverlay = Boolean(flowOverlay);
 
     const baseData = showPath ? makeAnchoredPath(path?.basePath, lastTime, lastClose) : [];
     const upperData = showPath ? makeAnchoredPath(path?.upperBand, lastTime, lastClose) : [];
@@ -507,9 +517,29 @@ export default function ForecastChartPanel({
       addPriceLine({ price: em?.lowerOneSigma, color: "#22d3ee", title: `▼ ${horizon || 14}D IV lower ${fmt(em?.lowerOneSigma)}`, width: 2 });
     }
 
+    if (showFlowOverlay) {
+      const levels = Array.isArray(flowOverlay?.chartLevels) ? flowOverlay.chartLevels : [];
+      for (const level of levels.slice(0, 6)) {
+        const side = String(level?.side ?? "");
+        const pressure = Number(level?.pressureScore ?? 0);
+        const strike = Number(level?.strike);
+        const label = side === "put" ? "Put flow" : side === "call" ? "Call flow" : "Flow";
+        const color = side === "put" ? "#fb7185" : side === "call" ? "#22d3ee" : "#fbbf24";
+        const width = pressure >= 70 ? 2 : 1;
+
+        addPriceLine({
+          price: strike,
+          color,
+          title: `${label} ${fmt(strike)} · ${Math.round(pressure)}`,
+          width: width as 1 | 2,
+          dashed: pressure < 70
+        });
+      }
+    }
+
     chart.timeScale().fitContent();
     chart.timeScale().scrollToPosition(8, false);
-  }, [candles, edge, edgeLabelMode, path, matrix, ivSurface]);
+  }, [candles, edge, edgeLabelMode, path, matrix, ivSurface, flowOverlay]);
 
   const lastClose = candles?.length ? toNumber(candles[candles.length - 1]?.close) : null;
   const horizon = Number(ivSurface?.horizonDays ?? path?.horizonDays ?? path?.horizonSessions ?? 14);
@@ -533,9 +563,23 @@ export default function ForecastChartPanel({
         <div style={{ textAlign: "right", minWidth: 130 }}>
           <div style={{ color: colors.green, fontSize: 24, fontWeight: 950, lineHeight: 1 }}>{fmt(lastClose)}</div>
           <div style={{ color: colors.muted, fontSize: 11, marginTop: 3 }}>Last candle close</div>
-          <div style={{ color: ivSurface?.skewBias === "bearish" ? colors.red : ivSurface?.skewBias === "bullish" ? colors.green : colors.teal, fontSize: 12, fontWeight: 900, marginTop: 8 }}>
-            Skew: {String(ivSurface?.skewBias ?? "unknown").toUpperCase()}
-          </div>
+          {ivSurface ? (
+            <div
+              style={{
+                color:
+                  ivSurface.skewBias === "bearish"
+                    ? colors.red
+                    : ivSurface.skewBias === "bullish"
+                      ? colors.green
+                      : colors.teal,
+                fontSize: 12,
+                fontWeight: 900,
+                marginTop: 8,
+              }}
+            >
+              Skew: {String(ivSurface.skewBias ?? "unknown").toUpperCase()}
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -574,8 +618,9 @@ export default function ForecastChartPanel({
         {ivSurface ? <span><strong style={{ color: colors.teal }}>Cyan</strong> matched IV band</span> : null}
         {edge || path || matrix ? <span><strong style={{ color: colors.amber }}>Amber</strong> magnet</span> : null}
         {edge || path ? <span><strong style={{ color: "#d946ef" }}>Purple</strong> OI walls</span> : null}
+        {flowOverlay ? <span><strong style={{ color: "#22d3ee" }}>Cyan/Pink</strong> flow strike clusters</span> : null}
         {path ? <span>Regime: <strong style={{ color: colors.text }}>{pathRegime(path)}</strong></span> : null}
-        {!path && !ivSurface && !edge && !matrix ? <span>Candles only</span> : null}
+        {!path && !ivSurface && !edge && !matrix && !flowOverlay ? <span>Candles only</span> : null}
       </div>
     </section>
   );

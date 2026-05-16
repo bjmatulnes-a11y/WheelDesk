@@ -9,6 +9,7 @@ import ModelReadoutCard from "../../components/control-center/ModelReadoutCard";
 import IVSurfaceCard from "../../components/control-center/IVSurfaceCard";
 import PredictiveMatrixPanel from "../../components/control-center/PredictiveMatrixPanel";
 import ControlMatrixCard from "../../components/control-center/ControlMatrixCard";
+import OIIntelligenceCard from "../../components/control-center/OIIntelligenceCard";
 import { colors, cardStyle } from "../../components/control-center/styles";
 import { buildDealerPressureSummary } from "../../lib/dealer-pressure-engine";
 import { buildAdaptivePositionControl } from "../../lib/nonlinear-mpc-engine";
@@ -23,12 +24,12 @@ import { type ChainSnapshot, SUPPORTED_TICKERS, type SupportedTicker, type Timef
 import { buildWallMigrationSummary, findPriorSurfaceForTicker } from "../../lib/oi-wall-migration-engine";
 import { getPriceSeries } from "../../lib/data-provider";
 import { safeFixed } from "../../lib/format";
-import type { CandleRecord, OptionSurfaceSnapshot } from "../../lib/wheeldesk-storage";
-import OIIntelligenceCard from "../../components/control-center/OIIntelligenceCard";
 import { buildOIIntelligenceView } from "../../lib/oi-intelligence-view";
+import { buildFlowIntelligenceView } from "../../lib/flow-intelligence-view";
+import type { CandleRecord, OptionSurfaceSnapshot } from "../../lib/wheeldesk-storage";
 
 const selectedProfileStorageKey = "wheelDesk.selectedPortfolioProfileId";
-const TIMEFRAMES = ["daily", "weekly", "1h", "30m", "15m", "5m"] as const;
+const TIMEFRAMES = ["daily", "weekly", "1h", "30m", "15m", "5m", "1m"] as const;
 
 type OverlayFlags = {
   prevailingSurfaceLevels: boolean;
@@ -37,6 +38,7 @@ type OverlayFlags = {
   selectedChainIvSurface: boolean;
   dealerPressure: boolean;
   wallMigration: boolean;
+  flowIntelligence: boolean;
 };
 
 function money(value?: number | null): string {
@@ -53,12 +55,98 @@ function normalizeTicker(value: unknown): string {
   return String(value ?? "").trim().toUpperCase();
 }
 
+function normalizeCandleTime(candle: any, timeframe: string): string {
+  const raw =
+    candle?.datetime ??
+    candle?.timestamp ??
+    candle?.time ??
+    candle?.date ??
+    "";
+
+  if (!raw) return "";
+
+  if (timeframe === "daily" || timeframe === "weekly") {
+    return String(raw).slice(0, 10);
+  }
+
+  if (typeof raw === "number") {
+    const millis = raw > 1_000_000_000_000 ? raw : raw * 1000;
+    return new Date(millis).toISOString();
+  }
+
+  const asString = String(raw);
+  const parsed = new Date(asString);
+
+  return Number.isNaN(parsed.getTime()) ? asString : parsed.toISOString();
+}
+
 function surfaceDateOf(surface: any): string {
   return String(surface?.snapshotDate ?? surface?.snapshot_date ?? surface?.date ?? "").slice(0, 10);
 }
 
 function expirationOf(chain: any): string {
   return String(chain?.expiration ?? chain?.expirationDate ?? chain?.expiration_date ?? chain?.expiry ?? "");
+}
+
+function rowOpenInterest(row: any): number {
+  const candidates = [
+    row?.openInterest,
+    row?.open_interest,
+    row?.oi,
+    row?.raw?.openInterest,
+    row?.raw?.open_interest,
+    row?.raw?.oi,
+  ];
+
+  for (const candidate of candidates) {
+    const n = Number(candidate);
+    if (Number.isFinite(n)) return n;
+  }
+
+  return 0;
+}
+
+function totalChainOi(chain: any): number {
+  return ((chain?.rows ?? []) as any[]).reduce((sum, row) => sum + rowOpenInterest(row), 0);
+}
+
+function chainDominanceScore(surface: OptionSurfaceSnapshot | null, expiration: string) {
+  const chains = ((surface?.chains ?? []) as any[]).filter((chain) => expirationOf(chain));
+
+  if (!chains.length || !expiration) {
+    return {
+      score: null as number | null,
+      rank: null as number | null,
+      chainCount: chains.length,
+      selectedOi: 0,
+      maxOi: 0,
+      surfaceOi: 0,
+      dominantExpiration: "",
+    };
+  }
+
+  const ranked = chains
+    .map((chain) => ({
+      expiration: expirationOf(chain),
+      totalOi: totalChainOi(chain),
+    }))
+    .sort((a, b) => b.totalOi - a.totalOi || a.expiration.localeCompare(b.expiration));
+
+  const selected = ranked.find((item) => item.expiration === expiration);
+  const maxOi = ranked[0]?.totalOi ?? 0;
+  const surfaceOi = ranked.reduce((sum, item) => sum + item.totalOi, 0);
+  const rank = selected ? ranked.findIndex((item) => item.expiration === expiration) + 1 : null;
+  const score = selected && maxOi > 0 ? (selected.totalOi / maxOi) * 100 : null;
+
+  return {
+    score,
+    rank,
+    chainCount: ranked.length,
+    selectedOi: selected?.totalOi ?? 0,
+    maxOi,
+    surfaceOi,
+    dominantExpiration: ranked[0]?.expiration ?? "",
+  };
 }
 
 function chainScore(chain: any): number | null {
@@ -236,25 +324,6 @@ function EmptyState({ ticker, status }: { ticker: string; status: string }) {
     </section>
   );
 }
-function countSurfaceRows(surface: any): number {
-  return (surface?.chains ?? []).reduce((sum: number, chain: any) => {
-    return sum + ((chain?.rows ?? []).length || 0);
-  }, 0);
-}
-
-function firstLastExpiration(surface: any): string {
-  const expirations = (surface?.chains ?? [])
-    .map((chain: any) => expirationOf(chain))
-    .filter(Boolean)
-    .sort();
-
-  if (!expirations.length) return "N/A";
-
-  return `${expirations[0]} → ${expirations[expirations.length - 1]}`;
-}
-
-
-
 function pressureValue(value: unknown): string {
   const n = Number(value);
   return Number.isFinite(n) ? safeFixed(n, 2) : "N/A";
@@ -307,6 +376,7 @@ export default function ControlCenterPage() {
     selectedChainIvSurface: true,
     dealerPressure: true,
     wallMigration: true,
+    flowIntelligence: true,
   });
 
   useEffect(() => {
@@ -388,10 +458,10 @@ export default function ControlCenterPage() {
       setStatus(`Loading ${requestedTimeframe} candles for ${requestedTicker}...`);
 
       try {
-        const series = await getPriceSeries(requestedTicker as SupportedTicker, requestedTimeframe as Timeframe);
+        const series = await getPriceSeries(requestedTicker as SupportedTicker, requestedTimeframe as any);
         const normalized = series
           .map((candle) => ({
-            date: String((candle as any).date ?? (candle as any).time ?? "").slice(0, 10),
+            date: normalizeCandleTime(candle, requestedTimeframe),
             open: Number((candle as any).open ?? (candle as any).close),
             high: Number((candle as any).high ?? (candle as any).close),
             low: Number((candle as any).low ?? (candle as any).close),
@@ -443,12 +513,22 @@ export default function ControlCenterPage() {
   }, [surfaceSnapshots, selectedSurfaceDate]);
 
   const expirationOptions = useMemo(() => {
-    return (selectedSurface?.chains ?? [])
-      .map((chain: any) => ({
-        expiration: expirationOf(chain),
-        dte: chain?.dteAtCapture ?? dteFromExpiration(expirationOf(chain), selectedSurface?.snapshotDate ?? ""),
-        score: chainScore(chain),
-      }))
+    const chains = (selectedSurface?.chains ?? []) as any[];
+    const maxOi = Math.max(0, ...chains.map((chain) => totalChainOi(chain)));
+
+    return chains
+      .map((chain: any) => {
+        const expiration = expirationOf(chain);
+        const chainOi = totalChainOi(chain);
+
+        return {
+          expiration,
+          dte: chain?.dteAtCapture ?? dteFromExpiration(expiration, selectedSurface?.snapshotDate ?? ""),
+          score: chainScore(chain),
+          dominanceScore: maxOi > 0 ? (chainOi / maxOi) * 100 : null,
+          totalOi: chainOi,
+        };
+      })
       .filter((item) => item.expiration)
       .sort((a, b) => String(a.expiration).localeCompare(String(b.expiration)));
   }, [selectedSurface]);
@@ -608,13 +688,23 @@ export default function ControlCenterPage() {
   }, [selectedChainSurface, analysisPrice, forecastHorizonDays, candles]);
 
   const chainOIIntelligence = useMemo(() => {
-  return buildOIIntelligenceView({
-    surface: selectedChainSurface,
-    currentPrice: analysisPrice,
-  });
-}, [selectedChainSurface, analysisPrice]);
+    return buildOIIntelligenceView({
+      surface: selectedChainSurface,
+      currentPrice: analysisPrice,
+    });
+  }, [selectedChainSurface, analysisPrice]);
 
-    
+  const selectedChainDominance = useMemo(() => {
+    return chainDominanceScore(selectedSurface, selectedExpiration);
+  }, [selectedSurface, selectedExpiration]);
+
+  const flowIntelligence = useMemo(() => {
+    return buildFlowIntelligenceView({
+      surface: selectedChainSurface,
+      currentPrice: analysisPrice,
+    });
+  }, [selectedChainSurface, analysisPrice]);
+
   const predictiveMatrix = useMemo(() => {
     return buildPredictiveMatrix({
       path: chainOIPath,
@@ -636,30 +726,28 @@ export default function ControlCenterPage() {
     });
   }, [ticker, selectedProfile, chainOIPath, predictiveMatrix, chainDealerPressure, chainTraderEdge, chainWallMigration]);
 
-const selectedChainOIChartEdge = chainOIIntelligence?.report
-  ? ({
-      support: chainOIIntelligence.report.adjustedPutWall,
-      magnet: chainOIIntelligence.report.adjustedCenter,
-      resistance: chainOIIntelligence.report.adjustedCallWall,
-      source: "oi",
-      labelMode: "oi",
-    } as any)
-  : null;
-
-const chartEdge = overlays.selectedChainLevels
-  ? selectedChainOIChartEdge
-  : overlays.prevailingSurfaceLevels
-    ? surfaceTraderEdge
+  const selectedChainOIChartEdge = chainOIIntelligence?.report
+    ? {
+        magnet: chainOIIntelligence.report.adjustedCenter,
+        resistance: chainOIIntelligence.report.adjustedCallWall,
+        support: chainOIIntelligence.report.adjustedPutWall,
+      }
     : null;
 
-const chartEdgeLabelMode = overlays.selectedChainLevels ? "oi" : "control";
+  const chartEdge = overlays.selectedChainLevels
+    ? selectedChainOIChartEdge
+    : overlays.prevailingSurfaceLevels
+      ? surfaceTraderEdge
+      : null;
+
+  const chartEdgeLabelMode = overlays.selectedChainLevels ? "oi" : "control";
 
   const chartPath = overlays.selectedChainPath ? chainOIPath : null;
   const chartIvSurface = overlays.selectedChainIvSurface ? chainIVSurface : null;
   const chartMatrix =
-    overlays.dealerPressure || overlays.wallMigration || overlays.selectedChainLevels ? predictiveMatrix : null;
+    overlays.dealerPressure || overlays.wallMigration ? predictiveMatrix : null;
 
-  const activeChainScore = chainScore(selectedChain);
+  const chartFlowOverlay = overlays.flowIntelligence ? flowIntelligence : null;
 
   const surfaceSupport = surfaceTraderEdge?.support ?? surfaceDealerPressure?.support;
   const surfaceResistance = surfaceTraderEdge?.resistance ?? surfaceDealerPressure?.resistance;
@@ -738,6 +826,7 @@ const chartEdgeLabelMode = overlays.selectedChainLevels ? "oi" : "control";
                   <option key={item.expiration} value={item.expiration}>
                     {item.expiration}
                     {item.dte != null ? ` | ${item.dte}D` : ""}
+                    {item.dominanceScore != null ? ` | dom ${safeFixed(item.dominanceScore, 1)}` : ""}
                     {item.score != null ? ` | score ${safeFixed(item.score, 2)}` : ""}
                   </option>
                 ))}
@@ -791,12 +880,27 @@ const chartEdgeLabelMode = overlays.selectedChainLevels ? "oi" : "control";
               label="Wall migration"
               onChange={(checked) => setOverlays((current) => ({ ...current, wallMigration: checked }))}
             />
+            <Toggle
+              checked={overlays.flowIntelligence}
+              label="Flow intelligence"
+              onChange={(checked) => setOverlays((current) => ({ ...current, flowIntelligence: checked }))}
+            />
           </div>
 
           <div style={{ color: colors.muted, fontSize: 12 }}>
             Surface: <strong style={{ color: colors.text }}>{selectedSurfaceDate || "N/A"}</strong> · Chain:{" "}
-            <strong style={{ color: colors.text }}>{selectedExpiration || "N/A"}</strong> · Score:{" "}
-            <strong style={{ color: colors.teal }}>{activeChainScore != null ? safeFixed(activeChainScore, 2) : "N/A"}</strong>
+            <strong style={{ color: colors.text }}>{selectedExpiration || "N/A"}</strong> · Dominance:{" "}
+            <strong style={{ color: colors.teal }}>
+              {selectedChainDominance.score != null
+                ? `${safeFixed(selectedChainDominance.score, 1)} / rank ${selectedChainDominance.rank ?? "N/A"} of ${selectedChainDominance.chainCount}`
+                : "N/A"}
+            </strong>{" "}
+            · OI:{" "}
+            <strong style={{ color: colors.teal }}>
+              {chainOIIntelligence
+                ? `${chainOIIntelligence.rows.length.toLocaleString()} rows · ${chainOIIntelligence.report?.anomalies.length ?? 0} anomalies`
+                : "N/A"}
+            </strong>
           </div>
         </section>
 
@@ -826,40 +930,105 @@ const chartEdgeLabelMode = overlays.selectedChainLevels ? "oi" : "control";
               <div style={{ ...cardStyle, padding: "1rem" }}>
                 <h3 style={{ marginTop: 0, color: colors.text }}>Selected Expiration Chain Levels</h3>
                 <p style={{ color: colors.muted, marginTop: -6, fontSize: 12 }}>
-                  Uses only {selectedExpiration || "the selected expiration"}. These should move as the expiration changes.
+                  Uses only {selectedExpiration || "the selected expiration"}. Dominance score ranks this chain's total OI against the largest chain in the selected surface.
                 </p>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "0.75rem", marginBottom: "0.75rem" }}>
+                  <MetricPill
+                    label="Dominance Score"
+                    value={selectedChainDominance.score != null ? safeFixed(selectedChainDominance.score, 1) : "N/A"}
+                    tone={colors.teal}
+                  />
+                  <MetricPill
+                    label="Chain Rank"
+                    value={selectedChainDominance.rank != null ? `${selectedChainDominance.rank} of ${selectedChainDominance.chainCount}` : "N/A"}
+                    tone={colors.amber}
+                  />
+                  <MetricPill
+                    label="Selected Chain OI"
+                    value={selectedChainDominance.selectedOi.toLocaleString()}
+                    tone={colors.text}
+                  />
+                </div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "0.75rem" }}>
-                    <MetricPill label="Active Put Wall" value={money(chainOIIntelligence?.report?.adjustedPutWall)} tone={colors.red}/>
-                    <MetricPill label="Active OI Center" value={money(chainOIIntelligence?.report?.adjustedCenter)} tone={colors.amber}/>
-                    <MetricPill label="Active Call Wall" value={money(chainOIIntelligence?.report?.adjustedCallWall)} tone={colors.green}/>
+                  <MetricPill label="Active Put Wall" value={money(chainOIIntelligence?.report?.adjustedPutWall)} tone={colors.red} />
+                  <MetricPill label="Active OI Center" value={money(chainOIIntelligence?.report?.adjustedCenter)} tone={colors.amber} />
+                  <MetricPill label="Active Call Wall" value={money(chainOIIntelligence?.report?.adjustedCallWall)} tone={colors.green} />
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "0.75rem", marginTop: "0.75rem" }}>
+                  <MetricPill label="Raw Put Wall" value={money(chainOIIntelligence?.summary?.putWall)} tone={colors.red} />
+                  <MetricPill label="Raw OI Center" value={money(chainOIIntelligence?.summary?.combinedCenter)} tone={colors.text} />
+                  <MetricPill label="Raw Call Wall" value={money(chainOIIntelligence?.summary?.callWall)} tone={colors.green} />
                 </div>
               </div>
             </section>
-                       
-                <OIIntelligenceCard
-  surface={selectedChainSurface}
-  currentPrice={analysisPrice}
-  title="Selected Expiration OI Intelligence"
-/>        
 
-              
+            <div style={{ marginTop: "1rem" }}>
+              <OIIntelligenceCard
+                surface={selectedChainSurface}
+                currentPrice={analysisPrice}
+                title="Selected Expiration OI Intelligence"
+              />
+            </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 340px", gap: "1rem", alignItems: "start", marginTop: "1rem" }}>
               <ForecastChartPanel
-                key={`${ticker}-${selectedSurfaceDate}-${selectedExpiration}-${candleTimeframe}-${String(overlays.prevailingSurfaceLevels)}-${String(overlays.selectedChainLevels)}-${String(overlays.selectedChainPath)}-${String(overlays.selectedChainIvSurface)}-${String(overlays.dealerPressure)}-${String(overlays.wallMigration)}`}
+                key={`${ticker}-${selectedSurfaceDate}-${selectedExpiration}-${candleTimeframe}-${String(overlays.prevailingSurfaceLevels)}-${String(overlays.selectedChainLevels)}-${String(overlays.selectedChainPath)}-${String(overlays.selectedChainIvSurface)}-${String(overlays.dealerPressure)}-${String(overlays.wallMigration)}-${String(overlays.flowIntelligence)}`}
                 ticker={ticker}
                 candles={candles}
                 edge={chartEdge}
-                edgeLabelMode={chartEdgeLabelMode}  
+                edgeLabelMode={chartEdgeLabelMode}
                 path={chartPath}
                 matrix={chartMatrix}
                 ivSurface={chartIvSurface}
+                flowOverlay={chartFlowOverlay}
                 isLoading={candleLoading || surfaceLoading}
               />
 
               <div style={{ display: "grid", gap: "1rem" }}>
                 <ScenarioPlaybookCard control={adaptiveControl} />
                 <IVSurfaceCard summary={chainIVSurface} />
+                {overlays.flowIntelligence ? (
+                  <section style={{ ...cardStyle, padding: "1rem" }}>
+                    <h3 style={{ marginTop: 0, color: colors.text }}>Flow Intelligence</h3>
+                    <p style={{ color: colors.muted, marginTop: -6, fontSize: 12 }}>
+                      {flowIntelligence.summary}
+                    </p>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "0.65rem", marginBottom: "0.75rem" }}>
+                      <MetricPill label="Flow bias" value={flowIntelligence.bias.toUpperCase()} tone={flowIntelligence.bias === "bearish" ? colors.red : flowIntelligence.bias === "bullish" ? colors.green : colors.amber} />
+                      <MetricPill label="Confidence" value={`${safeFixed(flowIntelligence.confidence, 0)} / 100`} tone={colors.teal} />
+                      <MetricPill label="Call volume" value={flowIntelligence.callVolume.toLocaleString()} tone={colors.green} />
+                      <MetricPill label="Put volume" value={flowIntelligence.putVolume.toLocaleString()} tone={colors.red} />
+                    </div>
+                    {flowIntelligence.topLevels.length ? (
+                      <div style={{ display: "grid", gap: "0.45rem" }}>
+                        {flowIntelligence.topLevels.slice(0, 5).map((level) => (
+                          <div
+                            key={`${level.side}-${level.strike}`}
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              gap: "0.75rem",
+                              border: "1px solid #20384d",
+                              borderRadius: 8,
+                              padding: "0.5rem",
+                              color: colors.muted,
+                              fontSize: 12,
+                            }}
+                          >
+                            <strong style={{ color: level.side === "put" ? colors.red : colors.teal }}>
+                              {level.side.toUpperCase()} {safeFixed(level.strike, 2)}
+                            </strong>
+                            <span>{level.pressureType}</span>
+                            <span>{safeFixed(level.pressureScore, 0)} / 100</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div style={{ color: colors.muted, fontSize: 12 }}>No active flow levels detected.</div>
+                    )}
+                  </section>
+                ) : null}
                 {overlays.dealerPressure ? <ModelReadoutCard dealer={chainDealerPressure} matrix={predictiveMatrix} /> : null}
               </div>
             </div>

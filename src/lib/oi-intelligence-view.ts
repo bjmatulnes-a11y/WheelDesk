@@ -162,38 +162,38 @@ function buildSummary(rows: ChainRow[]): ExpirationSummary {
 
   const strikes = (rows as any[]).map((row) => Number(row.strike)).filter(Number.isFinite);
 
-const callWeightedStrike =
-  totalCallOi > 0
-    ? (rows as any[]).reduce(
-        (sum, row) => sum + Number(row.strike ?? 0) * Number(row.callOi ?? 0),
-        0
-      ) / totalCallOi
-    : 0;
+  const callWeightedStrike =
+    totalCallOi > 0
+      ? (rows as any[]).reduce(
+          (sum, row) => sum + Number(row.strike ?? 0) * Number(row.callOi ?? 0),
+          0
+        ) / totalCallOi
+      : 0;
 
-const putWeightedStrike =
-  totalPutOi > 0
-    ? (rows as any[]).reduce(
-        (sum, row) => sum + Number(row.strike ?? 0) * Number(row.putOi ?? 0),
-        0
-      ) / totalPutOi
-    : 0;
+  const putWeightedStrike =
+    totalPutOi > 0
+      ? (rows as any[]).reduce(
+          (sum, row) => sum + Number(row.strike ?? 0) * Number(row.putOi ?? 0),
+          0
+        ) / totalPutOi
+      : 0;
 
-return {
-  expiration: "",
-  dte: 0,
-  totalCallOi,
-  totalPutOi,
-  totalCallVolume,
-  totalPutVolume,
-  callWall: callWall.strike,
-  putWall: putWall.strike,
-  combinedCenter,
-  callWeightedStrike,
-  putWeightedStrike,
-  lowerRange: strikes.length ? Math.min(...strikes) : 0,
-  upperRange: strikes.length ? Math.max(...strikes) : 0,
-  prevailingScore: 0,
-} as ExpirationSummary;
+  return {
+    expiration: "",
+    dte: 0,
+    totalCallOi,
+    totalPutOi,
+    totalCallVolume,
+    totalPutVolume,
+    callWall: callWall.strike,
+    putWall: putWall.strike,
+    combinedCenter,
+    callWeightedStrike,
+    putWeightedStrike,
+    lowerRange: strikes.length ? Math.min(...strikes) : 0,
+    upperRange: strikes.length ? Math.max(...strikes) : 0,
+    prevailingScore: 0,
+  } as ExpirationSummary;
 }
 
 function activeRows(rows: ChainRow[], currentPrice: number): ChainRow[] {
