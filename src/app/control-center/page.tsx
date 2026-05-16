@@ -1006,13 +1006,13 @@ export default function ControlCenterPage() {
             <section
               style={{
                 display: "grid",
-                gridTemplateColumns: "minmax(0, 1fr) minmax(440px, 480px)",
+                gridTemplateColumns: "minmax(0, 1fr) minmax(460px, 500px)",
                 gap: "1rem",
                 alignItems: "start",
                 marginTop: "1rem",
               }}
             >
-              <div style={{ display: "grid", gap: "1rem", minWidth: 0 }}>
+              <div style={{ display: "grid", gap: "1rem", alignContent: "start", minWidth: 0 }}>
                 <ForecastChartPanel
                                 key={`${ticker}-${selectedSurfaceDate}-${selectedExpiration}-${candleTimeframe}-${String(overlays.prevailingSurfaceLevels)}-${String(overlays.selectedChainLevels)}-${String(overlays.selectedChainPath)}-${String(overlays.selectedChainIvSurface)}-${String(overlays.dealerPressure)}-${String(overlays.wallMigration)}-${String(overlays.flowIntelligence)}`}
                                 ticker={ticker}
@@ -1037,6 +1037,30 @@ export default function ControlCenterPage() {
                   <PredictiveMatrixPanel matrix={predictiveMatrix} />
                   <ControlMatrixCard control={adaptiveControl} />
                 </div>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                    gap: "0.85rem",
+                  }}
+                >
+                  <MetricPill label="Current / Analysis Price" value={money(analysisPrice)} tone={colors.green} />
+                  <MetricPill label="Expected Move" value={chainIVSurface ? `±${money(chainIVSurface.expectedMove.oneSigma)}` : "N/A"} tone={colors.teal} />
+                  <MetricPill label="ATM IV" value={pct(chainIVSurface?.atmIv)} tone={colors.teal} />
+                  <MetricPill label="Chain Magnet" value={money(chainMagnet)} tone={colors.amber} />
+                  <MetricPill label="Chain Support" value={money(chainSupport)} tone={colors.red} />
+                  <MetricPill label="Chain Resistance" value={money(chainResistance)} tone={colors.green} />
+                </div>
+
+                {overlays.wallMigration && adaptiveControl?.riskNotes?.length ? (
+                  <section style={{ ...cardStyle, padding: "1rem" }}>
+                    <h3 style={{ marginTop: 0, color: colors.amber }}>Control Warnings</h3>
+                    <ul style={{ marginBottom: 0, color: colors.muted }}>
+                      {adaptiveControl.riskNotes.map((note, index) => <li key={index}>{note}</li>)}
+                    </ul>
+                  </section>
+                ) : null}
               </div>
 
               <aside
@@ -1095,23 +1119,6 @@ export default function ControlCenterPage() {
               </aside>
             </section>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: "0.85rem", marginTop: "1rem" }}>
-              <MetricPill label="Current / Analysis Price" value={money(analysisPrice)} tone={colors.green} />
-              <MetricPill label="Expected Move" value={chainIVSurface ? `±${money(chainIVSurface.expectedMove.oneSigma)}` : "N/A"} tone={colors.teal} />
-              <MetricPill label="ATM IV" value={pct(chainIVSurface?.atmIv)} tone={colors.teal} />
-              <MetricPill label="Chain Magnet" value={money(chainMagnet)} tone={colors.amber} />
-              <MetricPill label="Chain Support" value={money(chainSupport)} tone={colors.red} />
-              <MetricPill label="Chain Resistance" value={money(chainResistance)} tone={colors.green} />
-            </div>
-
-            {overlays.wallMigration && adaptiveControl?.riskNotes?.length ? (
-              <section style={{ ...cardStyle, padding: "1rem", marginTop: "1rem" }}>
-                <h3 style={{ marginTop: 0, color: colors.amber }}>Control Warnings</h3>
-                <ul style={{ marginBottom: 0, color: colors.muted }}>
-                  {adaptiveControl.riskNotes.map((note, index) => <li key={index}>{note}</li>)}
-                </ul>
-              </section>
-            ) : null}
           </>
         )}
 
