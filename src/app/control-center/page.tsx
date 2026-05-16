@@ -740,6 +740,7 @@ export default function ControlCenterPage() {
       path: chainOIPath,
       matrix: predictiveMatrix,
       adaptiveControl,
+      traderEdge: chainTraderEdge,
       selectedChainDominance,
       portfolio: selectedProfile,
     });
@@ -754,6 +755,7 @@ export default function ControlCenterPage() {
     chainOIPath,
     predictiveMatrix,
     adaptiveControl,
+    chainTraderEdge,
     selectedChainDominance,
     selectedProfile,
   ]);
@@ -1016,7 +1018,7 @@ export default function ControlCenterPage() {
               />
 
               <div style={{ display: "grid", gap: "1rem" }}>
-                <TradersEdgeCard state={controlState} />
+                <TradersEdgeCard state={controlState} edgeSummary={chainTraderEdge} />
                 <ScenarioPlaybookCard control={adaptiveControl} />
                 <IVSurfaceCard summary={chainIVSurface} />
                 {overlays.flowIntelligence ? (

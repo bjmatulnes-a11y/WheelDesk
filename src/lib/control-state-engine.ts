@@ -127,6 +127,34 @@ function deriveAdaptiveAction(adaptiveControl: any): ControlAction | null {
   return null;
 }
 
+function deriveTraderAction(traderEdge: any): ControlAction | null {
+  const bucket = String(traderEdge?.actionBucket ?? "").toLowerCase();
+  const bestAction = String(traderEdge?.bestAction ?? "").toLowerCase();
+
+  if (bucket.includes("premium trap") || bestAction.includes("avoid")) return "avoid_premium";
+  if (bucket.includes("csp") || bestAction.includes("csp")) return "sell_puts";
+  if (bucket.includes("covered") || bestAction.includes("covered call")) return "sell_calls";
+  if (bucket.includes("compression") || bucket.includes("conflict") || bestAction.includes("wait")) return "wait";
+  if (bestAction.includes("repair")) return "repair";
+  if (bestAction.includes("hedge")) return "hedge";
+
+  return null;
+}
+
+function deriveTraderBias(traderEdge: any): ControlBias {
+  const optionsBias = String(traderEdge?.optionsBias ?? "").toLowerCase();
+  const chartBias = String(traderEdge?.chartBias ?? "").toLowerCase();
+  const bucket = String(traderEdge?.actionBucket ?? "").toLowerCase();
+
+  if (bucket.includes("trap")) return "warning";
+  if (bucket.includes("conflict")) return "two-way";
+  if (optionsBias === "bullish" || chartBias === "bullish") return "bullish";
+  if (optionsBias === "bearish" || chartBias === "bearish") return "bearish";
+  if (String(traderEdge?.compressionState ?? "").toLowerCase().includes("compression")) return "pin";
+
+  return "neutral";
+}
+
 function deriveFlowBias(flow: any): ControlBias {
   const bias = String(flow?.bias ?? "").toLowerCase();
   if (bias === "bullish") return "bullish";
@@ -255,10 +283,17 @@ export function buildControlCenterState(args: {
   path: any;
   matrix: any;
   adaptiveControl: any;
+  traderEdge?: any;
   selectedChainDominance: any;
   portfolio?: any;
 }): ControlCenterState {
   const currentPrice = finite(args.currentPrice) ?? 0;
+  const traderEdge = args.traderEdge ?? {};
+  const oldTraderEdgeScore = finite(traderEdge?.edgeScore);
+  const traderActionBucket = String(traderEdge?.actionBucket ?? "");
+  const traderBestAction = String(traderEdge?.bestAction ?? "");
+  const traderTrapRisk = finite(traderEdge?.trapRisk);
+  const traderBias = deriveTraderBias(traderEdge);
 
   const oiAnomalies = Number(args.oi?.report?.anomalies?.length ?? 0);
   const oiRows = Number(args.oi?.rows?.length ?? 0);
@@ -309,7 +344,7 @@ export function buildControlCenterState(args: {
   ];
   const portfolioScore = round(clamp(78 - adaptiveWarnings.length * 12, 25, 90));
 
-  const traderEdgeScore = round(avg([oiScore, dealerScore, ivScore, flowScore, portfolioScore], 65));
+  const traderEdgeScore = round(oldTraderEdgeScore ?? avg([oiScore, dealerScore, ivScore, flowScore, portfolioScore], 65));
 
   const derived = deriveState({
     currentPrice,
@@ -324,6 +359,7 @@ export function buildControlCenterState(args: {
   const confidence = round(avg([oiScore, dealerScore, ivScore, flowScore, migrationScore, portfolioScore], 65));
 
   let action: ControlAction =
+    deriveTraderAction(traderEdge) ??
     deriveAdaptiveAction(args.adaptiveControl) ??
     (derived.bias === "bullish"
       ? "wait"
@@ -350,15 +386,23 @@ export function buildControlCenterState(args: {
     dealerResistance ??
     null;
 
+  const traderTrapNotes = Array.isArray(traderEdge?.trapNotes) ? traderEdge.trapNotes : [];
+  const traderDataNotes = Array.isArray(traderEdge?.dataQualityNotes) ? traderEdge.dataQualityNotes : [];
+
   const warnings = [
     ...adaptiveWarnings,
+    ...(traderTrapRisk != null && traderTrapRisk >= 70 ? traderTrapNotes.slice(0, 2) : []),
     ...(oiAnomalies ? [`${oiAnomalies} OI anomaly/anomalies detected in the selected chain.`] : []),
     ...(Array.isArray(args.flow?.warnings) ? args.flow.warnings : []),
+    ...(finite(traderEdge?.dataQualityScore) != null && Number(traderEdge.dataQualityScore) < 65 ? traderDataNotes.slice(0, 1) : []),
   ].slice(0, 5);
 
   const explanationBullets: string[] = [
     `OI Intelligence is ${statusForBias(oiBias).toLowerCase()} with ${oiRows.toLocaleString()} rows and ${oiAnomalies} anomalies.`,
     `Selected chain dominance is ${dominanceScore != null ? `${dominanceScore.toFixed(1)} / 100` : "not available"}.`,
+    traderActionBucket
+      ? `Trader Edge: ${traderActionBucket} with edge ${oldTraderEdgeScore != null ? oldTraderEdgeScore.toFixed(0) : "N/A"} / 100 and trap risk ${traderTrapRisk != null ? traderTrapRisk.toFixed(0) : "N/A"} / 100.`
+      : `Trader Edge: ${traderEdgeScore} / 100 synthesized from the available signal stack.`,
     `Dealer pressure is centered near ${dealerMagnet != null ? dealerMagnet.toFixed(2) : "N/A"} with support/resistance ${dealerSupport != null ? dealerSupport.toFixed(2) : "N/A"} / ${dealerResistance != null ? dealerResistance.toFixed(2) : "N/A"}.`,
     `Flow bias is ${String(args.flow?.bias ?? "neutral").toUpperCase()} with confidence ${finite(args.flow?.confidence)?.toFixed(0) ?? "N/A"} / 100.`,
   ];
@@ -415,10 +459,10 @@ export function buildControlCenterState(args: {
       key: "edge",
       label: "Trader Edge",
       score: traderEdgeScore,
-      bias: derived.bias,
-      status: labelAction(action),
-      detail: derived.stateLabel,
-      warning: warnings.length > 0,
+      bias: traderBias,
+      status: traderActionBucket || labelAction(action),
+      detail: traderBestAction || derived.stateLabel,
+      warning: (traderTrapRisk ?? 0) >= 70 || warnings.length > 0,
     },
     {
       key: "portfolio",
@@ -450,24 +494,40 @@ export function buildControlCenterState(args: {
     warnings,
     traderEdge: {
       score: traderEdgeScore,
-      posture: labelAction(action),
+      posture: traderBestAction || labelAction(action),
       bestZone:
-        support != null && magnet != null
+        finite(traderEdge?.executableCspCeiling) != null
           ? {
-              low: support,
-              high: magnet,
-              label: "Put-side / support-side premium zone",
+              low: null,
+              high: finite(traderEdge?.executableCspCeiling),
+              label: "Old Trader Edge CSP ceiling",
             }
-          : undefined,
+          : support != null && magnet != null
+            ? {
+                low: support,
+                high: magnet,
+                label: "Put-side / support-side premium zone",
+              }
+            : undefined,
       avoidZone:
-        magnet != null && resistance != null
+        finite(traderEdge?.executableCoveredCallFloor) != null
           ? {
               low: magnet,
-              high: resistance,
-              reason: "Avoid initiating short calls into a compressed magnet-to-resistance zone unless the strategy is repair/hedge.",
+              high: finite(traderEdge?.executableCoveredCallFloor),
+              reason: traderTrapNotes[0] ?? "Avoid selling calls below the old Trader Edge covered-call floor.",
             }
-          : undefined,
-      bullets: explanationBullets.slice(0, 4),
+          : magnet != null && resistance != null
+            ? {
+                low: magnet,
+                high: resistance,
+                reason: "Avoid initiating short calls into a compressed magnet-to-resistance zone unless the strategy is repair/hedge.",
+              }
+            : undefined,
+      bullets: [
+        ...(traderActionBucket ? [`Old Trader Edge bucket: ${traderActionBucket}.`] : []),
+        ...(traderBestAction ? [traderBestAction] : []),
+        ...explanationBullets,
+      ].slice(0, 5),
       warnings,
     },
   };
