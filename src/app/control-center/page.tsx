@@ -2,13 +2,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { WheelDeskSideNav } from "../../components/WheelDeskSideNav";
-import ControlSummaryCards from "../../components/control-center/ControlSummaryCards";
 import ForecastChartPanel from "../../components/control-center/ForecastChartPanel";
 import ScenarioPlaybookCard from "../../components/control-center/ScenarioPlaybookCard";
 import ModelReadoutCard from "../../components/control-center/ModelReadoutCard";
 import IVSurfaceCard from "../../components/control-center/IVSurfaceCard";
 import PredictiveMatrixPanel from "../../components/control-center/PredictiveMatrixPanel";
 import ControlMatrixCard from "../../components/control-center/ControlMatrixCard";
+import ControlCommandDeck from "../../components/control-center/ControlCommandDeck";
+import TradersEdgeCard from "../../components/control-center/TradersEdgeCard";
 import OIIntelligenceCard from "../../components/control-center/OIIntelligenceCard";
 import { colors, cardStyle } from "../../components/control-center/styles";
 import { buildDealerPressureSummary } from "../../lib/dealer-pressure-engine";
@@ -26,6 +27,7 @@ import { getPriceSeries } from "../../lib/data-provider";
 import { safeFixed } from "../../lib/format";
 import { buildOIIntelligenceView } from "../../lib/oi-intelligence-view";
 import { buildFlowIntelligenceView } from "../../lib/flow-intelligence-view";
+import { buildControlCenterState } from "../../lib/control-state-engine";
 import type { CandleRecord, OptionSurfaceSnapshot } from "../../lib/wheeldesk-storage";
 
 const selectedProfileStorageKey = "wheelDesk.selectedPortfolioProfileId";
@@ -726,6 +728,36 @@ export default function ControlCenterPage() {
     });
   }, [ticker, selectedProfile, chainOIPath, predictiveMatrix, chainDealerPressure, chainTraderEdge, chainWallMigration]);
 
+  const controlState = useMemo(() => {
+    return buildControlCenterState({
+      ticker,
+      currentPrice: analysisPrice,
+      oi: chainOIIntelligence,
+      flow: flowIntelligence,
+      dealer: chainDealerPressure,
+      iv: chainIVSurface,
+      wallMigration: chainWallMigration,
+      path: chainOIPath,
+      matrix: predictiveMatrix,
+      adaptiveControl,
+      selectedChainDominance,
+      portfolio: selectedProfile,
+    });
+  }, [
+    ticker,
+    analysisPrice,
+    chainOIIntelligence,
+    flowIntelligence,
+    chainDealerPressure,
+    chainIVSurface,
+    chainWallMigration,
+    chainOIPath,
+    predictiveMatrix,
+    adaptiveControl,
+    selectedChainDominance,
+    selectedProfile,
+  ]);
+
   const selectedChainOIChartEdge = chainOIIntelligence?.report
     ? {
         magnet: chainOIIntelligence.report.adjustedCenter,
@@ -904,9 +936,7 @@ export default function ControlCenterPage() {
           </div>
         </section>
 
-        <div style={{ marginTop: "1rem" }}>
-          <ControlSummaryCards control={adaptiveControl} matrix={predictiveMatrix} />
-        </div>
+        <ControlCommandDeck state={controlState} />
 
         {!selectedSurface ? (
           <div style={{ marginTop: "1rem" }}>
@@ -986,6 +1016,7 @@ export default function ControlCenterPage() {
               />
 
               <div style={{ display: "grid", gap: "1rem" }}>
+                <TradersEdgeCard state={controlState} />
                 <ScenarioPlaybookCard control={adaptiveControl} />
                 <IVSurfaceCard summary={chainIVSurface} />
                 {overlays.flowIntelligence ? (
