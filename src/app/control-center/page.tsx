@@ -1003,22 +1003,51 @@ export default function ControlCenterPage() {
               />
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 340px", gap: "1rem", alignItems: "start", marginTop: "1rem" }}>
-              <ForecastChartPanel
-                key={`${ticker}-${selectedSurfaceDate}-${selectedExpiration}-${candleTimeframe}-${String(overlays.prevailingSurfaceLevels)}-${String(overlays.selectedChainLevels)}-${String(overlays.selectedChainPath)}-${String(overlays.selectedChainIvSurface)}-${String(overlays.dealerPressure)}-${String(overlays.wallMigration)}-${String(overlays.flowIntelligence)}`}
-                ticker={ticker}
-                candles={candles}
-                edge={chartEdge}
-                edgeLabelMode={chartEdgeLabelMode}
-                path={chartPath}
-                matrix={chartMatrix}
-                ivSurface={chartIvSurface}
-                flowOverlay={chartFlowOverlay}
-                isLoading={candleLoading || surfaceLoading}
-              />
+            <section
+              style={{
+                display: "grid",
+                gridTemplateColumns: "minmax(0, 1fr) minmax(440px, 480px)",
+                gap: "1rem",
+                alignItems: "start",
+                marginTop: "1rem",
+              }}
+            >
+              <div style={{ display: "grid", gap: "1rem", minWidth: 0 }}>
+                <ForecastChartPanel
+                                key={`${ticker}-${selectedSurfaceDate}-${selectedExpiration}-${candleTimeframe}-${String(overlays.prevailingSurfaceLevels)}-${String(overlays.selectedChainLevels)}-${String(overlays.selectedChainPath)}-${String(overlays.selectedChainIvSurface)}-${String(overlays.dealerPressure)}-${String(overlays.wallMigration)}-${String(overlays.flowIntelligence)}`}
+                                ticker={ticker}
+                                candles={candles}
+                                edge={chartEdge}
+                                edgeLabelMode={chartEdgeLabelMode}
+                                path={chartPath}
+                                matrix={chartMatrix}
+                                ivSurface={chartIvSurface}
+                                flowOverlay={chartFlowOverlay}
+                                isLoading={candleLoading || surfaceLoading}
+                              />
 
-              <div style={{ display: "grid", gap: "1rem" }}>
-                <TradersEdgeCard state={controlState} edgeSummary={chainTraderEdge} />
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
+                    gap: "1rem",
+                    alignItems: "start",
+                  }}
+                >
+                  <PredictiveMatrixPanel matrix={predictiveMatrix} />
+                  <ControlMatrixCard control={adaptiveControl} />
+                </div>
+              </div>
+
+              <aside
+                style={{
+                  display: "grid",
+                  gap: "1rem",
+                  alignContent: "start",
+                  minWidth: 0,
+                }}
+              >
+<TradersEdgeCard state={controlState} edgeSummary={chainTraderEdge} />
                 <ScenarioPlaybookCard control={adaptiveControl} />
                 <IVSurfaceCard summary={chainIVSurface} />
                 {overlays.flowIntelligence ? (
@@ -1063,13 +1092,8 @@ export default function ControlCenterPage() {
                   </section>
                 ) : null}
                 {overlays.dealerPressure ? <ModelReadoutCard dealer={chainDealerPressure} matrix={predictiveMatrix} /> : null}
-              </div>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: "1rem", marginTop: "1rem" }}>
-              <PredictiveMatrixPanel matrix={predictiveMatrix} />
-              <ControlMatrixCard control={adaptiveControl} />
-            </div>
+              </aside>
+            </section>
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: "0.85rem", marginTop: "1rem" }}>
               <MetricPill label="Current / Analysis Price" value={money(analysisPrice)} tone={colors.green} />
