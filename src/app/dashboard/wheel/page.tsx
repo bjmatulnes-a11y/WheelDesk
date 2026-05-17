@@ -2,12 +2,11 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
-  readLatestOptionSurfaceSnapshot,
-  readOptionSurfaceSnapshots,
   readCandles,
   type OptionSurfaceSnapshot,
   type CandleRecord
 } from "../../../lib/wheeldesk-storage";
+import { WheelDeskSideNav } from "../../../components/WheelDeskSideNav";
 
 import type { DailyStructureSnapshot as WheelDailyStructureSnapshot } from "../../../lib/daily-structure-store";
 import { listPortfolioProfiles } from "../../../lib/portfolio-store";
@@ -15,7 +14,6 @@ import { PortfolioProfile } from "../../../lib/portfolio-types";
 import { summarizePortfolioCoverage } from "../../../lib/portfolio-coverage-engine";
 import { positionsToPortfolioLegs } from "../../../lib/portfolio-leg-adapter";
 import { buildWheelWorkspaceDecision, type ManagedWheelLeg } from "../../../lib/wheel-engine";
-import DealerPressureCard from "../../../components/DealerPressureCard";
 import { buildDealerPressureSummary } from "../../../lib/dealer-pressure-engine";
 import {
   buildTraderEdgeSummary,
@@ -40,9 +38,132 @@ import {
 const SELECTED_PROFILE_STORAGE_KEY = "wheelDesk.selectedPortfolioProfileId";
 const SELECTED_TICKER_STORAGE_KEY = "wheelDesk.wheel.selectedTicker";
 
-function latestSurface(ticker: string): OptionSurfaceSnapshot | null {
-    return readLatestOptionSurfaceSnapshot(ticker);
+const wheelColors = {
+  bg: "#020b14",
+  panel: "rgba(7, 21, 35, 0.78)",
+  panelSolid: "#071523",
+  border: "#20384d",
+  text: "#e5f6ff",
+  muted: "#9fb4c7",
+  teal: "#22d3ee",
+  green: "#22c55e",
+  red: "#fb7185",
+  amber: "#f59e0b",
+  purple: "#c084fc",
+};
+
+function normalizeTicker(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9.\-]/g, "");
 }
+
+function dateOnly(value: unknown): string {
+  const raw = String(value ?? "").trim();
+  return raw ? raw.slice(0, 10) : "";
+}
+
+function dteFromExpiration(expiration?: string, snapshotDate?: string): number | null {
+  if (!expiration || !snapshotDate) return null;
+  const start = new Date(`${snapshotDate}T00:00:00Z`).getTime();
+  const end = new Date(`${expiration}T00:00:00Z`).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return Math.max(0, Math.round((end - start) / 86_400_000));
+}
+
+function expirationOf(chain: any): string {
+  return dateOnly(chain?.expiration ?? chain?.expirationDate ?? chain?.expiry ?? chain?.date);
+}
+
+function surfaceDateOf(raw: any): string {
+  return dateOnly(raw?.snapshotDate ?? raw?.snapshot_date ?? raw?.date ?? raw?.asOfDate);
+}
+
+function normalizeSurfaceSnapshot(raw: any): OptionSurfaceSnapshot | null {
+  if (!raw) return null;
+
+  const ticker = normalizeTicker(raw.ticker ?? raw.symbol);
+  const snapshotDate = surfaceDateOf(raw);
+  const rawChains = raw.chains ?? raw.optionChains ?? raw.surface?.chains ?? [];
+
+  if (!ticker || !snapshotDate || !Array.isArray(rawChains)) return null;
+
+  const chains = rawChains
+    .map((chain: any) => {
+      const expiration = expirationOf(chain);
+      if (!expiration) return null;
+
+      return {
+        ...chain,
+        expiration,
+        rows: Array.isArray(chain?.rows)
+          ? chain.rows
+          : Array.isArray(chain?.optionRows)
+            ? chain.optionRows
+            : Array.isArray(chain?.chainRows)
+              ? chain.chainRows
+              : [],
+        summary: chain?.summary ?? chain?.chainSummary ?? {},
+        dteAtCapture:
+          chain?.dteAtCapture ??
+          chain?.dte ??
+          dteFromExpiration(expiration, snapshotDate) ??
+          null,
+      };
+    })
+    .filter(Boolean);
+
+  return {
+    ...raw,
+    ticker,
+    snapshotDate,
+    surfaceKey: raw.surfaceKey ?? raw.surface_key ?? `${ticker}_${snapshotDate}`,
+    chains,
+    dailyStructure: raw.dailyStructure ?? raw.daily_structure ?? raw.structure ?? null,
+    price: raw.price ?? {
+      date: snapshotDate,
+      close: Number(raw.spot ?? raw.dailyStructure?.spot ?? raw.daily_structure?.spot ?? 0),
+    },
+  } as OptionSurfaceSnapshot;
+}
+
+function extractSnapshots(payload: any): OptionSurfaceSnapshot[] {
+  const candidates = [
+    payload?.snapshots,
+    payload?.surfaces,
+    payload?.data,
+    payload?.items,
+    payload?.surfaceSnapshots,
+  ];
+
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) {
+      return candidate
+        .map(normalizeSurfaceSnapshot)
+        .filter((snapshot): snapshot is OptionSurfaceSnapshot => Boolean(snapshot));
+    }
+  }
+
+  const single = payload?.snapshot ?? payload?.surface ?? payload;
+  const normalized = normalizeSurfaceSnapshot(single);
+  return normalized ? [normalized] : [];
+}
+
+async function fetchSupabaseSurfaces(ticker: string): Promise<OptionSurfaceSnapshot[]> {
+  const response = await fetch(`/api/supabase/surface-snapshot?ticker=${encodeURIComponent(ticker)}`, {
+    cache: "no-store",
+  });
+
+  const payload = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    throw new Error(payload?.error ?? `Supabase surface request failed: ${response.status}`);
+  }
+
+  return extractSnapshots(payload).sort((a, b) => b.snapshotDate.localeCompare(a.snapshotDate));
+}
+
 function getSurfaceStructure(surface: OptionSurfaceSnapshot | null): WheelDailyStructureSnapshot | null {
   if (!surface?.dailyStructure) return null;
 
@@ -134,9 +255,9 @@ function primaryActionLabel(action: string, state: string): string {
 
 function primaryActionColor(action: string, state: string): string {
   if (action === "avoid_new_trade" && state === "covered_call_and_short_put") return "#92400e";
-  if (action === "avoid_new_trade") return "#b91c1c";
+  if (action === "avoid_new_trade") return wheelColors.red;
   if (action === "wait") return "#92400e";
-  return "#111827";
+  return wheelColors.text;
 }
 
 function groupTypeLabel(value: string): string {
@@ -202,15 +323,15 @@ function fmt(value?: number | null): string {
   return value.toFixed(2);
 }
 function statusColor(status: string): string {
-  if (status === "defend") return "#b91c1c";
-  if (status === "pressure") return "#c2410c";
+  if (status === "defend") return wheelColors.red;
+  if (status === "pressure") return wheelColors.amber;
   if (status === "watch") return "#92400e";
-  return "#15803d";
+  return wheelColors.green;
 }
 
 function scoreColor(score?: number | null): string {
-  if (score == null || !Number.isFinite(score)) return "#6b7280";
-  if (score >= 75) return "#15803d";
+  if (score == null || !Number.isFinite(score)) return wheelColors.muted;
+  if (score >= 75) return wheelColors.green;
   if (score >= 60) return "#92400e";
   return "#b91c1c";
 }
@@ -362,7 +483,10 @@ export default function WheelWorkspacePage() {
     if (urlTicker) setTicker(urlTicker);
   }, []);
   const [selectedProfileId, setSelectedProfileId] = useState("");
-  const [surfaceSnapshot, setSurfaceSnapshot] = useState<OptionSurfaceSnapshot | null>(null);  
+  const [surfaceSnapshot, setSurfaceSnapshot] = useState<OptionSurfaceSnapshot | null>(null);
+  const [allSurfaceSnapshots, setAllSurfaceSnapshots] = useState<OptionSurfaceSnapshot[]>([]);
+  const [surfaceStatus, setSurfaceStatus] = useState("");
+  const [surfaceLoading, setSurfaceLoading] = useState(false);
   const [manualGroups, setManualGroups] = useState<UserPositionGroup[]>([]);
   const [showGroupEditor, setShowGroupEditor] = useState(false);
     
@@ -383,6 +507,33 @@ if (!selectedProfile?.id || !ticker) return;
 clearUserPositionGroups(selectedProfile.id, ticker);
 setManualGroups([]);
 };
+
+async function loadSupabaseSurface(nextTicker = ticker) {
+  const normalized = normalizeTicker(nextTicker);
+  if (!normalized) return;
+
+  setSurfaceLoading(true);
+  setSurfaceStatus(`Loading ${normalized} OI surface from Supabase...`);
+
+  try {
+    const snapshots = await fetchSupabaseSurfaces(normalized);
+    setAllSurfaceSnapshots(snapshots);
+    setSurfaceSnapshot(snapshots[0] ?? null);
+    setSurfaceStatus(
+      snapshots[0]
+        ? `Loaded ${snapshots.length} Supabase surface(s) for ${normalized}. Latest: ${snapshots[0].snapshotDate}.`
+        : `No Supabase OI surface found for ${normalized}. Run Dashboard Harvest first.`
+    );
+  } catch (error: any) {
+    setAllSurfaceSnapshots([]);
+    setSurfaceSnapshot(null);
+    setSurfaceStatus(error?.message ?? `Failed to load Supabase surface for ${normalized}.`);
+  } finally {
+    setSurfaceLoading(false);
+  }
+}
+
+
   
 
 
@@ -405,13 +556,13 @@ setManualGroups([]);
         : loadedProfiles[0]?.id ?? "";
 
     setSelectedProfileId(activeProfile);
-    setSurfaceSnapshot(latestSurface(startingTicker));
   }, []);
 
   useEffect(() => {
     if (!mounted) return;
-    window.localStorage.setItem(SELECTED_TICKER_STORAGE_KEY, ticker);
-    setSurfaceSnapshot(latestSurface(ticker));
+    const normalized = normalizeTicker(ticker);
+    window.localStorage.setItem(SELECTED_TICKER_STORAGE_KEY, normalized);
+    void loadSupabaseSurface(normalized);
   }, [ticker, mounted]);
 
   useEffect(() => {
@@ -617,10 +768,9 @@ Math.random().toString(36).slice(2)
 
   const wallMigration = useMemo(() => {
     if (!surfaceSnapshot) return null;
-    const allSurfaces = readOptionSurfaceSnapshots(ticker);
-    const priorSurface = findPriorSurfaceForTicker(allSurfaces, ticker, surfaceSnapshot.snapshotDate);
+    const priorSurface = findPriorSurfaceForTicker(allSurfaceSnapshots, ticker, surfaceSnapshot.snapshotDate);
     return buildWallMigrationSummary({ currentSurface: surfaceSnapshot, priorSurface });
-  }, [ticker, surfaceSnapshot]);
+  }, [ticker, surfaceSnapshot, allSurfaceSnapshots]);
   
   const dealerPressure = useMemo(() => {
   return buildDealerPressureSummary({
@@ -646,21 +796,90 @@ Math.random().toString(36).slice(2)
   if (!mounted) return null;
 
   return (
-    <main style={{ maxWidth: 1180, margin: "0 auto", padding: "1rem", display: "grid", gap: "1rem" }}>
-      <h1 style={{ marginBottom: 0 }}>Wheel Workspace</h1>
+    <main
+      style={{
+        display: "flex",
+        minHeight: "100vh",
+        background:
+          "radial-gradient(circle at top left, rgba(34, 211, 238, 0.12), transparent 28%), #020b14",
+      }}
+    >
+      <WheelDeskSideNav active="wheel" />
 
-      <section style={{ border: "1px solid #d1d5db", borderRadius: 8, padding: "0.9rem", background: "#fff" }}>
-        <h3 style={{ marginTop: 0 }}>Controls</h3>
+      <div
+        style={{
+          flex: 1,
+          minWidth: 0,
+          padding: "1.1rem 1.4rem 2rem",
+          display: "grid",
+          gap: "1rem",
+          alignContent: "start",
+          color: wheelColors.text,
+        }}
+      >
+        <header
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            gap: "1rem",
+            alignItems: "center",
+            flexWrap: "wrap",
+          }}
+        >
+          <div>
+            <div
+              style={{
+                color: wheelColors.teal,
+                fontSize: 11,
+                fontWeight: 900,
+                letterSpacing: "0.12em",
+                textTransform: "uppercase",
+              }}
+            >
+              WheelDesk
+            </div>
+            <h1 style={{ margin: 0, color: wheelColors.text, letterSpacing: "-0.04em" }}>
+              Wheel Workspace
+            </h1>
+            <p style={{ margin: "0.35rem 0 0", color: wheelColors.muted, fontSize: 13 }}>
+              Supabase-driven wheel management for the selected ticker and portfolio profile.
+            </p>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <a href="/dashboard" style={wheelStyles.topLink}>Dashboard Harvest</a>
+            <a href={`/control-center?ticker=${encodeURIComponent(ticker)}`} style={wheelStyles.topLink}>Control Center</a>
+            <button
+              type="button"
+              onClick={() => void loadSupabaseSurface(ticker)}
+              disabled={surfaceLoading}
+              style={wheelStyles.topButton}
+            >
+              {surfaceLoading ? "Loading..." : "Reload Supabase Surface"}
+            </button>
+          </div>
+        </header>
+
+      <section style={{ border: `1px solid ${wheelColors.border}`, borderRadius: 8, padding: "0.9rem", background: wheelColors.panel }}>
+        <h3 style={wheelStyles.sectionTitle}>Controls</h3>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: "0.75rem", alignItems: "end" }}>
-          <label>
+          <label style={wheelStyles.fieldLabel}>
             Ticker
-            <input value={ticker} onChange={(e) => setTicker(e.target.value.trim().toUpperCase())} />
+            <input
+              value={ticker}
+              onChange={(e) => setTicker(e.target.value.trim().toUpperCase())}
+              style={wheelStyles.input}
+            />
           </label>
 
-          <label>
+          <label style={wheelStyles.fieldLabel}>
             Portfolio
-            <select value={selectedProfileId} onChange={(e) => setSelectedProfileId(e.target.value)}>
+            <select
+              value={selectedProfileId}
+              onChange={(e) => setSelectedProfileId(e.target.value)}
+              style={wheelStyles.input}
+            >
               {profiles.map((profile) => (
                 <option key={profile.id} value={profile.id}>
                   {profile.name}
@@ -669,8 +888,8 @@ Math.random().toString(36).slice(2)
             </select>
           </label>
 
-          <div>
-           <strong>Surface Snapshot:</strong>{" "}
+          <div style={{ color: wheelColors.muted }}>
+           <strong style={{ color: wheelColors.text }}>Supabase Surface:</strong>{" "}
 {surfaceSnapshot
 ? `${surfaceSnapshot.snapshotDate} · ${surfaceSnapshot.chains?.length ?? 0} chains`
 : "No OI surface snapshot saved"}
@@ -678,21 +897,21 @@ Math.random().toString(36).slice(2)
           </div>
         </div>
         {selectedProfile && !hasTickerPosition && (
-          <p style={{ color: "#92400e" }}>
+          <p style={{ color: wheelColors.amber }}>
             Selected portfolio has no {ticker} position. Wheel decision is structure-only.
           </p>
         )}  
 
 
         {!surfaceSnapshot && (
-          <p style={{ color: "#b45309", marginBottom: 0 }}>
-            No daily OI surface snapshot found for {ticker}. Go to Dashboard, fetch the option chain, then save snapshot.
+          <p style={{ color: wheelColors.amber, marginBottom: 0 }}>
+            No Supabase OI surface found for {ticker}. Go to Dashboard Harvest, fetch the option chain, then save the surface to Supabase.
           </p>
         )}
       </section>
 
-      <section style={{ border: "1px solid #334155", borderRadius: 8, padding: "1rem", background: "#fff" }}>
-        <h3 style={{ marginTop: 0 }}>Action Summary</h3>
+      <section style={{ border: `1px solid ${wheelColors.border}`, borderRadius: 8, padding: "1rem", background: wheelColors.panel }}>
+        <h3 style={wheelStyles.sectionTitle}>Action Summary</h3>
 
         <div style={{ fontSize: 24, fontWeight: 800, color: primaryActionColor(decision.action, decision.state) }}>
           {primaryActionLabel(decision.action, decision.state)}
@@ -706,82 +925,203 @@ Math.random().toString(36).slice(2)
       </section>
 
       {edgeSummary && (
-        <section style={{ border: "2px solid #f59e0b", borderRadius: 8, padding: "1rem", background: "#fffbeb" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", alignItems: "start" }}>
+        <section
+          style={{
+            border: `1px solid ${wheelColors.border}`,
+            borderRadius: 12,
+            padding: "1rem",
+            background:
+              "linear-gradient(180deg, rgba(7, 21, 35, 0.92), rgba(7, 21, 35, 0.76))",
+            display: "grid",
+            gap: "0.9rem",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              gap: "1rem",
+              alignItems: "flex-start",
+              flexWrap: "wrap",
+            }}
+          >
             <div>
-              <h3 style={{ marginTop: 0, marginBottom: 4 }}>WheelDesk Action Center</h3>
-              <div style={{ fontSize: 13, color: "#4b5563" }}>
-                Uses saved OI surface, scanner edge, snapped strikes, and this portfolio profile.
+              <div style={{ color: wheelColors.teal, fontSize: 11, fontWeight: 900, letterSpacing: "0.12em", textTransform: "uppercase" }}>
+                WheelDesk Action Center
+              </div>
+              <h3 style={{ ...wheelStyles.sectionTitle, marginBottom: 4 }}>Trade posture from OI + portfolio context</h3>
+              <p style={{ ...wheelStyles.muted, margin: 0, fontSize: 13 }}>
+                Saved Supabase surface, Trader Edge, snapped wheel strikes, wall migration, dealer pressure proxy, and current position exposure.
+              </p>
+            </div>
+
+            <div
+              style={{
+                border: `1px solid ${scoreColor(edgeSummary.edgeScore)}55`,
+                background: "rgba(2, 11, 20, 0.65)",
+                borderRadius: 12,
+                padding: "0.75rem 1rem",
+                minWidth: 150,
+                textAlign: "right",
+              }}
+            >
+              <div style={{ color: scoreColor(edgeSummary.edgeScore), fontSize: 28, fontWeight: 950, lineHeight: 1 }}>
+                {edgeSummary.edgeScore.toFixed(1)}
+              </div>
+              <div style={{ color: wheelColors.muted, fontSize: 11, marginTop: 4, fontWeight: 900, textTransform: "uppercase" }}>
+                Dominant Edge / 100
               </div>
             </div>
-            <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 24, fontWeight: 900, color: scoreColor(edgeSummary.edgeScore) }}>
-                {edgeSummary.edgeScore.toFixed(1)} / 100
+          </div>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1.15fr 0.95fr 0.95fr",
+              gap: "0.75rem",
+              alignItems: "stretch",
+            }}
+          >
+            <div style={wheelStyles.commandCard}>
+              <div style={wheelStyles.cardKicker}>Current action</div>
+              <div style={{ color: wheelColors.amber, fontSize: 20, fontWeight: 950 }}>
+                {edgeSummary.actionBucket}
               </div>
-              <div style={{ fontSize: 12 }}>Dominant Edge</div>
+              <p style={{ ...wheelStyles.muted, margin: "0.45rem 0 0", lineHeight: 1.45 }}>
+                {edgeSummary.bestAction}
+              </p>
+            </div>
+
+            <div style={wheelStyles.commandCard}>
+              <div style={wheelStyles.cardKicker}>Covered-call zone</div>
+              <div style={{ display: "grid", gap: 4, marginTop: 6 }}>
+                <span><strong>Resistance:</strong> {money(edgeSummary.resistance)}</span>
+                <span><strong>Cushion target:</strong> {money(edgeSummary.coveredCallCushionTarget)}</span>
+                <span style={{ color: wheelColors.amber, fontWeight: 950 }}>Sell at/above {money(edgeSummary.executableCoveredCallFloor)}</span>
+              </div>
+            </div>
+
+            <div style={wheelStyles.commandCard}>
+              <div style={wheelStyles.cardKicker}>CSP zone</div>
+              <div style={{ display: "grid", gap: 4, marginTop: 6 }}>
+                <span><strong>Support:</strong> {money(edgeSummary.support)}</span>
+                <span><strong>Cushion target:</strong> {money(edgeSummary.cspCushionTarget)}</span>
+                <span style={{ color: wheelColors.green, fontWeight: 950 }}>Sell at/below {money(edgeSummary.executableCspCeiling)}</span>
+              </div>
             </div>
           </div>
 
-          <div style={{ marginTop: "0.75rem", display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr", gap: "0.75rem" }}>
-            <div style={{ border: "1px solid #fde68a", borderRadius: 6, padding: "0.75rem", background: "#fff" }}>
-              <strong>{edgeSummary.actionBucket}</strong>
-              <p style={{ margin: "0.35rem 0 0" }}>{edgeSummary.bestAction}</p>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(8, minmax(0, 1fr))",
+              gap: "0.6rem",
+            }}
+          >
+            <div style={wheelStyles.signalTile}>
+              <span>Regime</span>
+              <strong>{edgeSummary.regime}</strong>
             </div>
-            <div style={{ border: "1px solid #fde68a", borderRadius: 6, padding: "0.75rem", background: "#fff" }}>
-              <strong>Covered-call zone</strong>
-              <div>Resistance: {money(edgeSummary.resistance)}</div>
-              <div>Cushion target: {money(edgeSummary.coveredCallCushionTarget)}</div>
-              <div><strong>Executable floor: {money(edgeSummary.executableCoveredCallFloor)}</strong></div>
+            <div style={wheelStyles.signalTile}>
+              <span>Compression</span>
+              <strong>{edgeSummary.compressionState}</strong>
             </div>
-            <div style={{ border: "1px solid #fde68a", borderRadius: 6, padding: "0.75rem", background: "#fff" }}>
-              <strong>CSP zone</strong>
-              <div>Support: {money(edgeSummary.support)}</div>
-              <div>Cushion target: {money(edgeSummary.cspCushionTarget)}</div>
-              <div><strong>Executable ceiling: {money(edgeSummary.executableCspCeiling)}</strong></div>
+            <div style={wheelStyles.signalTile}>
+              <span>Chart Bias</span>
+              <strong style={{ color: edgeSummary.chartBias === "bullish" ? wheelColors.green : edgeSummary.chartBias === "bearish" ? wheelColors.red : wheelColors.text }}>
+                {edgeSummary.chartBias.toUpperCase()}
+              </strong>
+            </div>
+            <div style={wheelStyles.signalTile}>
+              <span>Options Bias</span>
+              <strong style={{ color: edgeSummary.optionsBias === "bullish" ? wheelColors.green : edgeSummary.optionsBias === "bearish" ? wheelColors.red : wheelColors.text }}>
+                {edgeSummary.optionsBias.toUpperCase()}
+              </strong>
+            </div>
+            <div style={wheelStyles.signalTile}>
+              <span>Trap Risk</span>
+              <strong style={{ color: edgeSummary.trapRisk >= 70 ? wheelColors.red : edgeSummary.trapRisk >= 50 ? wheelColors.amber : wheelColors.green }}>
+                {edgeSummary.trapRisk.toFixed(0)}
+              </strong>
+            </div>
+            <div style={wheelStyles.signalTile}>
+              <span>Data Quality</span>
+              <strong style={{ color: edgeSummary.dataQualityScore >= 70 ? wheelColors.green : wheelColors.amber }}>
+                {edgeSummary.dataQualityScore.toFixed(0)}
+              </strong>
+            </div>
+            <div style={wheelStyles.signalTile}>
+              <span>ATR</span>
+              <strong>{pct(edgeSummary.atrPct)}</strong>
+            </div>
+            <div style={wheelStyles.signalTile}>
+              <span>Premium Proxy</span>
+              <strong>{edgeSummary.premiumProxyScore.toFixed(0)}</strong>
             </div>
           </div>
 
-          <div style={{ marginTop: "0.75rem", display: "grid", gridTemplateColumns: "repeat(6,minmax(0,1fr))", gap: "0.5rem", fontSize: 12 }}>
-            <div><strong>Regime</strong><br />{edgeSummary.regime}</div>
-            <div><strong>Compression</strong><br />{edgeSummary.compressionState}</div>
-            <div><strong>Chart Bias</strong><br />{edgeSummary.chartBias.toUpperCase()}</div>
-            <div><strong>Options Bias</strong><br />{edgeSummary.optionsBias.toUpperCase()}</div>
-            <div><strong>Trap Risk</strong><br />{edgeSummary.trapRisk}</div>
-            <div><strong>Data Quality</strong><br />{edgeSummary.dataQualityScore}</div>
-          </div>
-
-          <div style={{ marginTop: "0.75rem", display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: "0.5rem", fontSize: 12 }}>
-            <div><strong>Realized Vol</strong><br />{pct(edgeSummary.realizedVolPct)}</div>
-            <div><strong>ATR</strong><br />{pct(edgeSummary.atrPct)}</div>
-            <div><strong>Volume / Flow Thrust</strong><br />{volumeThrustLabel(edgeSummary)}</div>
-            <div><strong>Premium Proxy</strong><br />{edgeSummary.premiumProxyScore}</div>
-          </div>
-
-          <div style={{ marginTop: "0.75rem", border: "1px solid #fde68a", borderRadius: 6, padding: "0.75rem", background: "#fff" }}>
-            <strong>Wall migration</strong>
-            <div style={{ marginTop: 4 }}>
-              <strong>{wallMigration?.label ?? "No prior wall comparison"}</strong> — {wallMigration?.interpretation ?? "Save another daily surface to compare wall movement."}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: "0.75rem",
+              alignItems: "stretch",
+            }}
+          >
+            <div style={wheelStyles.detailPanel}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", alignItems: "baseline", flexWrap: "wrap" }}>
+                <h4 style={{ margin: 0, color: wheelColors.text }}>Wall Migration</h4>
+                <span style={{ color: wheelColors.muted, fontSize: 12 }}>{wallMigration?.priorDate ?? "No prior surface"}</span>
+              </div>
+              <p style={{ ...wheelStyles.muted, margin: "0.35rem 0 0", lineHeight: 1.45 }}>
+                <strong style={{ color: wheelColors.text }}>{wallMigration?.label ?? "No prior wall comparison"}</strong>
+                {" — "}
+                {wallMigration?.interpretation ?? "Save another daily surface to compare wall movement."}
+              </p>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: "0.55rem", marginTop: "0.75rem" }}>
+                <div style={wheelStyles.microTile}><span>Put wall</span><strong>{money(wallMigration?.priorSupport)} → {money(wallMigration?.currentSupport)}</strong></div>
+                <div style={wheelStyles.microTile}><span>Call wall</span><strong>{money(wallMigration?.priorResistance)} → {money(wallMigration?.currentResistance)}</strong></div>
+                <div style={wheelStyles.microTile}><span>Magnet</span><strong>{money(wallMigration?.priorMagnet)} → {money(wallMigration?.currentMagnet)}</strong></div>
+              </div>
             </div>
-            <div style={{ marginTop: 6, display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: "0.5rem", fontSize: 12 }}>
-              <div><strong>Prior</strong><br />{wallMigration?.priorDate ?? "N/A"}</div>
-              <div><strong>Put Wall</strong><br />{money(wallMigration?.priorSupport)} → {money(wallMigration?.currentSupport)}</div>
-              <div><strong>Call Wall</strong><br />{money(wallMigration?.priorResistance)} → {money(wallMigration?.currentResistance)}</div>
-              <div><strong>Magnet</strong><br />{money(wallMigration?.priorMagnet)} → {money(wallMigration?.currentMagnet)}</div>
+
+            <div style={wheelStyles.detailPanel}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", alignItems: "baseline", flexWrap: "wrap" }}>
+                <h4 style={{ margin: 0, color: wheelColors.text }}>Dealer Pressure / Gamma Regime</h4>
+                <span style={{ color: wheelColors.muted, fontSize: 12 }}>Proxy read</span>
+              </div>
+              <p style={{ ...wheelStyles.muted, margin: "0.35rem 0 0", lineHeight: 1.45 }}>
+                Dealer-pressure proxy from saved OI structure. Treat as a regime read, not a confirmed dealer book.
+              </p>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: "0.55rem", marginTop: "0.75rem" }}>
+                <div style={wheelStyles.microTile}><span>Pin</span><strong style={{ color: wheelColors.amber }}>{(dealerPressure as any)?.pinRisk?.toFixed?.(0) ?? "N/A"}</strong></div>
+                <div style={wheelStyles.microTile}><span>Snap</span><strong style={{ color: wheelColors.green }}>{(dealerPressure as any)?.snapRisk?.toFixed?.(0) ?? "N/A"}</strong></div>
+                <div style={wheelStyles.microTile}><span>Gamma</span><strong style={{ color: wheelColors.red }}>{(dealerPressure as any)?.gammaConcentration?.toFixed?.(0) ?? "N/A"}</strong></div>
+                <div style={wheelStyles.microTile}><span>Confidence</span><strong style={{ color: wheelColors.teal }}>{(dealerPressure as any)?.confidence?.toFixed?.(0) ?? "N/A"}</strong></div>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: "0.55rem", marginTop: "0.55rem" }}>
+                <div style={wheelStyles.microTile}><span>Pressure bias</span><strong>{(dealerPressure as any)?.pressureBias ?? "N/A"}</strong></div>
+                <div style={wheelStyles.microTile}><span>Regime</span><strong>{(dealerPressure as any)?.regime ?? "N/A"}</strong></div>
+              </div>
             </div>
           </div>
 
-            <DealerPressureCard summary={dealerPressure} />
-
-          <div style={{ marginTop: "0.75rem", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
-            <div>
-              <strong>Trap detector</strong>
-              <ul style={{ marginTop: 4 }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: "0.75rem",
+            }}
+          >
+            <div style={wheelStyles.detailPanel}>
+              <h4 style={{ margin: 0, color: wheelColors.text }}>Trap Detector</h4>
+              <ul style={{ margin: "0.5rem 0 0", color: wheelColors.muted, lineHeight: 1.45 }}>
                 {edgeSummary.trapNotes.map((note) => <li key={note}>{note}</li>)}
               </ul>
             </div>
-            <div>
-              <strong>Trigger map</strong>
-              <ul style={{ marginTop: 4 }}>
+            <div style={wheelStyles.detailPanel}>
+              <h4 style={{ margin: 0, color: wheelColors.text }}>Trigger Map</h4>
+              <ul style={{ margin: "0.5rem 0 0", color: wheelColors.muted, lineHeight: 1.45 }}>
                 {edgeSummary.triggerNotes.map((note) => <li key={note}>{note}</li>)}
               </ul>
             </div>
@@ -789,8 +1129,8 @@ Math.random().toString(36).slice(2)
         </section>
       )}
 
-      <section style={{ border: "1px solid #334155", borderRadius: 8, padding: "1rem", background: "#fff" }}>
-        <h3 style={{ marginTop: 0 }}>Wheel Decision</h3>
+      <section style={{ border: `1px solid ${wheelColors.border}`, borderRadius: 8, padding: "1rem", background: wheelColors.panel }}>
+        <h3 style={wheelStyles.sectionTitle}>Wheel Decision</h3>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: "0.75rem", fontSize: 14 }}>
           <div><strong>State:</strong><br />{decision.state.replaceAll("_", " ")}</div>
@@ -801,15 +1141,15 @@ Math.random().toString(36).slice(2)
         </div>
 
         <div style={{ marginTop: "1rem", display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: "0.75rem" }}>
-          <div style={{ border: "1px solid #e5e7eb", borderRadius: 6, padding: "0.75rem" }}>
+          <div style={{ border: `1px solid ${wheelColors.border}`, borderRadius: 6, padding: "0.75rem" }}>
             <strong>Support</strong>
             <div>{fmt(edgeSummary?.support ?? decision.support)}</div>
           </div>
-          <div style={{ border: "1px solid #e5e7eb", borderRadius: 6, padding: "0.75rem" }}>
+          <div style={{ border: `1px solid ${wheelColors.border}`, borderRadius: 6, padding: "0.75rem" }}>
             <strong>OI Magnet</strong>
             <div>{fmt(edgeSummary?.magnet ?? decision.magnet)}</div>
           </div>
-          <div style={{ border: "1px solid #e5e7eb", borderRadius: 6, padding: "0.75rem" }}>
+          <div style={{ border: `1px solid ${wheelColors.border}`, borderRadius: 6, padding: "0.75rem" }}>
             <strong>Resistance</strong>
             <div>{fmt(edgeSummary?.resistance ?? decision.resistance)}</div>
           </div>
@@ -821,13 +1161,13 @@ Math.random().toString(36).slice(2)
 
 <section
 style={{
-border: "1px solid #d1d5db",
+border: `1px solid ${wheelColors.border}`,
 borderRadius: 8,
-background: "#fff",
+background: wheelColors.panel,
 padding: "0.9rem"
 }}
 >
-<h3 style={{ marginTop: 0 }}>Position Context</h3>
+<h3 style={wheelStyles.sectionTitle}>Position Context</h3>
 
 <div
 style={{
@@ -883,9 +1223,9 @@ fontSize: 13
 
      <section
   style={{
-    border: "1px solid #d1d5db",
+    border: `1px solid ${wheelColors.border}`,
     borderRadius: 8,
-    background: "#fff",
+    background: wheelColors.panel,
     padding: "0.9rem"
   }}
 >
@@ -899,7 +1239,7 @@ fontSize: 13
   >
     <div>
       <h3 style={{ marginTop: 0, marginBottom: 4 }}>Position Grouping</h3>
-      <p style={{ marginTop: 0, color: "#92400e" }}>
+      <p style={{ marginTop: 0, color: wheelColors.amber }}>
         Mode: <strong>{groupingMode}</strong>. Groups are user-controlled. Suggested grouping is only advisory.
       </p>
     </div>
@@ -922,17 +1262,17 @@ fontSize: 13
   <div
     style={{
       marginTop: "0.75rem",
-      border: "1px solid #e5e7eb",
+      border: `1px solid ${wheelColors.border}`,
       borderRadius: 6,
       padding: "0.75rem",
-      background: "#f8fafc"
+      background: wheelColors.panelSolid
     }}
   >
     <strong>Suggested optimized grouping</strong>
-    <div style={{ fontSize: 13, color: "#4b5563", marginTop: 4 }}>
+    <div style={{ fontSize: 13, color: wheelColors.muted, marginTop: 4 }}>
       {groupedPositions.debug.capacityFormula}
     </div>
-    <div style={{ fontSize: 13, color: "#4b5563", marginTop: 4 }}>
+    <div style={{ fontSize: 13, color: wheelColors.muted, marginTop: 4 }}>
       This is the optimizer view only. Manual groups below should control how the user wants positions managed.
     </div>
   </div>
@@ -946,17 +1286,17 @@ fontSize: 13
     </div>
 
     {(activeManualGroups.length ? activeManualGroups : suggestedUserGroups).length === 0 ? (
-      <p style={{ color: "#6b7280", marginBottom: 0 }}>No groups available yet.</p>
+      <p style={{ color: wheelColors.muted, marginBottom: 0 }}>No groups available yet.</p>
     ) : (
       <div style={{ display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: "0.75rem" }}>
         {(activeManualGroups.length ? activeManualGroups : suggestedUserGroups).map((group) => (
-          <div key={`summary-${group.id}`} style={{ border: "1px solid #e5e7eb", borderRadius: 6, padding: "0.75rem", background: "#fff" }}>
+          <div key={`summary-${group.id}`} style={{ border: `1px solid ${wheelColors.border}`, borderRadius: 6, padding: "0.75rem", background: wheelColors.panel }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: "0.75rem" }}>
               <strong>{group.name}</strong>
-              <span style={{ color: "#4b5563" }}>{groupTypeLabel(group.strategyType)}</span>
+              <span style={{ color: wheelColors.muted }}>{groupTypeLabel(group.strategyType)}</span>
             </div>
             <div style={{ marginTop: 4, fontSize: 13 }}>{summarizeGroup(group, tickerPositionLegs)}</div>
-            {group.notes && <div style={{ marginTop: 4, fontSize: 12, color: "#6b7280" }}>{group.notes}</div>}
+            {group.notes && <div style={{ marginTop: 4, fontSize: 12, color: wheelColors.muted }}>{group.notes}</div>}
           </div>
         ))}
       </div>
@@ -967,7 +1307,7 @@ fontSize: 13
     <h4 style={{ margin: 0 }}>Manual Groups</h4>
 
     {activeManualGroups.length === 0 ? (
-      <p style={{ color: "#6b7280", marginBottom: 0 }}>
+      <p style={{ color: wheelColors.muted, marginBottom: 0 }}>
         No manual groups saved. Click <strong>Add Manual Group</strong> or accept the suggested groups as a starting point.
       </p>
     ) : (
@@ -975,10 +1315,10 @@ fontSize: 13
         <div
           key={group.id}
           style={{
-            border: "1px solid #e5e7eb",
+            border: `1px solid ${wheelColors.border}`,
             borderRadius: 6,
             padding: "0.75rem",
-            background: "#fff",
+            background: wheelColors.panel,
             display: "grid",
             gap: "0.75rem"
           }}
@@ -1047,7 +1387,7 @@ fontSize: 13
             <strong>Assigned Legs</strong>
 
             {tickerPositionLegs.length === 0 ? (
-              <p style={{ color: "#6b7280" }}>No {ticker} legs exist in this portfolio.</p>
+              <p style={{ color: wheelColors.muted }}>No {ticker} legs exist in this portfolio.</p>
             ) : (
               <div style={{ display: "grid", gap: "0.35rem", marginTop: "0.5rem" }}>
                 {tickerPositionLegs.map((leg) => {
@@ -1083,7 +1423,7 @@ fontSize: 13
                       />
                       <span>{leg.label}</span>
                       {assignedToAnotherGroup && (
-                        <span style={{ color: "#92400e" }}>
+                        <span style={{ color: wheelColors.amber }}>
                           assigned elsewhere — checking will move it here
                         </span>
                       )}
@@ -1094,7 +1434,7 @@ fontSize: 13
             )}
           </div>
 
-          <div style={{ fontSize: 13, color: "#4b5563" }}>
+          <div style={{ fontSize: 13, color: wheelColors.muted }}>
             Legs in group: <strong>{group.legIds.length}</strong>
           </div>
         </div>
@@ -1107,10 +1447,10 @@ fontSize: 13
   <div
     style={{
       marginTop: "1rem",
-      border: "1px solid #e5e7eb",
+      border: `1px solid ${wheelColors.border}`,
       borderRadius: 6,
       padding: "0.75rem",
-      background: "#fff"
+      background: wheelColors.panel
     }}
   >
     <strong>Unassigned {ticker.toUpperCase()} Legs</strong>
@@ -1133,11 +1473,11 @@ fontSize: 13
 
 
        
-        <section style={{ border: "1px solid #d1d5db", borderRadius: 8, padding: "1rem", background: "#fff" }}>
+        <section style={{ border: `1px solid ${wheelColors.border}`, borderRadius: 8, padding: "1rem", background: wheelColors.panel }}>
   <h3 style={{ marginTop: 0 }}>Existing Contract Management</h3>
 
   {decision.positionContext.managedLegs.length === 0 ? (
-    <p style={{ color: "#6b7280", marginBottom: 0 }}>
+    <p style={{ color: wheelColors.muted, marginBottom: 0 }}>
       No existing {ticker} legs found in the selected portfolio.
     </p>
   ) : (
@@ -1146,10 +1486,10 @@ fontSize: 13
         <div
           key={leg.id}
           style={{
-            border: "1px solid #e5e7eb",
+            border: `1px solid ${wheelColors.border}`,
             borderRadius: 6,
             padding: "0.75rem",
-            background: "#fff"
+            background: wheelColors.panel
           }}
         >
           <div style={{ display: "grid", gridTemplateColumns: "repeat(6,minmax(0,1fr))", gap: "0.5rem", fontSize: 13 }}>
@@ -1176,7 +1516,7 @@ fontSize: 13
               <li key={line}>{line}</li>
             ))}
             {buildLegEdgeNotes(leg, edgeSummary).map((line) => (
-              <li key={line} style={{ color: "#92400e", fontWeight: 600 }}>{line}</li>
+              <li key={line} style={{ color: wheelColors.amber, fontWeight: 600 }}>{line}</li>
             ))}
           </ul>
         </div>
@@ -1187,37 +1527,37 @@ fontSize: 13
 
         
 
-      <section style={{ border: "1px solid #d1d5db", borderRadius: 8, padding: "1rem", background: "#fff" }}>
+      <section style={{ border: `1px solid ${wheelColors.border}`, borderRadius: 8, padding: "1rem", background: wheelColors.panel }}>
         <h3 style={{ marginTop: 0 }}>
           {decision.action === "avoid_new_trade" || decision.action === "wait" ? "Reference Zones" : "Strike Zones"}
         </h3>
 
         {(decision.action === "avoid_new_trade" || decision.action === "wait") && (
-          <p style={{ color: "#92400e" }}>
+          <p style={{ color: wheelColors.amber }}>
             These are reference levels only. Current action does not recommend adding new exposure.
           </p>
         )}
-        <p style={{ color: "#4b5563", fontSize: 13 }}>
+        <p style={{ color: wheelColors.muted, fontSize: 13 }}>
           Surface-wide reference zones from the saved OI surface. Confirm the exact expiration, premium, liquidity, and assignment/call-away intent before placing an order.
         </p>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
           <div>
             <h4>Cash-Secured Put Zone</h4>
-            <p style={{ fontSize: 22, fontWeight: 700, color: "#2563eb" }}>{decision.cspZone}</p>
+            <p style={{ fontSize: 22, fontWeight: 700, color: wheelColors.teal }}>{decision.cspZone}</p>
             <p>Use near support when structure is stable, bullish, or support is rising.</p>
           </div>
 
           <div>
             <h4>Covered Call Zone</h4>
-            <p style={{ fontSize: 22, fontWeight: 700, color: "#dc2626" }}>{decision.coveredCallZone}</p>
+            <p style={{ fontSize: 22, fontWeight: 700, color: wheelColors.red }}>{decision.coveredCallZone}</p>
             <p>Use near resistance when price approaches capped upside or when full coverage is acceptable.</p>
           </div>
         </div>
       </section>
 
-      <section style={{ border: "1px solid #334155", borderRadius: 8, padding: "1rem", background: "#fff" }}>
-        <h3 style={{ marginTop: 0 }}>Trade Plan</h3>
+      <section style={{ border: `1px solid ${wheelColors.border}`, borderRadius: 8, padding: "1rem", background: wheelColors.panel }}>
+        <h3 style={wheelStyles.sectionTitle}>Trade Plan</h3>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: "0.75rem" }}>
           <div><strong>Type</strong><div>{decision.tradePlan.type}</div></div>
@@ -1251,8 +1591,8 @@ fontSize: 13
         </div>
       </section>
 
-      <section style={{ border: "1px solid #d1d5db", borderRadius: 8, padding: "1rem", background: "#fff" }}>
-        <h3 style={{ marginTop: 0 }}>Readout</h3>
+      <section style={{ border: `1px solid ${wheelColors.border}`, borderRadius: 8, padding: "1rem", background: wheelColors.panel }}>
+        <h3 style={wheelStyles.sectionTitle}>Readout</h3>
         <ul>
           {decision.readout.map((line) => (
             <li key={line}>{line}</li>
@@ -1277,6 +1617,104 @@ fontSize: 13
           </>
         )}
       </section>
+      </div>
     </main>
   );
 }
+
+
+const wheelStyles: Record<string, any> = {
+  topLink: {
+    border: "1px solid #22d3ee55",
+    borderRadius: 10,
+    padding: "0.55rem 0.75rem",
+    textDecoration: "none",
+    color: "#67e8f9",
+    background: "#071523",
+    fontWeight: 900,
+  },
+  topButton: {
+    border: `1px solid ${wheelColors.border}`,
+    borderRadius: 10,
+    padding: "0.55rem 0.75rem",
+    color: wheelColors.text,
+    background: "#071523",
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+  fieldLabel: {
+    display: "grid",
+    gap: 4,
+    color: wheelColors.muted,
+    fontSize: 12,
+    fontWeight: 900,
+  },
+  input: {
+    width: "100%",
+    border: `1px solid ${wheelColors.border}`,
+    borderRadius: 8,
+    background: "#020b14",
+    color: wheelColors.text,
+    padding: "0.48rem 0.6rem",
+    fontWeight: 800,
+  },
+  smallButton: {
+    border: `1px solid ${wheelColors.border}`,
+    borderRadius: 8,
+    background: "#071523",
+    color: wheelColors.text,
+    padding: "0.4rem 0.65rem",
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+  sectionTitle: {
+    marginTop: 0,
+    color: wheelColors.text,
+    letterSpacing: "-0.02em",
+  },
+  muted: {
+    color: wheelColors.muted,
+  },
+  commandCard: {
+    border: `1px solid ${wheelColors.border}`,
+    borderRadius: 10,
+    background: "rgba(2, 11, 20, 0.48)",
+    padding: "0.8rem",
+    color: wheelColors.text,
+  },
+  cardKicker: {
+    color: wheelColors.muted,
+    fontSize: 11,
+    fontWeight: 900,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    marginBottom: 6,
+  },
+  signalTile: {
+    border: `1px solid ${wheelColors.border}`,
+    borderRadius: 10,
+    background: "rgba(2, 11, 20, 0.45)",
+    padding: "0.65rem",
+    display: "grid",
+    gap: 4,
+    minHeight: 72,
+  },
+  detailPanel: {
+    border: `1px solid ${wheelColors.border}`,
+    borderRadius: 10,
+    background: "rgba(2, 11, 20, 0.45)",
+    padding: "0.85rem",
+    color: wheelColors.text,
+  },
+  microTile: {
+    border: `1px solid ${wheelColors.border}`,
+    borderRadius: 8,
+    background: "rgba(7, 21, 35, 0.65)",
+    padding: "0.55rem",
+    display: "grid",
+    gap: 3,
+    color: wheelColors.text,
+    minWidth: 0,
+  },
+};
+

@@ -45,7 +45,7 @@ export default function LandingPage() {
           <Link href="/dashboard" style={styles.navLink}>Dashboard</Link>
           <Link href="/control-center" style={styles.navLink}>Control Center</Link>
           <Link href="/portfolio" style={styles.navLink}>Portfolio</Link>
-          <Link href="/dashboard/scanner" style={styles.navLink}>Scanner</Link>
+          <Link href="/dashboard/scanner" style={styles.navLink}>Watchlist</Link>
         </nav>
       </header>
 
