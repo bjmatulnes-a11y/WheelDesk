@@ -649,6 +649,7 @@ export default function ValidationPage() {
 
   return (
     <main
+      className="wheeldesk-shell"
       style={{
         display: "flex",
         minHeight: "100vh",
@@ -657,7 +658,7 @@ export default function ValidationPage() {
     >
       <WheelDeskSideNav active="validation" />
 
-      <div style={styles.page}>
+      <div className="wheeldesk-page" style={styles.page}>
         <header style={styles.header}>
           <div>
             <div style={styles.eyebrow}>WheelDesk Proof Journal</div>

@@ -488,6 +488,7 @@ export default function WatchlistCommandPage() {
 
   return (
     <main
+      className="wheeldesk-shell"
       style={{
         display: "flex",
         minHeight: "100vh",
@@ -497,7 +498,7 @@ export default function WatchlistCommandPage() {
     >
       <WheelDeskSideNav active="scanner" />
 
-      <div style={styles.page}>
+      <div className="wheeldesk-page" style={styles.page}>
         <header style={styles.header}>
           <div>
             <div style={styles.eyebrow}>WheelDesk</div>

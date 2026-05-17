@@ -2,13 +2,16 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "WheelDesk",
+    name: "WheelDesk Control Center",
     short_name: "WheelDesk",
-    description: "Options intelligence, OI validation, and wheel strategy control center.",
-    start_url: "/",
+    description: "Options structure, wheel strategy, and Control Center analytics.",
+    start_url: "/control-center",
+    scope: "/",
     display: "standalone",
-    background_color: "#020617",
-    theme_color: "#020617",
+    orientation: "portrait",
+    background_color: "#020b14",
+    theme_color: "#071523",
+    categories: ["finance", "productivity"],
     icons: [
       {
         src: "/icons/wheeldesk-192.png",

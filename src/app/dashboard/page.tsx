@@ -715,12 +715,12 @@ export default function DashboardPage() {
   const totalRows = queue.reduce((sum, item) => sum + (item.rowCount ?? 0), 0);
 
   return (
-    <div style={styles.app}>
+    <div className="wheeldesk-shell" style={styles.app}>
   <WheelDeskSideNav active="dashboard" />
 
  
 
-      <main style={styles.main}>
+      <main className="wheeldesk-page" style={styles.main}>
         <header style={styles.header}>
           <div>
             <div style={styles.eyebrow}>WHEELDESK</div>

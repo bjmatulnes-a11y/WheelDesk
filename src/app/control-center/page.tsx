@@ -793,6 +793,7 @@ export default function ControlCenterPage() {
 
   return (
     <main
+      className="wheeldesk-shell"
       style={{
         display: "flex",
         minHeight: "100vh",
@@ -801,7 +802,7 @@ export default function ControlCenterPage() {
     >
       <WheelDeskSideNav active="control-center" />
 
-      <div style={{ flex: 1, padding: "1.1rem 1.4rem 2rem", minWidth: 0 }}>
+      <div className="wheeldesk-page" style={{ flex: 1, padding: "1.1rem 1.4rem 2rem", minWidth: 0 }}>
         <section style={{ display: "flex", justifyContent: "space-between", gap: "1rem", alignItems: "flex-start" }}>
           <div>
             <h1 style={{ margin: 0, color: colors.text, fontSize: 28, letterSpacing: "-0.04em" }}>Control Center</h1>

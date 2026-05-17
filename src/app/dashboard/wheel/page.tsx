@@ -970,6 +970,7 @@ Math.random().toString(36).slice(2)
 
   return (
     <main
+      className="wheeldesk-shell"
       style={{
         display: "flex",
         minHeight: "100vh",
@@ -980,6 +981,7 @@ Math.random().toString(36).slice(2)
       <WheelDeskSideNav active="wheel" />
 
       <div
+        className="wheeldesk-page"
         style={{
           flex: 1,
           minWidth: 0,

@@ -935,6 +935,7 @@ export default function PortfolioPage() {
 
   return (
     <main
+      className="wheeldesk-shell"
       style={{
         display: "flex",
         minHeight: "100vh",
@@ -944,6 +945,7 @@ export default function PortfolioPage() {
       <WheelDeskSideNav active="positions" />
 
       <div
+        className="wheeldesk-page"
         style={{
           flex: 1,
           minWidth: 0,
