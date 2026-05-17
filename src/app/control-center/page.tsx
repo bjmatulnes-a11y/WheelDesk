@@ -810,7 +810,7 @@ export default function ControlCenterPage() {
             </p>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(150px, 1fr))", gap: "0.7rem", minWidth: 720 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 150px), 1fr))", gap: "0.7rem", minWidth: 0, width: "min(100%, 760px)" }}>
             <label style={styles.label}>
               Symbol
               <select
@@ -946,13 +946,13 @@ export default function ControlCenterPage() {
           </div>
         ) : (
           <>
-            <section style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginTop: "1rem" }}>
+            <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))", gap: "1rem", marginTop: "1rem" }}>
               <div style={{ ...cardStyle, padding: "1rem" }}>
                 <h3 style={{ marginTop: 0, color: colors.text }}>Prevailing Surface Levels</h3>
                 <p style={{ color: colors.muted, marginTop: -6, fontSize: 12 }}>
                   Uses all chains in the selected surface. These should stay stable when the expiration dropdown changes.
                 </p>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "0.75rem" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: "0.75rem" }}>
                   <MetricPill label="Surface support" value={money(surfaceSupport)} tone={colors.red} />
                   <MetricPill label="Surface magnet" value={money(surfaceMagnet)} tone={colors.amber} />
                   <MetricPill label="Surface resistance" value={money(surfaceResistance)} tone={colors.green} />
@@ -964,7 +964,7 @@ export default function ControlCenterPage() {
                 <p style={{ color: colors.muted, marginTop: -6, fontSize: 12 }}>
                   Uses only {selectedExpiration || "the selected expiration"}. Dominance score ranks this chain's total OI against the largest chain in the selected surface.
                 </p>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "0.75rem", marginBottom: "0.75rem" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: "0.75rem", marginBottom: "0.75rem" }}>
                   <MetricPill
                     label="Dominance Score"
                     value={selectedChainDominance.score != null ? safeFixed(selectedChainDominance.score, 1) : "N/A"}
@@ -981,13 +981,13 @@ export default function ControlCenterPage() {
                     tone={colors.text}
                   />
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "0.75rem" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: "0.75rem" }}>
                   <MetricPill label="Active Put Wall" value={money(chainOIIntelligence?.report?.adjustedPutWall)} tone={colors.red} />
                   <MetricPill label="Active OI Center" value={money(chainOIIntelligence?.report?.adjustedCenter)} tone={colors.amber} />
                   <MetricPill label="Active Call Wall" value={money(chainOIIntelligence?.report?.adjustedCallWall)} tone={colors.green} />
                 </div>
 
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "0.75rem", marginTop: "0.75rem" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: "0.75rem", marginTop: "0.75rem" }}>
                   <MetricPill label="Raw Put Wall" value={money(chainOIIntelligence?.summary?.putWall)} tone={colors.red} />
                   <MetricPill label="Raw OI Center" value={money(chainOIIntelligence?.summary?.combinedCenter)} tone={colors.text} />
                   <MetricPill label="Raw Call Wall" value={money(chainOIIntelligence?.summary?.callWall)} tone={colors.green} />
@@ -1006,7 +1006,7 @@ export default function ControlCenterPage() {
             <section
               style={{
                 display: "grid",
-                gridTemplateColumns: "minmax(0, 1fr) minmax(460px, 500px)",
+                gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 360px), 1fr))",
                 gap: "1rem",
                 alignItems: "start",
                 marginTop: "1rem",
@@ -1029,7 +1029,7 @@ export default function ControlCenterPage() {
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))",
                     gap: "1rem",
                     alignItems: "start",
                   }}
@@ -1041,7 +1041,7 @@ export default function ControlCenterPage() {
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))",
                     gap: "0.85rem",
                   }}
                 >
@@ -1080,7 +1080,7 @@ export default function ControlCenterPage() {
                     <p style={{ color: colors.muted, marginTop: -6, fontSize: 12 }}>
                       {flowIntelligence.summary}
                     </p>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "0.65rem", marginBottom: "0.75rem" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "0.65rem", marginBottom: "0.75rem" }}>
                       <MetricPill label="Flow bias" value={flowIntelligence.bias.toUpperCase()} tone={flowIntelligence.bias === "bearish" ? colors.red : flowIntelligence.bias === "bullish" ? colors.green : colors.amber} />
                       <MetricPill label="Confidence" value={`${safeFixed(flowIntelligence.confidence, 0)} / 100`} tone={colors.teal} />
                       <MetricPill label="Call volume" value={flowIntelligence.callVolume.toLocaleString()} tone={colors.green} />

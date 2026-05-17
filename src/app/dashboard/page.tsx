@@ -105,7 +105,7 @@ const navItems = [
   { label: "Positions", href: "/portfolio" },
   { label: "Wheel", href: "/dashboard/wheel" },
   { label: "Control Center", href: "/control-center" },
-  { label: "Validation", href: "/validation" },
+  { label: "Validation", href: "/dashboard/validation" },
 ];
 
 function normalizeTickerInput(value: unknown): string {
@@ -1313,7 +1313,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   harvestControls: {
     display: "grid",
-    gridTemplateColumns: "2fr 1fr auto auto auto",
+    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))",
     gap: "0.7rem",
     alignItems: "end",
   },
@@ -1398,7 +1398,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   newsHeader: {
     display: "grid",
-    gridTemplateColumns: "1fr auto 1fr auto",
+    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))",
     gap: "1rem",
     background: "#0f2433",
     color: "#fff",
@@ -1406,12 +1406,12 @@ const styles: Record<string, React.CSSProperties> = {
   },
   newsGrid: {
     display: "grid",
-    gridTemplateColumns: "1fr 1fr",
+    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))",
     gap: 0,
   },
   newsRow: {
     display: "grid",
-    gridTemplateColumns: "90px 1fr 220px",
+    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))",
     color: "#fff",
     textDecoration: "none",
     borderBottom: `1px solid ${colors.borderSoft}`,

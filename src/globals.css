@@ -1,0 +1,156 @@
+:root {
+  color-scheme: dark;
+  background: #020b14;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: #020b14;
+  color: #e5f6ff;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+img,
+svg,
+canvas {
+  max-width: 100%;
+}
+
+.wheeldesk-install-card {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(420px, calc(100vw - 24px));
+  padding: 12px 12px 12px 14px;
+  border: 1px solid rgba(34, 211, 238, 0.38);
+  border-radius: 16px;
+  background: rgba(7, 21, 35, 0.96);
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.35), 0 0 20px rgba(34, 211, 238, 0.08);
+  backdrop-filter: blur(12px);
+}
+
+.wheeldesk-install-card strong {
+  display: block;
+  color: #e5f6ff;
+  font-size: 13px;
+  letter-spacing: -0.02em;
+}
+
+.wheeldesk-install-card span {
+  display: block;
+  color: #9fb4c7;
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.wheeldesk-install-card button {
+  border: 1px solid rgba(34, 211, 238, 0.45);
+  border-radius: 999px;
+  color: #67e8f9;
+  background: rgba(13, 58, 73, 0.88);
+  font-size: 12px;
+  font-weight: 900;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+
+.wheeldesk-install-card .wheeldesk-install-close {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: #9fb4c7;
+  border-color: rgba(159, 180, 199, 0.25);
+  background: rgba(2, 11, 20, 0.75);
+}
+
+@media (max-width: 900px) {
+  main:has(> .wheeldesk-side-nav) {
+    flex-direction: column !important;
+    display: flex !important;
+  }
+
+  .wheeldesk-side-nav {
+    width: 100% !important;
+    min-height: auto !important;
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 50 !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    gap: 12px !important;
+    padding: 10px 12px !important;
+    border-right: 0 !important;
+    border-bottom: 1px solid #1d3448 !important;
+    overflow-x: auto !important;
+  }
+
+  .wheeldesk-nav {
+    display: flex !important;
+    gap: 8px !important;
+    overflow-x: auto !important;
+    min-width: max-content !important;
+    padding-bottom: 2px !important;
+  }
+
+  .wheeldesk-nav a {
+    white-space: nowrap !important;
+    padding: 9px 10px !important;
+    font-size: 13px !important;
+  }
+
+  .wheeldesk-side-info {
+    display: none !important;
+  }
+
+  main:has(> .wheeldesk-side-nav) > div,
+  main:has(> .wheeldesk-side-nav) > main {
+    width: 100% !important;
+    padding: 0.85rem !important;
+  }
+}
+
+@media (max-width: 720px) {
+  h1 {
+    font-size: 24px !important;
+  }
+
+  h2 {
+    font-size: 20px !important;
+  }
+
+  table {
+    font-size: 12px !important;
+  }
+
+  input,
+  select,
+  button {
+    min-height: 40px;
+  }
+
+  .wheeldesk-install-card {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+  }
+}

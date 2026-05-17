@@ -59,7 +59,7 @@ export default function ControlCommandDeck({ state }: { state: ControlCenterStat
           ...cardStyle,
           padding: "1rem",
           display: "grid",
-          gridTemplateColumns: "1.15fr 0.85fr 1.4fr",
+          gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))",
           gap: "1rem",
           alignItems: "stretch",
         }}
@@ -102,7 +102,7 @@ export default function ControlCommandDeck({ state }: { state: ControlCenterStat
           )}
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: "0.55rem" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: "0.55rem" }}>
           <MiniLevel label="Support" value={state.keyLevels.support} tone={colors.red} />
           <MiniLevel label="Magnet" value={state.keyLevels.magnet} tone={colors.amber} />
           <MiniLevel label="Resistance" value={state.keyLevels.resistance} tone={colors.green} />
@@ -111,7 +111,7 @@ export default function ControlCommandDeck({ state }: { state: ControlCenterStat
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: "0.75rem" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: "0.75rem" }}>
         {state.scoreTiles.map((tile) => (
           <ScoreTile key={tile.key} tile={tile} />
         ))}

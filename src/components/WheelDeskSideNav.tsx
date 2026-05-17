@@ -15,18 +15,18 @@ const navItems: Array<NavItem & { key: WheelDeskSideNavProps["active"] }> = [
   { key: "positions", href: "/portfolio", label: "Positions" },
   { key: "wheel", href: "/dashboard/wheel", label: "Wheel" },
   { key: "control-center", href: "/control-center", label: "Control Center" },
-  { key: "validation", href: "dashboard/validation", label: "Validation" },
+  { key: "validation", href: "/dashboard/validation", label: "Validation" },
 ];
 
 export function WheelDeskSideNav({ active }: WheelDeskSideNavProps) {
   return (
-    <aside style={styles.sidebar}>
+    <aside className="wheeldesk-side-nav" style={styles.sidebar}>
       <div style={styles.brandRow}>
         <div style={styles.brandMark}>W</div>
         <div style={styles.brandText}>WheelDesk</div>
       </div>
 
-      <nav style={styles.nav}>
+      <nav className="wheeldesk-nav" style={styles.nav}>
         {navItems.map((item) => {
           const isActive = item.key === active;
 
@@ -45,7 +45,7 @@ export function WheelDeskSideNav({ active }: WheelDeskSideNavProps) {
         })}
       </nav>
 
-      <div style={styles.infoCard}>
+      <div className="wheeldesk-side-info" style={styles.infoCard}>
         <div style={styles.infoTitle}>Market Structure</div>
         <div style={styles.infoText}>
           Control Center turns OI path, dealer pressure, and position context into a

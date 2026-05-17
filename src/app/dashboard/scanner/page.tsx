@@ -757,7 +757,7 @@ const styles: Record<string, any> = {
   },
   watchlistGrid: {
     display: "grid",
-    gridTemplateColumns: "minmax(260px, 1fr) auto minmax(240px, 0.75fr)",
+    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))",
     gap: "0.85rem",
     alignItems: "end",
   },
@@ -791,7 +791,7 @@ const styles: Record<string, any> = {
   },
   statsGrid: {
     display: "grid",
-    gridTemplateColumns: "repeat(6, minmax(0, 1fr))",
+    gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
     gap: "0.75rem",
   },
   statCard: {
@@ -823,13 +823,13 @@ const styles: Record<string, any> = {
     background: colors.panel,
     padding: "1rem",
     display: "grid",
-    gridTemplateColumns: "1.1fr 1.5fr",
+    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))",
     gap: "1rem",
     alignItems: "center",
   },
   priorityMetrics: {
     display: "grid",
-    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+    gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
     gap: "0.75rem",
     alignItems: "stretch",
   },

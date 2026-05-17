@@ -414,7 +414,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   grid: {
     display: "grid",
-    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+    gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
     gap: "0.75rem",
   },
   metric: {
@@ -466,7 +466,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   anomalyGrid: {
     display: "grid",
-    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
     gap: "0.75rem",
   },
   anomalyCard: {

@@ -114,14 +114,14 @@ export default function IVSurfaceCard({ summary }: { summary: IVSurfaceSummary |
         <div style={{ color: colors.muted, fontSize: 10, marginTop: 4 }}>Band width: {money(bandWidth)} pts</div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "0.5rem", marginTop: "0.65rem" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "0.5rem", marginTop: "0.65rem" }}>
         <TinyMetric label={`${h}D ATM IV`} value={pct(summary.atmIv)} />
         <TinyMetric label={`Skew @ ${h}D`} value={labelize(summary.skewBias)} tone={skewTone} />
         <TinyMetric label="Upper wing IV" value={pct(summary.callWingIv)} tone={colors.green} />
         <TinyMetric label="Lower wing IV" value={pct(summary.putWingIv)} tone={colors.red} />
       </div>
 
-      <div style={{ marginTop: "0.55rem", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
+      <div style={{ marginTop: "0.55rem", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: "0.5rem" }}>
         <TinyMetric label="Term spread" value={volPts(summary.frontBackSpread)} tone={summary.frontBackSpread && summary.frontBackSpread > 0.02 ? colors.amber : colors.muted} />
         <TinyMetric label="Model effect" value={summary.confidenceAdjustment >= 0 ? `+${summary.confidenceAdjustment}` : String(summary.confidenceAdjustment)} tone={summary.confidenceAdjustment >= 0 ? colors.green : colors.amber} />
       </div>

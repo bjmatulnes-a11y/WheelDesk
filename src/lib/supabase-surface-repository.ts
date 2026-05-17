@@ -759,6 +759,41 @@ async function readAllChainRowsByTickerDates(
   return allRows;
 }
 
+
+export async function readAllSurfaceSnapshotsFromSupabase(
+  limit = 250
+): Promise<OptionSurfaceSnapshot[]> {
+  const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), 500) : 250;
+
+  const { data: parents, error: parentError } = await supabaseServer
+    .from("option_surface_snapshots")
+    .select("*")
+    .order("snapshot_date", { ascending: false })
+    .order("updated_at", { ascending: false })
+    .limit(safeLimit);
+
+  if (parentError) {
+    throw new Error(`Failed to read all surface snapshots: ${parentError.message}`);
+  }
+
+  if (!parents?.length) return [];
+
+  const snapshotIds = parents.map((parent) => String(parent.id));
+  const rows = await readAllChainRowsBySnapshotIds(snapshotIds);
+  const rowsBySnapshotId = new Map<string, AnyRecord[]>();
+
+  for (const row of rows) {
+    const key = String(row.snapshot_id);
+    const list = rowsBySnapshotId.get(key) ?? [];
+    list.push(row);
+    rowsBySnapshotId.set(key, list);
+  }
+
+  return parents.map((parent) =>
+    mapParentAndRowsToSnapshot(parent, rowsBySnapshotId.get(String(parent.id)) ?? [])
+  );
+}
+
 export async function readSurfaceSnapshotsFromSupabase(
   ticker: string,
   limit = 50
@@ -782,8 +817,8 @@ export async function readSurfaceSnapshotsFromSupabase(
   if (!parents?.length) return [];
 
   const snapshotIds = parents.map((parent) => String(parent.id));
-  const snapshotDates = Array.from(
-    new Set(
+  const snapshotDates: string[] = Array.from(
+    new Set<string>(
       parents
         .map((parent) => dateOnly(parent.snapshot_date))
         .filter((value): value is string => Boolean(value))

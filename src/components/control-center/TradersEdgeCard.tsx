@@ -106,7 +106,7 @@ export default function TradersEdgeCard({
             <Metric label="Realized Vol" value={pct(edgeSummary?.realizedVolPct)} tone={colors.teal} />
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: "0.75rem" }}>
             <div style={styles.zone}>
               <div style={styles.zoneTitle}>Executable CSP Zone</div>
               <div style={{ color: colors.green, fontWeight: 900 }}>
@@ -122,7 +122,7 @@ export default function TradersEdgeCard({
             </div>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: "0.75rem" }}>
             <div>
               <div style={styles.sectionTitle}>Trigger Notes</div>
               <ul style={styles.list}>
@@ -203,7 +203,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   grid: {
     display: "grid",
-    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+    gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
     gap: "0.65rem",
   },
   metric: {

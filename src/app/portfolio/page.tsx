@@ -1151,7 +1151,7 @@ export default function PortfolioPage() {
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(6, minmax(0, 1fr))",
+              gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))",
               gap: 8,
               fontSize: 12
             }}

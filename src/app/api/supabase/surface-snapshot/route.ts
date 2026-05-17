@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   deleteSurfaceSnapshotFromSupabase,
+  readAllSurfaceSnapshotsFromSupabase,
   readLatestSurfaceSnapshotFromSupabase,
   readSurfaceSnapshotsFromSupabase,
   saveSurfaceSnapshotToSupabase,
@@ -25,10 +26,28 @@ export async function GET(request: NextRequest) {
 
     const ticker = searchParams.get("ticker");
     const latest = searchParams.get("latest") === "1";
+    const mode = searchParams.get("mode");
     const limitRaw = searchParams.get("limit");
 
+    const limit = limitRaw ? Number(limitRaw) : 50;
+    const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), 500) : 50;
+
+    if (!ticker && mode === "list") {
+      const snapshots = await readAllSurfaceSnapshotsFromSupabase(safeLimit);
+      const tickers = Array.from(new Set(snapshots.map((snapshot: any) => String(snapshot.ticker ?? "").toUpperCase()).filter(Boolean))).sort();
+
+      return NextResponse.json({
+        ok: true,
+        mode: "list",
+        count: snapshots.length,
+        tickers,
+        tickerHints: tickers,
+        snapshots,
+      });
+    }
+
     if (!ticker) {
-      return errorResponse("Missing required query parameter: ticker", 400);
+      return errorResponse("Missing required query parameter: ticker. Use mode=list to read all stored surfaces.", 400);
     }
 
     if (latest) {
@@ -42,11 +61,9 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    const limit = limitRaw ? Number(limitRaw) : 50;
-
     const snapshots = await readSurfaceSnapshotsFromSupabase(
       ticker,
-      Number.isFinite(limit) && limit > 0 ? limit : 50
+      safeLimit
     );
 
     return NextResponse.json({

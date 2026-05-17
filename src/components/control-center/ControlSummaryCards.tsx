@@ -26,7 +26,7 @@ function SummaryCard({ label, value, accent, subtitle }: { label: string; value:
 
 export default function ControlSummaryCards({ control, matrix }: Props) {
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: "0.85rem" }}>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: "0.85rem" }}>
       <SummaryCard label="Current State" value={control?.currentState ?? "Awaiting Data"} accent={colors.teal} subtitle={control?.snapshotDate ? `Surface ${control.snapshotDate}` : "Save an OI surface first"} />
       <SummaryCard label="Optimal Action" value={control?.optimalAction ?? "N/A"} accent={colors.violet} subtitle={control ? `${control.actionScore}/100 action score` : "No control model yet"} />
       <SummaryCard label="Bullish Trigger" value={money(matrix?.bullishUnlock)} accent={colors.green} subtitle="Unlock / acceptance rail" />

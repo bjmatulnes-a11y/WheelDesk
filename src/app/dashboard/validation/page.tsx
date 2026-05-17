@@ -792,7 +792,7 @@ export default function ValidationPage() {
         </Card>
 
         <Card title="What This Page Proves" border="#22d3ee77">
-          <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: "1rem", alignItems: "start" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))", gap: "1rem", alignItems: "start" }}>
             <div style={{ color: colors.muted, lineHeight: 1.5 }}>
               <p style={{ marginTop: 0 }}>
                 Validation is not a signal page. It is the proof layer. It reads saved Supabase OI surfaces, rebuilds the Trader Edge summary using candles only up to the snapshot date, then scores what happened after the selected proof horizon.
@@ -999,7 +999,7 @@ const styles: Record<string, any> = {
     background: colors.panel,
     padding: "0.9rem",
     display: "grid",
-    gridTemplateColumns: "minmax(260px, 1fr) 180px auto minmax(220px, 0.8fr)",
+    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))",
     gap: "0.85rem",
     alignItems: "end",
   },
@@ -1035,7 +1035,7 @@ const styles: Record<string, any> = {
   },
   heroGrid: {
     display: "grid",
-    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+    gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
     gap: "0.75rem",
   },
   card: {
@@ -1080,12 +1080,12 @@ const styles: Record<string, any> = {
   },
   auditGrid: {
     display: "grid",
-    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+    gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
     gap: "0.75rem",
   },
   proofGrid: {
     display: "grid",
-    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+    gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
     gap: "0.75rem",
   },
   filterPanel: {
