@@ -472,6 +472,170 @@ function cleanGroupsAgainstLegs(
 
 
 
+
+function finiteNumber(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function clampScore(value: number): number {
+  return Math.max(0, Math.min(100, value));
+}
+
+function readNumberPath(source: any, path: string): number | null {
+  const value = path.split(".").reduce((obj, part) => obj?.[part], source);
+  return finiteNumber(value);
+}
+
+function readFirstNumber(source: any, paths: string[]): number | null {
+  for (const path of paths) {
+    const value = readNumberPath(source, path);
+    if (value != null) return value;
+  }
+  return null;
+}
+
+function readFirstText(source: any, paths: string[]): string | null {
+  for (const path of paths) {
+    const value = path.split(".").reduce((obj, part) => obj?.[part], source);
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return null;
+}
+
+function proximityScore(price?: number | null, level?: number | null): number {
+  if (!price || !level || !Number.isFinite(price) || !Number.isFinite(level)) return 50;
+  const distancePct = Math.abs(price - level) / Math.max(1, Math.abs(price));
+  return clampScore(100 - distancePct * 450);
+}
+
+function compressionScore(compressionState?: string): number {
+  const state = String(compressionState ?? "").toLowerCase();
+  if (state.includes("high")) return 90;
+  if (state.includes("moderate")) return 68;
+  if (state.includes("low")) return 35;
+  if (state.includes("open")) return 30;
+  return 50;
+}
+
+function buildWheelDealerReadout(args: {
+  dealerPressure: any;
+  edgeSummary: any;
+  wallMigration: any;
+  spot: number;
+}) {
+  const { dealerPressure, edgeSummary, wallMigration, spot } = args;
+
+  const pinFromDealer = readFirstNumber(dealerPressure, [
+    "pinRisk",
+    "pinRiskScore",
+    "pinScore",
+    "scores.pinRisk",
+    "scores.pin",
+    "risk.pin",
+    "pin",
+  ]);
+
+  const snapFromDealer = readFirstNumber(dealerPressure, [
+    "snapRisk",
+    "snapRiskScore",
+    "snapScore",
+    "scores.snapRisk",
+    "scores.snap",
+    "risk.snap",
+    "snap",
+  ]);
+
+  const gammaFromDealer = readFirstNumber(dealerPressure, [
+    "gammaConcentration",
+    "gammaConcentrationScore",
+    "gammaScore",
+    "scores.gammaConcentration",
+    "scores.gamma",
+    "gamma",
+  ]);
+
+  const confidenceFromDealer = readFirstNumber(dealerPressure, [
+    "confidence",
+    "confidenceScore",
+    "modelScore",
+    "scores.confidence",
+    "score",
+  ]);
+
+  const support = finiteNumber(edgeSummary?.support ?? wallMigration?.currentSupport);
+  const resistance = finiteNumber(edgeSummary?.resistance ?? wallMigration?.currentResistance);
+  const magnet = finiteNumber(edgeSummary?.magnet ?? wallMigration?.currentMagnet);
+
+  const magnetProximity = proximityScore(spot, magnet);
+  const supportProximity = proximityScore(spot, support);
+  const resistanceProximity = proximityScore(spot, resistance);
+  const railProximity = Math.max(supportProximity, resistanceProximity);
+
+  const pinSnap = finiteNumber(edgeSummary?.pinSnapRiskScore) ?? 50;
+  const trap = finiteNumber(edgeSummary?.trapRisk) ?? 50;
+  const compression = compressionScore(edgeSummary?.compressionState);
+  const supportEvidence = finiteNumber(edgeSummary?.supportEvidenceScore) ?? 50;
+  const resistanceEvidence = finiteNumber(edgeSummary?.resistanceEvidenceScore) ?? 50;
+  const priceConfluence = finiteNumber(edgeSummary?.priceConfluenceScore) ?? 50;
+  const dataQuality = finiteNumber(edgeSummary?.dataQualityScore) ?? 60;
+  const edgeScore = finiteNumber(edgeSummary?.edgeScore) ?? 50;
+
+  const pinRisk =
+    pinFromDealer ??
+    clampScore(pinSnap * 0.46 + compression * 0.28 + magnetProximity * 0.26);
+
+  const snapRisk =
+    snapFromDealer ??
+    clampScore(trap * 0.42 + railProximity * 0.33 + Math.max(0, 100 - pinRisk) * 0.25);
+
+  const gammaConcentration =
+    gammaFromDealer ??
+    clampScore(Math.max(supportEvidence, resistanceEvidence) * 0.45 + priceConfluence * 0.35 + compression * 0.2);
+
+  const confidence =
+    confidenceFromDealer ??
+    clampScore(dataQuality * 0.45 + edgeScore * 0.35 + (100 - Math.min(45, Math.abs(pinRisk - snapRisk))) * 0.2);
+
+  const dealerPressureBias = readFirstText(dealerPressure, [
+    "pressureBias",
+    "bias",
+    "dealerPressureBias",
+    "summary.pressureBias",
+  ]);
+
+  const pressureBias =
+    dealerPressureBias ??
+    (Math.abs(pinRisk - snapRisk) < 8
+      ? "conflict"
+      : pinRisk >= snapRisk
+        ? "pinning"
+        : "snap / rail risk");
+
+  const dealerRegime = readFirstText(dealerPressure, ["regime", "gammaRegime", "summary.regime"]);
+  const regime =
+    dealerRegime ??
+    (pinRisk >= 65 && pinRisk >= snapRisk
+      ? "Volatility suppression / pinning"
+      : snapRisk >= 65
+        ? "Expansion / snap risk"
+        : "Neutral / mixed");
+
+  const modelScore = readFirstNumber(dealerPressure, ["modelScore", "score", "scores.modelScore"]) ?? confidence;
+
+  return {
+    pinRisk,
+    snapRisk,
+    gammaConcentration,
+    confidence,
+    railProximity,
+    modelScore,
+    pressureBias,
+    regime,
+  };
+}
+
+
 export default function WheelWorkspacePage() {
   const [mounted, setMounted] = useState(false);
   const [ticker, setTicker] = useState("SOFI");
@@ -789,6 +953,15 @@ Math.random().toString(36).slice(2)
 ]);
     
 
+  const dealerReadout = useMemo(() => {
+    return buildWheelDealerReadout({
+      dealerPressure,
+      edgeSummary,
+      wallMigration,
+      spot,
+    });
+  }, [dealerPressure, edgeSummary, wallMigration, spot]);
+
   const actionSummary = useMemo(() => {
     return buildActionSummary({ ticker, decision, edge: edgeSummary });
   }, [ticker, decision, edgeSummary]);
@@ -1091,17 +1264,17 @@ Math.random().toString(36).slice(2)
                 <span style={{ color: wheelColors.muted, fontSize: 12 }}>Proxy read</span>
               </div>
               <p style={{ ...wheelStyles.muted, margin: "0.35rem 0 0", lineHeight: 1.45 }}>
-                Dealer-pressure proxy from saved OI structure. Treat as a regime read, not a confirmed dealer book.
+                Dealer-pressure proxy from saved OI structure. Pin, snap, gamma, and confidence are derived from Trader Edge, wall levels, rail proximity, compression, trap risk, and data quality when the dealer engine does not expose a direct field.
               </p>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: "0.55rem", marginTop: "0.75rem" }}>
-                <div style={wheelStyles.microTile}><span>Pin</span><strong style={{ color: wheelColors.amber }}>{(dealerPressure as any)?.pinRisk?.toFixed?.(0) ?? "N/A"}</strong></div>
-                <div style={wheelStyles.microTile}><span>Snap</span><strong style={{ color: wheelColors.green }}>{(dealerPressure as any)?.snapRisk?.toFixed?.(0) ?? "N/A"}</strong></div>
-                <div style={wheelStyles.microTile}><span>Gamma</span><strong style={{ color: wheelColors.red }}>{(dealerPressure as any)?.gammaConcentration?.toFixed?.(0) ?? "N/A"}</strong></div>
-                <div style={wheelStyles.microTile}><span>Confidence</span><strong style={{ color: wheelColors.teal }}>{(dealerPressure as any)?.confidence?.toFixed?.(0) ?? "N/A"}</strong></div>
+                <div style={wheelStyles.microTile}><span>Pin</span><strong style={{ color: wheelColors.amber }}>{dealerReadout.pinRisk.toFixed(0)}</strong></div>
+                <div style={wheelStyles.microTile}><span>Snap</span><strong style={{ color: wheelColors.green }}>{dealerReadout.snapRisk.toFixed(0)}</strong></div>
+                <div style={wheelStyles.microTile}><span>Gamma</span><strong style={{ color: wheelColors.red }}>{dealerReadout.gammaConcentration.toFixed(0)}</strong></div>
+                <div style={wheelStyles.microTile}><span>Confidence</span><strong style={{ color: wheelColors.teal }}>{dealerReadout.confidence.toFixed(0)}</strong></div>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: "0.55rem", marginTop: "0.55rem" }}>
-                <div style={wheelStyles.microTile}><span>Pressure bias</span><strong>{(dealerPressure as any)?.pressureBias ?? "N/A"}</strong></div>
-                <div style={wheelStyles.microTile}><span>Regime</span><strong>{(dealerPressure as any)?.regime ?? "N/A"}</strong></div>
+                <div style={wheelStyles.microTile}><span>Pressure bias</span><strong>{dealerReadout.pressureBias}</strong></div>
+                <div style={wheelStyles.microTile}><span>Regime</span><strong>{dealerReadout.regime}</strong></div>
               </div>
             </div>
           </div>
