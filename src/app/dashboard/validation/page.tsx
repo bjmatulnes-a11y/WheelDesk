@@ -593,6 +593,58 @@ export default function ValidationPage() {
   const adjusted = adjustedRate(validated.length, evaluated.length);
   const grade = gradeFromRate(adjusted, evaluated.length);
 
+  const surfaceTickers = useMemo(() => {
+    return Array.from(
+      new Set(surfaceSnapshots.map((surface) => normalizeTicker((surface as any).ticker)).filter(Boolean)),
+    ).sort();
+  }, [surfaceSnapshots]);
+
+  const surfaceDateRange = useMemo(() => {
+    const dates = surfaceSnapshots
+      .map((surface) => dateOnly((surface as any).snapshotDate))
+      .filter(Boolean)
+      .sort();
+
+    return {
+      first: dates[0] ?? "N/A",
+      last: dates[dates.length - 1] ?? "N/A",
+    };
+  }, [surfaceSnapshots]);
+
+  const noLookaheadFailures = useMemo(() => {
+    return records.filter((record) => {
+      if (!record.marketSessionDate || !record.snapshotDate) return false;
+      return record.marketSessionDate > record.snapshotDate;
+    }).length;
+  }, [records]);
+
+  const auditRows = useMemo(() => {
+    return surfaceTickers.map((ticker) => {
+      const tickerSurfaces = surfaceSnapshots
+        .filter((surface) => normalizeTicker((surface as any).ticker) === ticker)
+        .sort((a, b) => dateOnly((a as any).snapshotDate).localeCompare(dateOnly((b as any).snapshotDate)));
+
+      const candles = candlesByTicker[ticker] ?? [];
+      const tickerRecords = records.filter((record) => record.ticker === ticker);
+      const maturedRecords = tickerRecords.filter((record) => record.evaluated);
+      const latestSurface = tickerSurfaces[tickerSurfaces.length - 1];
+      const noLookaheadOk = tickerRecords.every((record) => !record.marketSessionDate || record.marketSessionDate <= record.snapshotDate);
+
+      return {
+        ticker,
+        surfaceCount: tickerSurfaces.length,
+        firstSurface: dateOnly((tickerSurfaces[0] as any)?.snapshotDate) || "N/A",
+        latestSurface: dateOnly((latestSurface as any)?.snapshotDate) || "N/A",
+        candleCount: candles.length,
+        firstCandle: candles[0]?.date ?? "N/A",
+        lastCandle: candles[candles.length - 1]?.date ?? "N/A",
+        proofRecords: tickerRecords.length,
+        maturedRecords: maturedRecords.length,
+        noLookaheadOk,
+      };
+    });
+  }, [surfaceTickers, surfaceSnapshots, candlesByTicker, records]);
+
   if (!mounted) return null;
 
   return (
@@ -657,6 +709,87 @@ export default function ValidationPage() {
           <Metric label="Observed Hit Rate" value={rateText(rawRate)} note={`${validated.length} / ${evaluated.length} matured setups`} tone={scoreColor(rawRate == null ? null : rawRate * 100)} />
           <Metric label="Adjusted Proof" value={rateText(adjusted)} note={`${grade} proof with neutral prior`} tone={scoreColor(adjusted == null ? null : adjusted * 100)} />
         </section>
+
+        <Card title="Source Audit / No-Lookahead Check" border="#f59e0b77">
+          <div style={styles.auditGrid}>
+            <Metric
+              label="Supabase Route"
+              value="/api/supabase/surface-snapshot"
+              note="The page reads OI surfaces through this API route."
+              tone={colors.teal}
+            />
+            <Metric
+              label="Surface Date Range"
+              value={`${surfaceDateRange.first} → ${surfaceDateRange.last}`}
+              note={`${surfaceTickers.length} ticker(s) represented in loaded snapshots.`}
+              tone={colors.amber}
+            />
+            <Metric
+              label="No-Lookahead Guard"
+              value={noLookaheadFailures === 0 ? "PASS" : "FAIL"}
+              note={
+                noLookaheadFailures === 0
+                  ? "Trader Edge is rebuilt using candles up to the snapshot date only."
+                  : `${noLookaheadFailures} record(s) have candle dates after the snapshot date.`
+              }
+              tone={noLookaheadFailures === 0 ? colors.green : colors.red}
+            />
+            <Metric
+              label="Maturity Rule"
+              value={`${horizon}D horizon`}
+              note="Rows only count as validated/failed after enough future daily candles exist."
+              tone={colors.purple}
+            />
+          </div>
+
+          <div style={{ marginTop: "0.9rem", overflowX: "auto" }}>
+            <table style={styles.table}>
+              <thead>
+                <tr>
+                  {[
+                    "Ticker",
+                    "Surfaces",
+                    "Surface Range",
+                    "Candles",
+                    "Candle Range",
+                    "Proof Records",
+                    "Matured",
+                    "No Lookahead",
+                  ].map((item) => (
+                    <th key={item} style={styles.th}>{item}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {auditRows.length ? (
+                  auditRows.map((row) => (
+                    <tr key={row.ticker} style={styles.tr}>
+                      <td style={styles.tdTicker}>{row.ticker}</td>
+                      <td style={styles.td}>{row.surfaceCount}</td>
+                      <td style={styles.td}>{row.firstSurface} → {row.latestSurface}</td>
+                      <td style={styles.td}>{row.candleCount}</td>
+                      <td style={styles.td}>{row.firstCandle} → {row.lastCandle}</td>
+                      <td style={styles.td}>{row.proofRecords}</td>
+                      <td style={styles.td}>{row.maturedRecords}</td>
+                      <td style={{ ...styles.td, color: row.noLookaheadOk ? colors.green : colors.red, fontWeight: 900 }}>
+                        {row.noLookaheadOk ? "PASS" : "FAIL"}
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td style={styles.td} colSpan={8}>No source rows loaded. Check the Supabase API route and ticker list.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <p style={{ color: colors.muted, fontSize: 12, margin: "0.75rem 0 0", lineHeight: 1.45 }}>
+            Validation uses saved OI surfaces from Supabase and daily candles from <code>getPriceSeries()</code>. 
+            The audit table shows whether each ticker has surfaces, enough candles, matured proof records, and a no-lookahead pass.
+          </p>
+        </Card>
 
         <Card title="What This Page Proves" border="#22d3ee77">
           <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: "1rem", alignItems: "start" }}>
@@ -944,6 +1077,11 @@ const styles: Record<string, any> = {
     borderRadius: 10,
     background: "rgba(34, 211, 238, 0.06)",
     padding: "0.8rem",
+  },
+  auditGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+    gap: "0.75rem",
   },
   proofGrid: {
     display: "grid",
