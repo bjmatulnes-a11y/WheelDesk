@@ -1506,3 +1506,40 @@ canvas {
     display: grid;
   }
 }
+
+/* WheelDesk Stripe billing layer */
+.wd-checkout-action {
+  display: grid;
+  gap: 8px;
+}
+
+.wd-checkout-action small {
+  color: #9fb4c7;
+  line-height: 1.35;
+}
+
+.wd-checkout-button {
+  width: 100%;
+}
+
+.wd-price-card .wd-checkout-action button {
+  justify-content: center;
+}
+
+.wd-billing-note {
+  display: grid;
+  gap: 6px;
+  border: 1px solid rgba(34, 211, 238, 0.2);
+  border-radius: 16px;
+  background: rgba(3, 18, 30, 0.7);
+  padding: 14px;
+}
+
+.wd-billing-note strong {
+  color: #f8fbff;
+}
+
+.wd-billing-note span {
+  color: #9fb4c7;
+  line-height: 1.45;
+}

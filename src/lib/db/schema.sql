@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS profiles (
   id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   email TEXT,
   selected_plan TEXT NOT NULL DEFAULT 'founder',
+  stripe_customer_id TEXT,
   full_name TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -83,6 +84,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   stripe_customer_id TEXT,
   stripe_subscription_id TEXT UNIQUE,
+  stripe_price_id TEXT,
   plan TEXT NOT NULL DEFAULT 'founder',
   status TEXT NOT NULL DEFAULT 'trialing',
   current_period_start TIMESTAMPTZ,
@@ -94,6 +96,30 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 
 CREATE INDEX IF NOT EXISTS idx_subscriptions_user_status
   ON subscriptions (user_id, status, current_period_end DESC);
+
+
+-- Stripe billing hardening for existing databases created before WheelDesk-8.
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS stripe_price_id TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_profiles_stripe_customer
+  ON profiles (stripe_customer_id);
+
+CREATE INDEX IF NOT EXISTS idx_subscriptions_stripe_customer
+  ON subscriptions (stripe_customer_id);
+
+CREATE TABLE IF NOT EXISTS billing_events (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  stripe_created_at TIMESTAMPTZ,
+  payload JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_billing_events_type_created
+  ON billing_events (type, created_at DESC);
+
+ALTER TABLE billing_events ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE subscriptions ENABLE ROW LEVEL SECURITY;

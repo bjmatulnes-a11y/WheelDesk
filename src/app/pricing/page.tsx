@@ -1,34 +1,17 @@
 import Link from "next/link";
+import CheckoutButton from "../../components/billing/CheckoutButton";
+import { WHEELDESK_PLANS } from "../../lib/billing/plans";
 
-const plans = [
-  {
-    id: "founder",
-    name: "Founder",
-    price: "$49",
-    note: "early access",
-    description: "For the first cohort validating the WheelDesk edge.",
-    features: ["Control Center", "Validation", "Portfolio risk console", "Scanner", "Mobile install"],
-  },
-  {
-    id: "core",
-    name: "Core",
-    price: "$79",
-    note: "per month",
-    description: "The main WheelDesk subscription for active premium sellers.",
-    features: ["OI surfaces", "Wheel repair tools", "Saved tickers", "Market Structure", "Basic validation"],
-    highlight: true,
-  },
-  {
-    id: "research",
-    name: "Research",
-    price: "$129",
-    note: "per month",
-    description: "The deeper edge stack for validation and structure research.",
-    features: ["Dealer pressure", "Wall migration", "Multi-chain confluence", "Validation history", "Research exports"],
-  },
-];
+type PricingPageProps = {
+  searchParams?: {
+    checkout?: string;
+    plan?: string;
+  };
+};
 
-export default function PricingPage() {
+export default function PricingPage({ searchParams }: PricingPageProps) {
+  const checkoutStatus = searchParams?.checkout;
+
   return (
     <main className="wd-landing wd-pricing-page">
       <header className="wd-landing-nav">
@@ -47,26 +30,29 @@ export default function PricingPage() {
       </header>
 
       <section className="wd-pricing-hero">
-        <div className="wd-eyebrow">Login now, billing next</div>
-        <h1>Start with account access. Wire Stripe after the gates are stable.</h1>
+        <div className="wd-eyebrow">Stripe billing layer</div>
+        <h1>Choose the WheelDesk tier and launch secure checkout.</h1>
         <p>
-          These tiers are now represented in signup metadata so the billing layer can map Stripe prices
-          directly to WheelDesk entitlements in the next package.
+          Login controls app access. Stripe controls subscription billing. Webhooks write the paid plan
+          back into Supabase so WheelDesk can unlock entitlements by tier.
         </p>
+        {checkoutStatus === "cancelled" ? (
+          <p className="wd-auth-status">Checkout was cancelled. Pick a plan when you are ready.</p>
+        ) : null}
       </section>
 
       <section className="wd-pricing-grid wd-pricing-grid-page">
-        {plans.map((plan) => (
+        {WHEELDESK_PLANS.map((plan) => (
           <article key={plan.id} className={plan.highlight ? "wd-price-card wd-price-card-highlight" : "wd-price-card"}>
             <div>
               <h2>{plan.name}</h2>
               <p>{plan.description}</p>
             </div>
-            <div className="wd-price"><strong>{plan.price}</strong><span>{plan.note}</span></div>
+            <div className="wd-price"><strong>{plan.priceLabel}</strong><span>{plan.note}</span></div>
             <ul>
               {plan.features.map((feature) => <li key={feature}>{feature}</li>)}
             </ul>
-            <Link href={`/signup?plan=${plan.id}`}>Start {plan.name}</Link>
+            <CheckoutButton planId={plan.id} label={`Start ${plan.name}`} />
           </article>
         ))}
       </section>
