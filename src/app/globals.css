@@ -1248,3 +1248,261 @@ canvas {
     flex-direction: column;
   }
 }
+
+/* WheelDesk auth + account layer */
+.wd-auth-shell,
+.wd-account-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px 18px;
+  background:
+    radial-gradient(circle at 15% 10%, rgba(34, 211, 238, 0.18), transparent 32%),
+    radial-gradient(circle at 85% 20%, rgba(61, 255, 154, 0.12), transparent 30%),
+    #020b14;
+  color: #e5f6ff;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.wd-auth-card,
+.wd-account-card {
+  width: min(100%, 520px);
+  border: 1px solid rgba(34, 211, 238, 0.24);
+  border-radius: 28px;
+  background: linear-gradient(180deg, rgba(7, 21, 35, 0.96), rgba(2, 11, 20, 0.96));
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.42);
+  padding: 28px;
+}
+
+.wd-auth-card-small {
+  width: min(100%, 420px);
+  text-align: center;
+}
+
+.wd-auth-brand,
+.wd-account-back {
+  color: #d8eefc;
+  text-decoration: none;
+}
+
+.wd-auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.wd-auth-brand strong {
+  display: block;
+  font-size: 22px;
+  letter-spacing: -0.04em;
+}
+
+.wd-auth-brand small {
+  display: block;
+  color: #67e8f9;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+
+.wd-auth-logo {
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  border: 1px solid #22d3ee;
+  display: grid;
+  place-items: center;
+  color: #67e8f9;
+  background: #0b3a46;
+  font-weight: 950;
+  box-shadow: 0 0 28px rgba(34, 211, 238, 0.18);
+}
+
+.wd-auth-heading p,
+.wd-eyebrow {
+  margin: 0 0 8px;
+  color: #3dff9a;
+  font-size: 11px;
+  font-weight: 950;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.wd-auth-heading h1,
+.wd-account-card h1,
+.wd-pricing-hero h1 {
+  margin: 0;
+  color: #f8fbff;
+  font-size: clamp(32px, 6vw, 48px);
+  line-height: 0.95;
+  letter-spacing: -0.06em;
+}
+
+.wd-auth-heading span,
+.wd-account-muted,
+.wd-pricing-hero p {
+  display: block;
+  margin-top: 14px;
+  color: #9fb4c7;
+  line-height: 1.45;
+}
+
+.wd-auth-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 26px;
+}
+
+.wd-auth-form label {
+  display: grid;
+  gap: 8px;
+  color: #d8eefc;
+  font-weight: 850;
+}
+
+.wd-auth-form input {
+  width: 100%;
+  border: 1px solid #1d3448;
+  border-radius: 14px;
+  background: #06101b;
+  color: #f8fbff;
+  padding: 14px 15px;
+  font: inherit;
+  box-sizing: border-box;
+  outline: none;
+}
+
+.wd-auth-form input:focus {
+  border-color: #22d3ee;
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.12);
+}
+
+.wd-auth-primary,
+.wd-auth-secondary,
+.wd-auth-nav-link {
+  border-radius: 14px;
+  padding: 13px 16px;
+  font-weight: 950;
+  text-align: center;
+  cursor: pointer;
+  text-decoration: none;
+  font: inherit;
+}
+
+.wd-auth-primary {
+  border: 1px solid #155e75;
+  background: linear-gradient(135deg, #0e7490, #0891b2);
+  color: #ecfeff;
+}
+
+.wd-auth-secondary,
+.wd-auth-nav-link {
+  border: 1px solid #1d3448;
+  background: rgba(7, 21, 35, 0.78);
+  color: #67e8f9;
+}
+
+.wd-auth-primary:disabled,
+.wd-auth-secondary:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.wd-auth-status {
+  margin: 0;
+  border: 1px solid rgba(34, 211, 238, 0.18);
+  border-radius: 12px;
+  padding: 12px;
+  color: #b8cce0;
+  background: rgba(2, 11, 20, 0.62);
+}
+
+.wd-auth-switch {
+  color: #9fb4c7;
+  text-align: center;
+}
+
+.wd-auth-switch a {
+  color: #67e8f9;
+  font-weight: 900;
+}
+
+.wd-account-card {
+  width: min(100%, 760px);
+  display: grid;
+  gap: 18px;
+}
+
+.wd-account-back {
+  color: #67e8f9;
+  font-weight: 900;
+}
+
+.wd-account-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.wd-account-grid div {
+  border: 1px solid #1d3448;
+  border-radius: 16px;
+  background: rgba(2, 11, 20, 0.55);
+  padding: 14px;
+  min-width: 0;
+}
+
+.wd-account-grid span {
+  display: block;
+  color: #9fb4c7;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.wd-account-grid strong {
+  display: block;
+  margin-top: 6px;
+  color: #f8fbff;
+  overflow-wrap: anywhere;
+}
+
+.wd-account-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.wd-pricing-page {
+  min-height: 100vh;
+}
+
+.wd-pricing-hero {
+  width: min(100%, 920px);
+  margin: 56px auto 28px;
+  text-align: center;
+}
+
+.wd-pricing-grid-page {
+  width: min(100%, 1120px);
+  margin: 0 auto;
+}
+
+@media (max-width: 720px), (max-device-width: 720px) {
+  .wd-auth-card,
+  .wd-account-card {
+    padding: 22px;
+    border-radius: 22px;
+  }
+
+  .wd-account-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .wd-account-actions {
+    display: grid;
+  }
+}

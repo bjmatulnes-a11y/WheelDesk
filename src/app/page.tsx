@@ -45,9 +45,10 @@ export default function LandingPage() {
 
         <nav className="wd-landing-links" aria-label="Primary landing navigation">
           <a href="#product">Product</a>
-          <a href="#pricing">Pricing</a>
+          <Link href="/pricing">Pricing</Link>
           <a href="#mobile">Mobile</a>
-          <Link href="/control-center">Control Center</Link>
+          <Link href="/login">Login</Link>
+          <Link href="/signup">Start Founder</Link>
         </nav>
       </header>
 
@@ -61,8 +62,8 @@ export default function LandingPage() {
           </p>
 
           <div className="wd-hero-actions">
-            <Link href="/control-center" className="wd-primary-cta">Open Control Center</Link>
-            <Link href="/dashboard/validation" className="wd-secondary-cta">View Validation</Link>
+            <Link href="/signup?plan=founder" className="wd-primary-cta">Start Founder Access</Link>
+            <Link href="/login" className="wd-secondary-cta">Log In</Link>
           </div>
 
           <div className="wd-proof-grid" aria-label="WheelDesk product highlights">
@@ -143,7 +144,7 @@ export default function LandingPage() {
           <span className="wd-phone-notch" />
           <strong>WheelDesk</strong>
           <p>Control Center, Portfolio, Scanner, Wheel, and Validation in a phone-ready shell.</p>
-          <Link href="/portfolio">Open Mobile Console</Link>
+          <Link href="/signup?plan=founder">Install after signup</Link>
         </div>
       </section>
 
@@ -165,7 +166,7 @@ export default function LandingPage() {
               <ul>
                 {plan.features.map((feature) => <li key={feature}>{feature}</li>)}
               </ul>
-              <Link href="/control-center">{plan.cta}</Link>
+              <Link href={`/signup?plan=${plan.name.toLowerCase()}`}>{plan.cta}</Link>
             </article>
           ))}
         </div>
@@ -179,7 +180,7 @@ export default function LandingPage() {
             Once auth and Stripe are wired, WheelDesk can move from a deployed tool to a sellable SaaS.
           </p>
         </div>
-        <Link href="/control-center" className="wd-primary-cta">Launch WheelDesk</Link>
+        <Link href="/signup?plan=founder" className="wd-primary-cta">Create Account</Link>
       </section>
 
       <footer className="wd-landing-footer">

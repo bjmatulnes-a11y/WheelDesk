@@ -65,3 +65,89 @@ CREATE INDEX IF NOT EXISTS idx_option_chain_rows_ticker_date
 
 CREATE INDEX IF NOT EXISTS idx_option_chain_rows_expiration
   ON option_chain_rows (ticker, expiration, dte);
+
+-- Auth/account foundation for WheelDesk subscriptions.
+-- Run after enabling Supabase Auth. This keeps product/account data in public
+-- while the canonical user identities remain in auth.users.
+CREATE TABLE IF NOT EXISTS profiles (
+  id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  email TEXT,
+  selected_plan TEXT NOT NULL DEFAULT 'founder',
+  full_name TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS subscriptions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  stripe_customer_id TEXT,
+  stripe_subscription_id TEXT UNIQUE,
+  plan TEXT NOT NULL DEFAULT 'founder',
+  status TEXT NOT NULL DEFAULT 'trialing',
+  current_period_start TIMESTAMPTZ,
+  current_period_end TIMESTAMPTZ,
+  cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_subscriptions_user_status
+  ON subscriptions (user_id, status, current_period_end DESC);
+
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE subscriptions ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'profiles' AND policyname = 'profiles_select_own'
+  ) THEN
+    CREATE POLICY profiles_select_own ON profiles
+      FOR SELECT USING (auth.uid() = id);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'profiles' AND policyname = 'profiles_update_own'
+  ) THEN
+    CREATE POLICY profiles_update_own ON profiles
+      FOR UPDATE USING (auth.uid() = id) WITH CHECK (auth.uid() = id);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'subscriptions' AND policyname = 'subscriptions_select_own'
+  ) THEN
+    CREATE POLICY subscriptions_select_own ON subscriptions
+      FOR SELECT USING (auth.uid() = user_id);
+  END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.handle_new_wheeldesk_user()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  INSERT INTO public.profiles (id, email, selected_plan)
+  VALUES (
+    NEW.id,
+    NEW.email,
+    COALESCE(NEW.raw_user_meta_data ->> 'selected_plan', 'founder')
+  )
+  ON CONFLICT (id) DO UPDATE SET
+    email = EXCLUDED.email,
+    selected_plan = COALESCE(EXCLUDED.selected_plan, public.profiles.selected_plan),
+    updated_at = NOW();
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_auth_user_created_wheeldesk_profile ON auth.users;
+CREATE TRIGGER on_auth_user_created_wheeldesk_profile
+AFTER INSERT ON auth.users
+FOR EACH ROW EXECUTE FUNCTION public.handle_new_wheeldesk_user();

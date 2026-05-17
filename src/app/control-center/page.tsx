@@ -29,6 +29,7 @@ import { buildOIIntelligenceView } from "../../lib/oi-intelligence-view";
 import { buildFlowIntelligenceView } from "../../lib/flow-intelligence-view";
 import { buildControlCenterState } from "../../lib/control-state-engine";
 import type { CandleRecord, OptionSurfaceSnapshot } from "../../lib/wheeldesk-storage";
+import AuthGate from "../../components/auth/AuthGate";
 
 const selectedProfileStorageKey = "wheelDesk.selectedPortfolioProfileId";
 const TIMEFRAMES = ["daily", "weekly", "1h", "30m", "15m", "5m", "1m"] as const;
@@ -792,6 +793,7 @@ export default function ControlCenterPage() {
   const chainMagnet = chainTraderEdge?.magnet ?? chainDealerPressure?.magnet;
 
   return (
+    <AuthGate>
     <main
       className="wheeldesk-shell"
       style={{
@@ -1126,6 +1128,7 @@ export default function ControlCenterPage() {
         {status ? <div style={{ color: colors.muted, marginTop: "1rem", fontSize: 12 }}>{status}</div> : null}
       </div>
     </main>
+    </AuthGate>
   );
 }
 

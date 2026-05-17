@@ -33,6 +33,7 @@ import {
 import { buildRiskProfile, evaluateSlices } from "../../lib/risk-engine";
 import { createLocalPersistenceAdapter } from "../../lib/storage";
 import { yahooProvider } from "../../lib/yahoo-provider";
+import AuthGate from "../../components/auth/AuthGate";
 
 const SELECTED_PROFILE_STORAGE_KEY = "wheelDesk.selectedPortfolioProfileId";
 
@@ -934,6 +935,7 @@ export default function PortfolioPage() {
   }
 
   return (
+    <AuthGate>
     <main
       className="wheeldesk-shell"
       style={{
@@ -1173,5 +1175,6 @@ export default function PortfolioPage() {
       </section>
       </div>
     </main>
+    </AuthGate>
   );
 }

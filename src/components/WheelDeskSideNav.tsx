@@ -1,4 +1,7 @@
+"use client";
+
 import Link from "next/link";
+import AuthStatusPill from "./auth/AuthStatusPill";
 
 type NavItem = {
   href: string;
@@ -44,6 +47,10 @@ export function WheelDeskSideNav({ active }: WheelDeskSideNavProps) {
           );
         })}
       </nav>
+
+      <div className="wheeldesk-side-account" style={styles.accountRow}>
+        <AuthStatusPill />
+      </div>
 
       <div className="wheeldesk-side-info" style={styles.infoCard}>
         <div style={styles.infoTitle}>Market Structure</div>

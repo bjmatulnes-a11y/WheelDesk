@@ -7,6 +7,7 @@ import { listPortfolioProfiles } from "../../lib/portfolio-store";
 import { readPreferences } from "../../lib/wheeldesk-storage";
 import { SUPPORTED_TICKERS } from "../../lib/types";
 import { WheelDeskSideNav } from "../../components/WheelDeskSideNav";
+import AuthGate from "../../components/auth/AuthGate";
 
 const TODAY = new Date().toISOString().slice(0, 10);
 const HARVEST_TICKERS_KEY = "wheelDesk.dashboardHarvestTickers";
@@ -715,6 +716,7 @@ export default function DashboardPage() {
   const totalRows = queue.reduce((sum, item) => sum + (item.rowCount ?? 0), 0);
 
   return (
+    <AuthGate>
     <div className="wheeldesk-shell" style={styles.app}>
   <WheelDeskSideNav active="dashboard" />
 
@@ -987,6 +989,8 @@ export default function DashboardPage() {
         </section>
       </main>
     </div>
+  
+    </AuthGate>
   );
 }
 

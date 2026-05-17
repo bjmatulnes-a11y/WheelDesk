@@ -16,6 +16,7 @@ import {
 import { buildOIIntelligenceView } from "../../../lib/oi-intelligence-view";
 import { buildFlowIntelligenceView } from "../../../lib/flow-intelligence-view";
 import { getPriceSeries } from "../../../lib/data-provider";
+import AuthGate from "../../../components/auth/AuthGate";
 
 const DEFAULT_WATCHLIST = ["SOFI", "AAPL", "AMD", "NVDA", "MSFT", "MU", "PLTR", "SPY", "QQQ"];
 
@@ -487,6 +488,7 @@ export default function WatchlistCommandPage() {
   const best = visibleRows[0] ?? null;
 
   return (
+    <AuthGate>
     <main
       className="wheeldesk-shell"
       style={{
@@ -690,6 +692,7 @@ export default function WatchlistCommandPage() {
         </section>
       </div>
     </main>
+    </AuthGate>
   );
 }
 

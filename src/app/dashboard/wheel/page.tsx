@@ -34,6 +34,7 @@ import {
   type UserPositionGroup,
   type UserPositionGroupType
 } from "../../../lib/position-group-store";
+import AuthGate from "../../../components/auth/AuthGate";
 
 const SELECTED_PROFILE_STORAGE_KEY = "wheelDesk.selectedPortfolioProfileId";
 const SELECTED_TICKER_STORAGE_KEY = "wheelDesk.wheel.selectedTicker";
@@ -969,6 +970,7 @@ Math.random().toString(36).slice(2)
   if (!mounted) return null;
 
   return (
+    <AuthGate>
     <main
       className="wheeldesk-shell"
       style={{
@@ -1794,6 +1796,7 @@ fontSize: 13
       </section>
       </div>
     </main>
+    </AuthGate>
   );
 }
 
