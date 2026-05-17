@@ -1,11 +1,13 @@
 "use client";
 
 import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { WheelDeskSideNav } from "../../components/WheelDeskSideNav";
 import { PortfolioGreeksSummary } from "../../components/portfolio-greeks-summary";
 import { PortfolioPositionsTable } from "../../components/portfolio-positions-table";
 import { PriceSlicesTable } from "../../components/price-slices-table";
 import { ProfileManager } from "../../components/profile-manager";
 import { RiskProfileComparisonChart } from "../../components/risk-profile-comparison-chart";
+import WheelBasisTracker from "../../components/portfolio/WheelBasisTracker";
 import {
   aggregateGreeks,
   enrichPositionsWithGreeks
@@ -66,6 +68,17 @@ function money(value?: number, digits = 2): string {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits
   });
+}
+
+function cashTone(value?: number): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "#111827";
+  if (value < 0) return "#dc2626";
+  if (value > 0) return "#16a34a";
+  return "#111827";
+}
+
+function CashValue({ value }: { value?: number }) {
+  return <span style={{ color: cashTone(value), fontWeight: 900 }}>{money(value)}</span>;
 }
 
 function num(value?: number, digits = 2): string {
@@ -301,8 +314,9 @@ function CashOutlineSection({
   const buyingPower = cleanNumber(cashOutline.buyingPower) ?? cashBalance;
   const manualReserve = cleanNumber(cashOutline.manualReserve) ?? 0;
   const existingShortPutReserve = shortPutAssignmentReserve(positions);
-  const availableForTrades = Math.max(0, buyingPower - existingShortPutReserve - manualReserve);
-  const oneLotAtSpot = currentPrice > 0 ? Math.floor(availableForTrades / (currentPrice * 100)) : 0;
+  const availableForTrades = buyingPower - existingShortPutReserve - manualReserve;
+  const deployableCash = Math.max(0, availableForTrades);
+  const oneLotAtSpot = currentPrice > 0 ? Math.floor(deployableCash / (currentPrice * 100)) : 0;
 
   const setNumber = (key: keyof PortfolioCashOutline, value: string) => {
     onChange({
@@ -372,9 +386,15 @@ function CashOutlineSection({
       </div>
 
       <CardGrid>
+        <MetricCard label="Cash Balance" value={<CashValue value={cashBalance} />} />
+        <MetricCard label="Buying Power" value={<CashValue value={buyingPower} />} />
         <MetricCard label="Existing Short-Put Reserve" value={money(existingShortPutReserve)} help="Strike × 100 × open short puts." />
         <MetricCard label="Manual Reserve" value={money(manualReserve)} />
-        <MetricCard label="Available for New Trades" value={money(availableForTrades)} help="Buying power minus reserves." />
+        <MetricCard
+          label="Available for New Trades"
+          value={<CashValue value={availableForTrades} />}
+          help={availableForTrades < 0 ? "Buying power is below reserves." : "Buying power minus reserves."}
+        />
         <MetricCard label={`Approx ${primarySymbol} 100-share Lots`} value={num(oneLotAtSpot, 0)} help={`Uses current spot ${money(currentPrice)}.`} />
       </CardGrid>
     </section>
@@ -887,15 +907,28 @@ export default function PortfolioPage() {
     return (
       <main
         style={{
-          maxWidth: 1240,
-          margin: "0 auto",
-          padding: "1rem",
-          display: "grid",
-          gap: "1rem"
+          display: "flex",
+          minHeight: "100vh",
+          background: "radial-gradient(circle at top left, rgba(34, 211, 238, 0.12), transparent 28%), #020b14"
         }}
       >
-        <h1 style={{ marginBottom: 0 }}>Portfolio Risk Console</h1>
-        <p style={{ color: "#6b7280" }}>Loading portfolio...</p>
+        <WheelDeskSideNav active="positions" />
+
+        <div
+          style={{
+            flex: 1,
+            minWidth: 0,
+            padding: "1.1rem 1.4rem 2rem",
+            display: "grid",
+            gap: "1rem",
+            alignContent: "start"
+          }}
+        >
+          <h1 style={{ marginBottom: 0, color: "#e5f6ff", letterSpacing: "-0.04em" }}>
+            Portfolio Risk Console
+          </h1>
+          <p style={{ color: "#9fb4c7" }}>Loading portfolio...</p>
+        </div>
       </main>
     );
   }
@@ -903,14 +936,67 @@ export default function PortfolioPage() {
   return (
     <main
       style={{
-        maxWidth: 1240,
-        margin: "0 auto",
-        padding: "1rem",
-        display: "grid",
-        gap: "1rem"
+        display: "flex",
+        minHeight: "100vh",
+        background: "radial-gradient(circle at top left, rgba(34, 211, 238, 0.12), transparent 28%), #020b14"
       }}
     >
-      <h1 style={{ marginBottom: 0 }}>Portfolio Risk Console</h1>
+      <WheelDeskSideNav active="positions" />
+
+      <div
+        style={{
+          flex: 1,
+          minWidth: 0,
+          padding: "1.1rem 1.4rem 2rem",
+          display: "grid",
+          gap: "1rem",
+          alignContent: "start"
+        }}
+      >
+        <header
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            gap: "1rem",
+            alignItems: "center",
+            flexWrap: "wrap"
+          }}
+        >
+          <div>
+            <div
+              style={{
+                color: "#67e8f9",
+                fontSize: 11,
+                fontWeight: 900,
+                letterSpacing: "0.12em",
+                textTransform: "uppercase"
+              }}
+            >
+              WheelDesk
+            </div>
+            <h1 style={{ margin: 0, color: "#e5f6ff", letterSpacing: "-0.04em" }}>
+              Portfolio Risk Console
+            </h1>
+            <p style={{ color: "#9fb4c7", margin: "0.25rem 0 0", fontSize: 13 }}>
+              Position inventory, greeks, cash capacity, and risk profile management.
+            </p>
+          </div>
+
+          <a
+            href="/control-center"
+            style={{
+              border: "1px solid #22d3ee55",
+              borderRadius: 10,
+              padding: "0.6rem 0.8rem",
+              background: "#071523",
+              color: "#67e8f9",
+              textDecoration: "none",
+              fontWeight: 900
+            }}
+          >
+            Open Control Center
+          </a>
+        </header>
 
       <ProfileManager
         profiles={profiles}
@@ -959,6 +1045,11 @@ export default function PortfolioPage() {
           setCashOutline(next);
           persistCurrentProfile(positions, slices, next);
         }}
+      />
+
+      <WheelBasisTracker
+        profileId={selectedProfileId}
+        positions={positions}
       />
 
       <ExpirationLadder buckets={expirationBuckets} />
@@ -1078,6 +1169,7 @@ export default function PortfolioPage() {
           </p>
         )}
       </section>
+      </div>
     </main>
   );
 }
