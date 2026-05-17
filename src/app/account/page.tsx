@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import AuthGate from "../../components/auth/AuthGate";
 import ManageBillingButton from "../../components/billing/ManageBillingButton";
@@ -27,7 +27,7 @@ function formatDate(value: string | null | undefined): string {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(new Date(value));
 }
 
-export default function AccountPage() {
+function AccountPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [user, setUser] = useState<User | null>(null);
@@ -156,5 +156,14 @@ export default function AccountPage() {
         </section>
       </main>
     </AuthGate>
+  );
+}
+
+
+export default function AccountPage() {
+  return (
+    <Suspense fallback={<main className="wd-account-shell"><section className="wd-account-card"><p className="wd-account-muted">Loading account…</p></section></main>}>
+      <AccountPageContent />
+    </Suspense>
   );
 }
