@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { WheelDeskSideNav } from "../../components/WheelDeskSideNav";
 import ForecastChartPanel from "../../components/control-center/ForecastChartPanel";
 import ExpandedChartModal from "../../components/charts/ExpandedChartModal";
@@ -360,6 +360,138 @@ function Toggle({
   );
 }
 
+const defaultOverlayFlags: OverlayFlags = {
+  prevailingSurfaceLevels: true,
+  selectedChainLevels: false,
+  selectedChainPath: true,
+  selectedChainIvSurface: true,
+  dealerPressure: true,
+  wallMigration: true,
+  flowIntelligence: true,
+};
+
+const candleOnlyOverlayFlags: OverlayFlags = {
+  prevailingSurfaceLevels: false,
+  selectedChainLevels: false,
+  selectedChainPath: false,
+  selectedChainIvSurface: false,
+  dealerPressure: false,
+  wallMigration: false,
+  flowIntelligence: false,
+};
+
+const allOverlayFlags: OverlayFlags = {
+  prevailingSurfaceLevels: true,
+  selectedChainLevels: true,
+  selectedChainPath: true,
+  selectedChainIvSurface: true,
+  dealerPressure: true,
+  wallMigration: true,
+  flowIntelligence: true,
+};
+
+function ChartOverlayControls({
+  overlays,
+  setOverlays,
+  compact = false,
+  title = "Chart overlays",
+}: {
+  overlays: OverlayFlags;
+  setOverlays: Dispatch<SetStateAction<OverlayFlags>>;
+  compact?: boolean;
+  title?: string;
+}) {
+  const buttonStyle = {
+    border: "1px solid rgba(148, 163, 184, 0.24)",
+    background: "rgba(15, 23, 42, 0.68)",
+    color: colors.text,
+    borderRadius: 999,
+    padding: compact ? "0.35rem 0.55rem" : "0.42rem 0.66rem",
+    fontSize: 11,
+    fontWeight: 950,
+    cursor: "pointer",
+    whiteSpace: "nowrap" as const,
+  };
+
+  return (
+    <div
+      style={{
+        display: "grid",
+        gap: compact ? "0.45rem" : "0.6rem",
+        width: "100%",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "0.75rem",
+          flexWrap: "wrap",
+        }}
+      >
+        <div style={{ color: colors.text, fontSize: 12, fontWeight: 950 }}>{title}</div>
+        <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
+          <button type="button" onClick={() => setOverlays(defaultOverlayFlags)} style={buttonStyle}>
+            Default
+          </button>
+          <button type="button" onClick={() => setOverlays(allOverlayFlags)} style={buttonStyle}>
+            All overlays
+          </button>
+          <button type="button" onClick={() => setOverlays(candleOnlyOverlayFlags)} style={buttonStyle}>
+            Candles only
+          </button>
+        </div>
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          gap: compact ? "0.65rem" : "1rem",
+          flexWrap: "wrap",
+          alignItems: "center",
+        }}
+      >
+        <Toggle
+          checked={overlays.prevailingSurfaceLevels}
+          label="Prevailing levels"
+          onChange={(checked) => setOverlays((current) => ({ ...current, prevailingSurfaceLevels: checked }))}
+        />
+        <Toggle
+          checked={overlays.selectedChainLevels}
+          label="Chain OI levels"
+          onChange={(checked) => setOverlays((current) => ({ ...current, selectedChainLevels: checked }))}
+        />
+        <Toggle
+          checked={overlays.selectedChainPath}
+          label="OI path"
+          onChange={(checked) => setOverlays((current) => ({ ...current, selectedChainPath: checked }))}
+        />
+        <Toggle
+          checked={overlays.selectedChainIvSurface}
+          label="IV band"
+          onChange={(checked) => setOverlays((current) => ({ ...current, selectedChainIvSurface: checked }))}
+        />
+        <Toggle
+          checked={overlays.dealerPressure}
+          label="Dealer pressure"
+          onChange={(checked) => setOverlays((current) => ({ ...current, dealerPressure: checked }))}
+        />
+        <Toggle
+          checked={overlays.wallMigration}
+          label="Wall migration"
+          onChange={(checked) => setOverlays((current) => ({ ...current, wallMigration: checked }))}
+        />
+        <Toggle
+          checked={overlays.flowIntelligence}
+          label="Flow intelligence"
+          onChange={(checked) => setOverlays((current) => ({ ...current, flowIntelligence: checked }))}
+        />
+      </div>
+    </div>
+  );
+}
+
 function ExpandChartButton({ onClick, label = "Expand Chart" }: { onClick: () => void; label?: string }) {
   return (
     <button
@@ -399,15 +531,7 @@ export default function ControlCenterPage() {
   const [selectedProfileId, setSelectedProfileId] = useState("");
   const [status, setStatus] = useState("");
   const [chartExpanded, setChartExpanded] = useState(false);
-  const [overlays, setOverlays] = useState<OverlayFlags>({
-    prevailingSurfaceLevels: true,
-    selectedChainLevels: false,
-    selectedChainPath: true,
-    selectedChainIvSurface: true,
-    dealerPressure: true,
-    wallMigration: true,
-    flowIntelligence: true,
-  });
+  const [overlays, setOverlays] = useState<OverlayFlags>(defaultOverlayFlags);
 
   useEffect(() => {
     setMounted(true);
@@ -950,44 +1074,8 @@ export default function ControlCenterPage() {
           </div>
         </section>
 
-        <section style={{ ...cardStyle, marginTop: "1rem", padding: "0.85rem 1rem", display: "flex", justifyContent: "space-between", gap: "1rem", alignItems: "center", flexWrap: "wrap" }}>
-          <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
-            <Toggle
-              checked={overlays.prevailingSurfaceLevels}
-              label="Prevailing surface levels"
-              onChange={(checked) => setOverlays((current) => ({ ...current, prevailingSurfaceLevels: checked }))}
-            />
-            <Toggle
-              checked={overlays.selectedChainLevels}
-              label="Selected chain OI levels"
-              onChange={(checked) => setOverlays((current) => ({ ...current, selectedChainLevels: checked }))}
-            />
-            <Toggle
-              checked={overlays.selectedChainPath}
-              label="Selected chain OI path"
-              onChange={(checked) => setOverlays((current) => ({ ...current, selectedChainPath: checked }))}
-            />
-            <Toggle
-              checked={overlays.selectedChainIvSurface}
-              label="Selected chain IV band"
-              onChange={(checked) => setOverlays((current) => ({ ...current, selectedChainIvSurface: checked }))}
-            />
-            <Toggle
-              checked={overlays.dealerPressure}
-              label="Dealer pressure readout"
-              onChange={(checked) => setOverlays((current) => ({ ...current, dealerPressure: checked }))}
-            />
-            <Toggle
-              checked={overlays.wallMigration}
-              label="Wall migration"
-              onChange={(checked) => setOverlays((current) => ({ ...current, wallMigration: checked }))}
-            />
-            <Toggle
-              checked={overlays.flowIntelligence}
-              label="Flow intelligence"
-              onChange={(checked) => setOverlays((current) => ({ ...current, flowIntelligence: checked }))}
-            />
-          </div>
+        <section style={{ ...cardStyle, marginTop: "1rem", padding: "0.85rem 1rem", display: "grid", gap: "0.75rem" }}>
+          <ChartOverlayControls overlays={overlays} setOverlays={setOverlays} />
 
           <div style={{ color: colors.muted, fontSize: 12 }}>
             Surface: <strong style={{ color: colors.text }}>{selectedSurfaceDate || "N/A"}</strong> · Chain:{" "}
@@ -1200,11 +1288,28 @@ export default function ControlCenterPage() {
           title={`${ticker} Structure Chart`}
           subtitle="Expanded Control Center chart with candles, OI path, IV band, dealer pressure, wall migration, and flow overlays."
           meta={
-            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", color: colors.muted, fontSize: 12, fontWeight: 850 }}>
-              <span>Surface: <strong style={{ color: colors.text }}>{selectedSurfaceDate || "N/A"}</strong></span>
-              <span>Expiration: <strong style={{ color: colors.text }}>{selectedExpiration || "N/A"}</strong></span>
-              <span>Candles: <strong style={{ color: colors.text }}>{candleTimeframe}</strong></span>
-              <span>Rows: <strong style={{ color: colors.text }}>{selectedChainSurface?.rows?.length ?? 0}</strong></span>
+            <div style={{ display: "grid", gap: "0.75rem" }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", color: colors.muted, fontSize: 12, fontWeight: 850 }}>
+                <span>Surface: <strong style={{ color: colors.text }}>{selectedSurfaceDate || "N/A"}</strong></span>
+                <span>Expiration: <strong style={{ color: colors.text }}>{selectedExpiration || "N/A"}</strong></span>
+                <span>Candles: <strong style={{ color: colors.text }}>{candleTimeframe}</strong></span>
+                <span>Rows: <strong style={{ color: colors.text }}>{selectedChainSurface?.rows?.length ?? 0}</strong></span>
+              </div>
+              <div
+                style={{
+                  border: "1px solid rgba(34, 211, 238, 0.18)",
+                  background: "rgba(7, 21, 35, 0.66)",
+                  borderRadius: 14,
+                  padding: "0.72rem",
+                }}
+              >
+                <ChartOverlayControls
+                  overlays={overlays}
+                  setOverlays={setOverlays}
+                  compact
+                  title="Expanded chart overlays"
+                />
+              </div>
             </div>
           }
         >
