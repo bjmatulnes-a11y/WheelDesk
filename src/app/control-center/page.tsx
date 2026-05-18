@@ -362,6 +362,7 @@ function Toggle({
 export default function ControlCenterPage() {
   const [mounted, setMounted] = useState(false);
   const [ticker, setTicker] = useState("SOFI");
+  const [tickerInput, setTickerInput] = useState("SOFI");
   const [surfaceSnapshots, setSurfaceSnapshots] = useState<OptionSurfaceSnapshot[]>([]);
   const [selectedSurfaceDate, setSelectedSurfaceDate] = useState("");
   const [selectedExpiration, setSelectedExpiration] = useState("");
@@ -391,6 +392,7 @@ export default function ControlCenterPage() {
 
     const initialTicker = normalizeTicker(urlTicker) || "SOFI";
     setTicker(initialTicker);
+    setTickerInput(initialTicker);
 
     const loadedProfiles = listPortfolioProfiles();
     setProfiles(loadedProfiles);
@@ -507,6 +509,26 @@ export default function ControlCenterPage() {
     const surfaceTickers = surfaceSnapshots.map((surface) => normalizeTicker(surface.ticker)).filter(Boolean);
     return Array.from(new Set([...SUPPORTED_TICKERS, "^SPX", "SPY", "QQQ", ...surfaceTickers])).sort();
   }, [surfaceSnapshots]);
+
+  function applyTickerChange(rawTicker: string) {
+    const normalized = normalizeTicker(rawTicker);
+
+    if (!normalized) {
+      setTickerInput(ticker);
+      return;
+    }
+
+    setTickerInput(normalized);
+
+    if (normalized === ticker) return;
+
+    setTicker(normalized);
+    setCandles([]);
+    setSurfaceSnapshots([]);
+    setSelectedSurfaceDate("");
+    setSelectedExpiration("");
+    setStatus(`Switching to ${normalized}...`);
+  }
 
   const surfaceDates = useMemo(() => surfaceSnapshots.map((surface) => surface.snapshotDate), [surfaceSnapshots]);
 
@@ -816,23 +838,40 @@ export default function ControlCenterPage() {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 150px), 1fr))", gap: "0.7rem", minWidth: 0, width: "min(100%, 760px)" }}>
             <label style={styles.label}>
               Symbol
-              <select
-                value={ticker}
-                onChange={(event) => {
-                  const normalized = normalizeTicker(event.target.value);
-                  if (!normalized || normalized === ticker) return;
-                  setTicker(normalized);
-                  setCandles([]);
-                  setSelectedSurfaceDate("");
-                  setSelectedExpiration("");
-                  setStatus(`Switching to ${normalized}...`);
-                }}
-                style={styles.select}
-              >
-                {allTickers.map((item) => (
-                  <option key={item} value={item}>{item}</option>
-                ))}
-              </select>
+              <div style={{ display: "flex", gap: "0.45rem", alignItems: "center", minWidth: 0 }}>
+                <input
+                  value={tickerInput}
+                  onChange={(event) => setTickerInput(normalizeTicker(event.target.value))}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      applyTickerChange(tickerInput);
+                    }
+                  }}
+                  onBlur={() => {
+                    if (!normalizeTicker(tickerInput)) setTickerInput(ticker);
+                  }}
+                  list="control-center-ticker-options"
+                  placeholder="SOFI, NVDA, SPY..."
+                  spellCheck={false}
+                  style={{ ...styles.select, flex: 1, minWidth: 0 }}
+                />
+                <button
+                  type="button"
+                  onClick={() => applyTickerChange(tickerInput)}
+                  style={styles.actionButton}
+                >
+                  Load
+                </button>
+                <datalist id="control-center-ticker-options">
+                  {allTickers.map((item) => (
+                    <option key={item} value={item} />
+                  ))}
+                </datalist>
+              </div>
+              <span style={{ color: colors.muted, fontSize: 10, fontWeight: 700, letterSpacing: 0, textTransform: "none" }}>
+                Type any ticker and press Enter.
+              </span>
             </label>
 
             <label style={styles.label}>
@@ -1150,5 +1189,15 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "0.55rem 0.65rem",
     fontWeight: 900,
     outline: "none",
+  },
+  actionButton: {
+    border: `1px solid ${colors.teal}`,
+    background: "rgba(34, 211, 238, 0.14)",
+    color: colors.teal,
+    borderRadius: 10,
+    padding: "0.55rem 0.7rem",
+    fontWeight: 950,
+    cursor: "pointer",
+    whiteSpace: "nowrap",
   },
 };
