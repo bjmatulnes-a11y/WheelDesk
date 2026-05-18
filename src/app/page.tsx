@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { WHEELDESK_PLANS } from "../lib/billing/plans";
 
 export default function LandingPage() {
   return (
@@ -20,6 +21,7 @@ export default function LandingPage() {
           <a href="#validation">Validation</a>
           <a href="#daily-loop">Daily Loop</a>
           <Link href="/demo">Demo</Link>
+          <Link href="/pricing">Pricing</Link>
           <Link href="/faq">FAQ</Link>
           <Link href="/about">About</Link>
           <Link href="/login">Login</Link>
@@ -37,7 +39,7 @@ export default function LandingPage() {
           </p>
 
           <div className="wd-hero-actions">
-            <Link href="/signup" className="wd-primary-cta">Create Account</Link>
+            <Link href="/pricing" className="wd-primary-cta">View Plans</Link>
             <Link href="/login" className="wd-secondary-cta">Log In</Link>
           </div>
 
@@ -138,43 +140,57 @@ export default function LandingPage() {
           <span className="wd-phone-notch" />
           <strong>WheelDesk</strong>
           <p>Control Center, Portfolio, Scanner, Wheel, and Validation in a phone-ready shell.</p>
-          <Link href="/signup">Create account</Link>
+          <Link href="/pricing">View plans</Link>
         </div>
       </section>
 
-      <section className="wd-section wd-split-section">
-        <div>
-          <div className="wd-eyebrow">Founding access</div>
-          <h2>Access is being gated while the product is hardened.</h2>
+      <section className="wd-section" id="pricing">
+        <div className="wd-pricing-heading">
+          <div className="wd-eyebrow">Pricing</div>
+          <h2>Choose the control level that matches your trading workflow.</h2>
           <p>
-            Login, account state, Supabase data flow, and validation receipts come first. Pricing and checkout can stay
-            hidden until the billing path is fully tested and ready for real users.
+            Account creation is free, but the trading console is gated by subscription once billing is enabled.
+            This keeps users from bypassing checkout and makes Stripe the source of truth for plan access.
           </p>
         </div>
 
-        <div className="wd-signal-stack">
-          <SignalRow label="Current focus" value="Auth, account state, and domain polish" />
-          <SignalRow label="Next revenue layer" value="Stripe checkout after billing is fully verified" />
-          <SignalRow label="User promise" value="Evidence-backed control, not another noisy signal page" />
-          <SignalRow label="Mobile path" value="PWA now, native iPhone app after product gating" />
+        <div className="wd-pricing-grid">
+          {WHEELDESK_PLANS.map((plan) => (
+            <article key={plan.id} className={plan.highlight ? "wd-price-card wd-price-card-highlight" : "wd-price-card"}>
+              <div>
+                <h3>{plan.name}</h3>
+                <p>{plan.description}</p>
+              </div>
+              <div className="wd-price">
+                <strong>{plan.priceLabel}</strong>
+                <span>{plan.note}</span>
+              </div>
+              <ul>
+                {plan.features.slice(0, 5).map((feature) => (
+                  <li key={feature}>{feature}</li>
+                ))}
+              </ul>
+              <Link href={`/pricing?plan=${plan.id}`}>Choose {plan.name}</Link>
+            </article>
+          ))}
         </div>
       </section>
 
       <section className="wd-final-cta">
         <div>
           <div className="wd-eyebrow">Next milestone</div>
-          <h2>Lock the product flow before turning on checkout.</h2>
+          <h2>Start with a plan. Unlock the console after Stripe confirms access.</h2>
           <p>
-            WheelDesk already has the product shell. The next step is clean account state, confidence in the data flow,
-            and a billing switch that only turns on when the path is ready.
+            Pricing is back on the landing page, while the app itself remains protected by login plus active subscription status.
+            Users can create accounts, but they cannot bypass the paid access gate once billing is enabled.
           </p>
         </div>
-        <Link href="/signup" className="wd-primary-cta">Create Account</Link>
+        <Link href="/pricing" className="wd-primary-cta">View Plans</Link>
       </section>
 
       <footer className="wd-landing-footer">
         <span>WheelDesk · thewheeldesk.com</span>
-        <span>Control Center · Validation · Portfolio · Mobile · FAQ · About</span>
+        <span>Control Center · Validation · Portfolio · Pricing · Mobile · FAQ · About</span>
       </footer>
     </main>
   );

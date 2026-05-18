@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS public.subscriptions (
   stripe_subscription_id TEXT UNIQUE,
   stripe_price_id TEXT,
   plan TEXT NOT NULL DEFAULT 'founder',
-  status TEXT NOT NULL DEFAULT 'trialing',
+  status TEXT NOT NULL DEFAULT 'incomplete',
   current_period_start TIMESTAMPTZ,
   current_period_end TIMESTAMPTZ,
   cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE,
@@ -41,6 +41,7 @@ ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS full_name TEXT;
 ALTER TABLE public.subscriptions ADD COLUMN IF NOT EXISTS stripe_price_id TEXT;
 ALTER TABLE public.subscriptions ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
 ALTER TABLE public.subscriptions ADD COLUMN IF NOT EXISTS cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE public.subscriptions ALTER COLUMN status SET DEFAULT 'incomplete';
 
 CREATE INDEX IF NOT EXISTS idx_profiles_stripe_customer
   ON public.profiles (stripe_customer_id);
@@ -111,3 +112,8 @@ DROP TRIGGER IF EXISTS on_auth_user_created_wheeldesk_profile ON auth.users;
 CREATE TRIGGER on_auth_user_created_wheeldesk_profile
 AFTER INSERT ON auth.users
 FOR EACH ROW EXECUTE FUNCTION public.handle_new_wheeldesk_user();
+
+
+-- Important: users may create accounts before paying, but they do not receive app access
+-- unless Stripe creates or updates a subscription row with status active/trialing.
+-- profiles.selected_plan is preference/checkout intent only; it is not an entitlement.

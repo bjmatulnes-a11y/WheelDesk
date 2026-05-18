@@ -11,17 +11,20 @@ type AuthFormProps = {
   mode: AuthFormMode;
 };
 
-function cleanNext(value: string | null): string {
-  if (!value || !value.startsWith("/")) return "/control-center";
-  if (value.startsWith("//")) return "/control-center";
+function cleanNext(value: string | null, fallback: string): string {
+  if (!value || !value.startsWith("/")) return fallback;
+  if (value.startsWith("//")) return fallback;
   return value;
 }
 
 export default function AuthForm({ mode }: AuthFormProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const next = useMemo(() => cleanNext(searchParams.get("next")), [searchParams]);
   const plan = useMemo(() => searchParams.get("plan") ?? "founder", [searchParams]);
+  const next = useMemo(() => {
+    const fallback = mode === "signup" ? `/pricing?plan=${encodeURIComponent(plan)}` : "/control-center";
+    return cleanNext(searchParams.get("next"), fallback);
+  }, [mode, plan, searchParams]);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -55,7 +58,7 @@ export default function AuthForm({ mode }: AuthFormProps) {
         if (data.session) {
           router.replace(next);
         } else {
-          setStatus("Account created. Check your email to confirm the login link.");
+          setStatus("Account created. Confirm your email, then choose a plan to unlock WheelDesk.");
         }
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -85,7 +88,7 @@ export default function AuthForm({ mode }: AuthFormProps) {
       });
 
       if (error) throw error;
-      setStatus("Magic link sent. Open it on this device to launch WheelDesk.");
+      setStatus("Magic link sent. Open it on this device to continue to WheelDesk.");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Could not send magic link.");
     } finally {

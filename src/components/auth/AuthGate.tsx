@@ -1,61 +1,140 @@
 "use client";
 
-import { type ReactNode, useEffect, useState } from "react";
+import Link from "next/link";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { getSupabaseAuthClient } from "../../lib/auth/supabase-auth-client";
+
+const ACTIVE_SUBSCRIPTION_STATUSES = new Set(["active", "trialing"]);
+const ACCESS_ALLOWED_PATHS = new Set(["/account"]);
 
 type AuthGateProps = {
   children: ReactNode;
 };
 
+type GateState = "checking" | "signed-in" | "signed-out" | "billing-required";
+
+function safeNext(pathname: string | null): string {
+  const next = pathname || "/control-center";
+  if (!next.startsWith("/") || next.startsWith("//")) return "/control-center";
+  return next;
+}
+
+function billingIsEnabled(): boolean {
+  return process.env.NEXT_PUBLIC_BILLING_ENABLED === "true";
+}
+
+function routeCanBypassBilling(pathname: string | null): boolean {
+  if (!pathname) return false;
+  return ACCESS_ALLOWED_PATHS.has(pathname);
+}
+
 export default function AuthGate({ children }: AuthGateProps) {
   const router = useRouter();
   const pathname = usePathname();
-  const [state, setState] = useState<"checking" | "signed-in" | "signed-out">("checking");
+  const [state, setState] = useState<GateState>("checking");
+  const [message, setMessage] = useState("Checking WheelDesk session…");
+
+  const next = useMemo(() => safeNext(pathname), [pathname]);
 
   useEffect(() => {
     let mounted = true;
     const supabase = getSupabaseAuthClient();
 
-    supabase.auth.getSession().then(({ data }) => {
+    async function verifyAccess() {
+      setState("checking");
+      setMessage("Checking WheelDesk session…");
+
+      const { data, error } = await supabase.auth.getSession();
       if (!mounted) return;
 
-      if (data.session) {
-        setState("signed-in");
-      } else {
+      if (error || !data.session) {
         setState("signed-out");
-        const next = encodeURIComponent(pathname || "/control-center");
-        router.replace(`/login?next=${next}`);
+        router.replace(`/login?next=${encodeURIComponent(next)}`);
+        return;
       }
-    });
+
+      // During setup / private beta, BILLING_ENABLED=false keeps the console open
+      // for testing. Once billing is enabled, Stripe/Supabase subscription status
+      // becomes the permission gate for the trading console.
+      if (!billingIsEnabled() || routeCanBypassBilling(pathname)) {
+        setState("signed-in");
+        return;
+      }
+
+      setMessage("Checking WheelDesk subscription…");
+
+      const { data: subscriptions, error: subscriptionError } = await supabase
+        .from("subscriptions")
+        .select("plan,status,current_period_end")
+        .eq("user_id", data.session.user.id)
+        .in("status", Array.from(ACTIVE_SUBSCRIPTION_STATUSES))
+        .order("current_period_end", { ascending: false, nullsFirst: false })
+        .limit(1);
+
+      if (!mounted) return;
+
+      if (subscriptionError) {
+        console.warn("WheelDesk subscription access check failed", subscriptionError);
+        setMessage("Could not verify billing access. Sending you to pricing.");
+        setState("billing-required");
+        router.replace(`/pricing?access=required&next=${encodeURIComponent(next)}`);
+        return;
+      }
+
+      if (subscriptions && subscriptions.length > 0) {
+        setState("signed-in");
+        return;
+      }
+
+      setState("billing-required");
+      router.replace(`/pricing?access=required&next=${encodeURIComponent(next)}`);
+    }
+
+    void verifyAccess();
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
       if (!mounted) return;
 
-      if (session) {
-        setState("signed-in");
-      } else {
+      if (!session) {
         setState("signed-out");
-        const next = encodeURIComponent(pathname || "/control-center");
-        router.replace(`/login?next=${next}`);
+        router.replace(`/login?next=${encodeURIComponent(next)}`);
+        return;
       }
+
+      void verifyAccess();
     });
 
     return () => {
       mounted = false;
       listener.subscription.unsubscribe();
     };
-  }, [pathname, router]);
+  }, [pathname, router, next]);
 
   if (state === "signed-in") {
     return <>{children}</>;
+  }
+
+  if (state === "billing-required") {
+    return (
+      <main className="wd-auth-shell">
+        <section className="wd-auth-card wd-auth-card-small">
+          <div className="wd-auth-logo">W</div>
+          <h1>Choose a WheelDesk plan.</h1>
+          <p>The trading console unlocks after Stripe confirms an active subscription.</p>
+          <Link href={`/pricing?access=required&next=${encodeURIComponent(next)}`} className="wd-auth-primary">
+            View pricing
+          </Link>
+        </section>
+      </main>
+    );
   }
 
   return (
     <main className="wd-auth-shell">
       <section className="wd-auth-card wd-auth-card-small">
         <div className="wd-auth-logo">W</div>
-        <h1>Checking WheelDesk session…</h1>
+        <h1>{message}</h1>
         <p>Loading your secure trading console.</p>
       </section>
     </main>
