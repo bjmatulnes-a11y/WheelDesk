@@ -1,33 +1,5 @@
 import Link from "next/link";
 
-const pricingPlans = [
-  {
-    name: "Founder",
-    price: "$49",
-    note: "early cohort",
-    description: "Best for the first users helping validate the WheelDesk edge.",
-    features: ["Control Center", "Portfolio risk console", "OI snapshots", "Validation page", "Installable mobile app"],
-    cta: "Join Founding Cohort",
-  },
-  {
-    name: "Core",
-    price: "$79",
-    note: "per month",
-    description: "The normal WheelDesk subscription for active premium sellers.",
-    features: ["Market Structure workspace", "Scanner", "Wheel repair tools", "Saved surfaces", "Mobile-first dashboard"],
-    cta: "Start Core",
-    highlight: true,
-  },
-  {
-    name: "Research",
-    price: "$129",
-    note: "per month",
-    description: "For traders who want the full validation and dealer-pressure stack.",
-    features: ["Dealer pressure", "Wall migration", "Multi-chain confluence", "Validation history", "Research exports"],
-    cta: "Go Research",
-  },
-];
-
 export default function LandingPage() {
   return (
     <main className="wd-landing">
@@ -45,10 +17,13 @@ export default function LandingPage() {
 
         <nav className="wd-landing-links" aria-label="Primary landing navigation">
           <a href="#product">Product</a>
-          <Link href="/pricing">Pricing</Link>
-          <a href="#mobile">Mobile</a>
+          <a href="#validation">Validation</a>
+          <a href="#daily-loop">Daily Loop</a>
+          <Link href="/demo">Demo</Link>
+          <Link href="/faq">FAQ</Link>
+          <Link href="/about">About</Link>
           <Link href="/login">Login</Link>
-          <Link href="/signup">Start Founder</Link>
+          <Link href="/signup">Create Account</Link>
         </nav>
       </header>
 
@@ -62,7 +37,7 @@ export default function LandingPage() {
           </p>
 
           <div className="wd-hero-actions">
-            <Link href="/signup?plan=founder" className="wd-primary-cta">Start Founder Access</Link>
+            <Link href="/signup" className="wd-primary-cta">Create Account</Link>
             <Link href="/login" className="wd-secondary-cta">Log In</Link>
           </div>
 
@@ -113,7 +88,7 @@ export default function LandingPage() {
         <FeatureCard number="03" title="Validate" detail="Measure the projected OI path against actual candles so the edge earns trust with receipts." />
       </section>
 
-      <section className="wd-section wd-split-section">
+      <section className="wd-section wd-split-section" id="validation">
         <div>
           <div className="wd-eyebrow">Why traders care</div>
           <h2>WheelDesk is not another watchlist. It is a decision layer.</h2>
@@ -131,61 +106,75 @@ export default function LandingPage() {
         </div>
       </section>
 
+
+      <section className="wd-section wd-split-section" id="daily-loop">
+        <div>
+          <div className="wd-eyebrow">Sticky by design</div>
+          <h2>The daily edge loop gives traders a reason to come back.</h2>
+          <p>
+            WheelDesk is built around a repeatable trading routine: check what changed, read the current structure,
+            compare the signal to validation receipts, then decide whether to sell premium, repair, roll, or wait.
+          </p>
+        </div>
+
+        <div className="wd-signal-stack">
+          <SignalRow label="Morning read" value="Saved tickers surface today’s bias, walls, pressure, and risk state" />
+          <SignalRow label="What changed" value="Call walls, put supports, IV bands, and dealer pressure versus yesterday" />
+          <SignalRow label="Signal receipts" value="Validation tracks whether prior projected paths actually worked" />
+          <SignalRow label="Portfolio fit" value="Position risk and wheel basis keep the action map grounded" />
+        </div>
+      </section>
+
       <section className="wd-section wd-mobile-section" id="mobile">
         <div>
           <div className="wd-eyebrow">Mobile-first access</div>
-          <h2>Install WheelDesk today from Safari. Native iPhone app comes next.</h2>
+          <h2>Install WheelDesk from Safari while the native app roadmap develops.</h2>
           <p>
             The current product is a PWA: deploy it, open it on iPhone, tap Share, then Add to Home Screen.
-            That gives users an app icon and standalone launch while we finish login, billing, and subscription gating.
+            That gives users an app icon and standalone launch while the native iPhone app and billing layer are finalized.
           </p>
         </div>
         <div className="wd-phone-card">
           <span className="wd-phone-notch" />
           <strong>WheelDesk</strong>
           <p>Control Center, Portfolio, Scanner, Wheel, and Validation in a phone-ready shell.</p>
-          <Link href="/signup?plan=founder">Install after signup</Link>
+          <Link href="/signup">Create account</Link>
         </div>
       </section>
 
-      <section className="wd-section wd-pricing-section" id="pricing">
-        <div className="wd-pricing-heading">
-          <div className="wd-eyebrow">Pricing path</div>
-          <h2>Simple tiers before we overbuild the business model.</h2>
-          <p>Founder validates demand. Core becomes the main product. Research holds the deeper edge stack.</p>
+      <section className="wd-section wd-split-section">
+        <div>
+          <div className="wd-eyebrow">Founding access</div>
+          <h2>Access is being gated while the product is hardened.</h2>
+          <p>
+            Login, account state, Supabase data flow, and validation receipts come first. Pricing and checkout can stay
+            hidden until the billing path is fully tested and ready for real users.
+          </p>
         </div>
 
-        <div className="wd-pricing-grid">
-          {pricingPlans.map((plan) => (
-            <article key={plan.name} className={plan.highlight ? "wd-price-card wd-price-card-highlight" : "wd-price-card"}>
-              <div>
-                <h3>{plan.name}</h3>
-                <p>{plan.description}</p>
-              </div>
-              <div className="wd-price"><strong>{plan.price}</strong><span>{plan.note}</span></div>
-              <ul>
-                {plan.features.map((feature) => <li key={feature}>{feature}</li>)}
-              </ul>
-              <Link href={`/signup?plan=${plan.name.toLowerCase()}`}>{plan.cta}</Link>
-            </article>
-          ))}
+        <div className="wd-signal-stack">
+          <SignalRow label="Current focus" value="Auth, account state, and domain polish" />
+          <SignalRow label="Next revenue layer" value="Stripe checkout after billing is fully verified" />
+          <SignalRow label="User promise" value="Evidence-backed control, not another noisy signal page" />
+          <SignalRow label="Mobile path" value="PWA now, native iPhone app after product gating" />
         </div>
       </section>
 
       <section className="wd-final-cta">
         <div>
           <div className="wd-eyebrow">Next milestone</div>
-          <h2>Login, billing, and account gating.</h2>
+          <h2>Lock the product flow before turning on checkout.</h2>
           <p>
-            Once auth and Stripe are wired, WheelDesk can move from a deployed tool to a sellable SaaS.
+            WheelDesk already has the product shell. The next step is clean account state, confidence in the data flow,
+            and a billing switch that only turns on when the path is ready.
           </p>
         </div>
-        <Link href="/signup?plan=founder" className="wd-primary-cta">Create Account</Link>
+        <Link href="/signup" className="wd-primary-cta">Create Account</Link>
       </section>
 
       <footer className="wd-landing-footer">
         <span>WheelDesk · thewheeldesk.com</span>
-        <span>Control Center · Validation · Portfolio · Mobile</span>
+        <span>Control Center · Validation · Portfolio · Mobile · FAQ · About</span>
       </footer>
     </main>
   );
