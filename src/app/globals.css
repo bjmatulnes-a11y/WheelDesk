@@ -1543,3 +1543,151 @@ canvas {
   color: #9fb4c7;
   line-height: 1.45;
 }
+
+/* WheelDesk portfolio console dark/readability hardening -------------------------
+   The portfolio page still had several legacy white-card inline styles. This
+   app-scope override keeps the page aligned with the Control Center dark shell
+   without requiring every legacy metric/table component to be rewritten. */
+.wd-portfolio-dark {
+  color: #e5f6ff;
+  background:
+    radial-gradient(circle at top left, rgba(34, 211, 238, 0.14), transparent 28%),
+    #020b14 !important;
+}
+
+.wd-portfolio-dark section,
+.wd-portfolio-dark details,
+.wd-portfolio-dark div[style*="border: 1px solid"],
+.wd-portfolio-dark div[style*="border:1px solid"] {
+  border-color: rgba(34, 211, 238, 0.18) !important;
+  background: linear-gradient(180deg, rgba(7, 21, 35, 0.94), rgba(2, 11, 20, 0.96)) !important;
+  color: #e5f6ff !important;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.18);
+}
+
+.wd-portfolio-dark h1,
+.wd-portfolio-dark h2,
+.wd-portfolio-dark h3,
+.wd-portfolio-dark h4,
+.wd-portfolio-dark strong,
+.wd-portfolio-dark b,
+.wd-portfolio-dark td,
+.wd-portfolio-dark li {
+  color: #e5f6ff;
+}
+
+.wd-portfolio-dark p,
+.wd-portfolio-dark label,
+.wd-portfolio-dark th,
+.wd-portfolio-dark small,
+.wd-portfolio-dark summary {
+  color: #b8cce0 !important;
+}
+
+.wd-portfolio-dark [style*="color: #111827"],
+.wd-portfolio-dark [style*="color:#111827"],
+.wd-portfolio-dark [style*="color: rgb(17, 24, 39)"],
+.wd-portfolio-dark [style*="color: #1f2937"],
+.wd-portfolio-dark [style*="color:#1f2937"] {
+  color: #e5f6ff !important;
+}
+
+.wd-portfolio-dark [style*="color: #4b5563"],
+.wd-portfolio-dark [style*="color:#4b5563"],
+.wd-portfolio-dark [style*="color: rgb(75, 85, 99)"],
+.wd-portfolio-dark [style*="color: #6b7280"],
+.wd-portfolio-dark [style*="color:#6b7280"],
+.wd-portfolio-dark [style*="color: rgb(107, 114, 128)"] {
+  color: #9fb4c7 !important;
+}
+
+.wd-portfolio-dark [style*="color: #16a34a"],
+.wd-portfolio-dark [style*="color:#16a34a"],
+.wd-portfolio-dark [style*="color: rgb(22, 163, 74)"] {
+  color: #4ade80 !important;
+}
+
+.wd-portfolio-dark [style*="color: #dc2626"],
+.wd-portfolio-dark [style*="color:#dc2626"],
+.wd-portfolio-dark [style*="color: rgb(220, 38, 38)"] {
+  color: #fb7185 !important;
+}
+
+.wd-portfolio-dark input,
+.wd-portfolio-dark select,
+.wd-portfolio-dark textarea {
+  border: 1px solid rgba(34, 211, 238, 0.22) !important;
+  border-radius: 9px !important;
+  background: rgba(2, 11, 20, 0.92) !important;
+  color: #e5f6ff !important;
+  padding: 0.48rem 0.55rem !important;
+  outline: none !important;
+}
+
+.wd-portfolio-dark input::placeholder,
+.wd-portfolio-dark textarea::placeholder {
+  color: rgba(159, 180, 199, 0.68) !important;
+}
+
+.wd-portfolio-dark input:disabled,
+.wd-portfolio-dark select:disabled,
+.wd-portfolio-dark textarea:disabled {
+  color: rgba(159, 180, 199, 0.5) !important;
+  background: rgba(2, 11, 20, 0.54) !important;
+  border-color: rgba(159, 180, 199, 0.12) !important;
+}
+
+.wd-portfolio-dark option {
+  background: #071523;
+  color: #e5f6ff;
+}
+
+.wd-portfolio-dark button {
+  border: 1px solid rgba(34, 211, 238, 0.34) !important;
+  border-radius: 10px !important;
+  background: rgba(8, 48, 61, 0.88) !important;
+  color: #67e8f9 !important;
+  font-weight: 900 !important;
+  cursor: pointer;
+}
+
+.wd-portfolio-dark button:disabled {
+  border-color: rgba(159, 180, 199, 0.12) !important;
+  background: rgba(31, 41, 55, 0.42) !important;
+  color: rgba(159, 180, 199, 0.5) !important;
+  cursor: not-allowed;
+}
+
+.wd-portfolio-dark table {
+  color: #d7e9f8 !important;
+}
+
+.wd-portfolio-dark th,
+.wd-portfolio-dark td {
+  border-color: rgba(148, 163, 184, 0.16) !important;
+}
+
+.wd-portfolio-dark tbody tr:nth-child(odd) td {
+  background: rgba(15, 23, 42, 0.18);
+}
+
+.wd-portfolio-dark tbody tr:hover td {
+  background: rgba(34, 211, 238, 0.08);
+}
+
+.wd-portfolio-dark a {
+  color: #67e8f9;
+}
+
+@media (max-width: 900px), (max-device-width: 900px) {
+  .wd-portfolio-dark section,
+  .wd-portfolio-dark details {
+    border-radius: 16px !important;
+  }
+
+  .wd-portfolio-dark section:has(table),
+  .wd-portfolio-dark div:has(> table) {
+    margin-left: -0.1rem;
+    margin-right: -0.1rem;
+  }
+}
