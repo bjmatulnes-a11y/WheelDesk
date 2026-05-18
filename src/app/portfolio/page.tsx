@@ -37,6 +37,154 @@ import AuthGate from "../../components/auth/AuthGate";
 
 const SELECTED_PROFILE_STORAGE_KEY = "wheelDesk.selectedPortfolioProfileId";
 
+const portfolioGlobalStyles = `
+/* WheelDesk portfolio console dark/readability hardening. */
+.wd-portfolio-dark {
+  color: #e5f6ff;
+  background:
+    radial-gradient(circle at top left, rgba(34, 211, 238, 0.14), transparent 28%),
+    #020b14 !important;
+}
+
+.wd-portfolio-dark section,
+.wd-portfolio-dark details,
+.wd-portfolio-dark div[style*="border: 1px solid"],
+.wd-portfolio-dark div[style*="border:1px solid"] {
+  border-color: rgba(34, 211, 238, 0.18) !important;
+  background: linear-gradient(180deg, rgba(7, 21, 35, 0.94), rgba(2, 11, 20, 0.96)) !important;
+  color: #e5f6ff !important;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.18);
+}
+
+.wd-portfolio-dark h1,
+.wd-portfolio-dark h2,
+.wd-portfolio-dark h3,
+.wd-portfolio-dark h4,
+.wd-portfolio-dark strong,
+.wd-portfolio-dark b,
+.wd-portfolio-dark td,
+.wd-portfolio-dark li {
+  color: #e5f6ff;
+}
+
+.wd-portfolio-dark p,
+.wd-portfolio-dark label,
+.wd-portfolio-dark th,
+.wd-portfolio-dark small,
+.wd-portfolio-dark summary {
+  color: #b8cce0 !important;
+}
+
+.wd-portfolio-dark [style*="color: #111827"],
+.wd-portfolio-dark [style*="color:#111827"],
+.wd-portfolio-dark [style*="color: rgb(17, 24, 39)"],
+.wd-portfolio-dark [style*="color: #1f2937"],
+.wd-portfolio-dark [style*="color:#1f2937"] {
+  color: #e5f6ff !important;
+}
+
+.wd-portfolio-dark [style*="color: #4b5563"],
+.wd-portfolio-dark [style*="color:#4b5563"],
+.wd-portfolio-dark [style*="color: rgb(75, 85, 99)"],
+.wd-portfolio-dark [style*="color: #6b7280"],
+.wd-portfolio-dark [style*="color:#6b7280"],
+.wd-portfolio-dark [style*="color: rgb(107, 114, 128)"] {
+  color: #9fb4c7 !important;
+}
+
+.wd-portfolio-dark [style*="color: #16a34a"],
+.wd-portfolio-dark [style*="color:#16a34a"],
+.wd-portfolio-dark [style*="color: rgb(22, 163, 74)"] {
+  color: #4ade80 !important;
+}
+
+.wd-portfolio-dark [style*="color: #dc2626"],
+.wd-portfolio-dark [style*="color:#dc2626"],
+.wd-portfolio-dark [style*="color: rgb(220, 38, 38)"] {
+  color: #fb7185 !important;
+}
+
+.wd-portfolio-dark input,
+.wd-portfolio-dark select,
+.wd-portfolio-dark textarea {
+  border: 1px solid rgba(34, 211, 238, 0.22) !important;
+  border-radius: 9px !important;
+  background: rgba(2, 11, 20, 0.92) !important;
+  color: #e5f6ff !important;
+  padding: 0.48rem 0.55rem !important;
+  outline: none !important;
+}
+
+.wd-portfolio-dark input::placeholder,
+.wd-portfolio-dark textarea::placeholder {
+  color: rgba(159, 180, 199, 0.68) !important;
+}
+
+.wd-portfolio-dark input:disabled,
+.wd-portfolio-dark select:disabled,
+.wd-portfolio-dark textarea:disabled {
+  color: rgba(159, 180, 199, 0.5) !important;
+  background: rgba(2, 11, 20, 0.54) !important;
+  border-color: rgba(159, 180, 199, 0.12) !important;
+}
+
+.wd-portfolio-dark option {
+  background: #071523;
+  color: #e5f6ff;
+}
+
+.wd-portfolio-dark button {
+  border: 1px solid rgba(34, 211, 238, 0.34) !important;
+  border-radius: 10px !important;
+  background: rgba(8, 48, 61, 0.88) !important;
+  color: #67e8f9 !important;
+  font-weight: 900 !important;
+  cursor: pointer;
+}
+
+.wd-portfolio-dark button:disabled {
+  border-color: rgba(159, 180, 199, 0.12) !important;
+  background: rgba(31, 41, 55, 0.42) !important;
+  color: rgba(159, 180, 199, 0.5) !important;
+  cursor: not-allowed;
+}
+
+.wd-portfolio-dark table {
+  color: #d7e9f8 !important;
+}
+
+.wd-portfolio-dark th,
+.wd-portfolio-dark td {
+  border-color: rgba(148, 163, 184, 0.16) !important;
+}
+
+.wd-portfolio-dark tbody tr:nth-child(odd) td {
+  background: rgba(15, 23, 42, 0.18);
+}
+
+.wd-portfolio-dark tbody tr:hover td {
+  background: rgba(34, 211, 238, 0.08);
+}
+
+.wd-portfolio-dark a {
+  color: #67e8f9;
+}
+
+@media (max-width: 900px), (max-device-width: 900px) {
+  .wd-portfolio-dark section,
+  .wd-portfolio-dark details {
+    border-radius: 16px !important;
+  }
+
+  .wd-portfolio-dark section:has(table),
+  .wd-portfolio-dark div:has(> table) {
+    margin-left: -0.1rem;
+    margin-right: -0.1rem;
+  }
+}
+`;
+
+
 function makeProfile(name: string): PortfolioProfile {
   return {
     id: `profile-${Date.now()}`,
@@ -252,15 +400,15 @@ function MetricCard({ label, value, help }: { label: string; value: ReactNode; h
   return (
     <div
       style={{
-        border: "1px solid #e5e7eb",
+        border: "1px solid #1d3448",
         borderRadius: 6,
         padding: "0.65rem",
-        background: "#fff"
+        background: "rgba(7, 21, 35, 0.88)"
       }}
     >
-      <div style={{ fontSize: 11, color: "#4b5563", fontWeight: 700 }}>{label}</div>
+      <div style={{ fontSize: 11, color: "#9fb4c7", fontWeight: 700 }}>{label}</div>
       <div style={{ fontSize: 16, fontWeight: 800, marginTop: 4 }}>{value}</div>
-      {help ? <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>{help}</div> : null}
+      {help ? <div style={{ fontSize: 11, color: "#9fb4c7", marginTop: 4 }}>{help}</div> : null}
     </div>
   );
 }
@@ -269,9 +417,9 @@ function PortfolioProfileSummary({ exposure }: { exposure: TheoreticalExposure }
   return (
     <section
       style={{
-        border: "1px solid #d1d5db",
+        border: "1px solid #1d3448",
         borderRadius: 8,
-        background: "#f8fafc",
+        background: "rgba(15, 23, 42, 0.72)",
         padding: "0.8rem",
         display: "grid",
         gap: "0.75rem"
@@ -279,7 +427,7 @@ function PortfolioProfileSummary({ exposure }: { exposure: TheoreticalExposure }
     >
       <div>
         <h3 style={{ margin: 0 }}>Profile Overview</h3>
-        <p style={{ margin: "0.25rem 0 0", fontSize: 12, color: "#4b5563" }}>
+        <p style={{ margin: "0.25rem 0 0", fontSize: 12, color: "#9fb4c7" }}>
           Inventory view only. Trade suggestions stay in the Wheel Workspace.
         </p>
       </div>
@@ -329,9 +477,9 @@ function CashOutlineSection({
   return (
     <section
       style={{
-        border: "1px solid #d1d5db",
+        border: "1px solid #1d3448",
         borderRadius: 8,
-        background: "#fff",
+        background: "rgba(7, 21, 35, 0.88)",
         padding: "0.8rem",
         display: "grid",
         gap: "0.75rem"
@@ -339,7 +487,7 @@ function CashOutlineSection({
     >
       <div>
         <h3 style={{ margin: 0 }}>Cash & Trade Capacity</h3>
-        <p style={{ margin: "0.25rem 0 0", fontSize: 12, color: "#4b5563" }}>
+        <p style={{ margin: "0.25rem 0 0", fontSize: 12, color: "#9fb4c7" }}>
           Cash outline for future trades. Existing short-put assignment reserve is calculated from the profile.
         </p>
       </div>
@@ -406,23 +554,23 @@ function ExpirationLadder({ buckets }: { buckets: ExpirationBucket[] }) {
   return (
     <section
       style={{
-        border: "1px solid #d1d5db",
+        border: "1px solid #1d3448",
         borderRadius: 8,
-        background: "#fff",
+        background: "rgba(7, 21, 35, 0.88)",
         padding: "0.8rem"
       }}
     >
       <h3 style={{ marginTop: 0 }}>Expiration Ladder</h3>
-      <p style={{ marginTop: 0, fontSize: 12, color: "#4b5563" }}>
+      <p style={{ marginTop: 0, fontSize: 12, color: "#9fb4c7" }}>
         Inventory by expiration. This makes it easier to see what expires first and where obligations sit.
       </p>
 
       {buckets.length === 0 ? (
-        <p style={{ fontSize: 12, color: "#6b7280" }}>No positions in this profile.</p>
+        <p style={{ fontSize: 12, color: "#9fb4c7" }}>No positions in this profile.</p>
       ) : (
         <div style={{ display: "grid", gap: "0.6rem" }}>
           {buckets.map((bucket) => (
-            <div key={bucket.expiration} style={{ border: "1px solid #e5e7eb", borderRadius: 6, padding: "0.65rem" }}>
+            <div key={bucket.expiration} style={{ border: "1px solid #1d3448", borderRadius: 6, padding: "0.65rem" }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", fontSize: 12 }}>
                 <strong>{bucket.label}</strong>
                 <span>Net Delta: {num(bucket.netDelta, 1)}</span>
@@ -434,7 +582,7 @@ function ExpirationLadder({ buckets }: { buckets: ExpirationBucket[] }) {
                 {bucket.positions.map((position) => (
                   <li key={position.id}>
                     <strong>{legLabel(position)}</strong>{" "}
-                    <span style={{ color: "#4b5563" }}>
+                    <span style={{ color: "#9fb4c7" }}>
                       Mark {money(position.mark)} · Delta {num(position.delta, 1)} · Theta {money(position.theta)} · P/L open {money(position.plOpen)}
                     </span>
                   </li>
@@ -466,14 +614,14 @@ function RiskModeComparison({ expirationResults, theoreticalResults }: { expirat
   return (
     <section
       style={{
-        border: "1px solid #d1d5db",
+        border: "1px solid #1d3448",
         borderRadius: 8,
-        background: "#fff",
+        background: "rgba(7, 21, 35, 0.88)",
         padding: "0.8rem"
       }}
     >
       <h3 style={{ marginTop: 0 }}>Expiration vs Theoretical Slices</h3>
-      <p style={{ marginTop: 0, fontSize: 12, color: "#4b5563" }}>
+      <p style={{ marginTop: 0, fontSize: 12, color: "#9fb4c7" }}>
         Side-by-side view of profile behavior at your selected price slices.
       </p>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
@@ -936,6 +1084,8 @@ export default function PortfolioPage() {
 
   return (
     <AuthGate>
+    <>
+    <style dangerouslySetInnerHTML={{ __html: portfolioGlobalStyles }} />
     <main
       className="wheeldesk-shell wd-portfolio-dark"
       style={{
@@ -947,7 +1097,7 @@ export default function PortfolioPage() {
       <WheelDeskSideNav active="positions" />
 
       <div
-        className="wheeldesk-page"
+        className="wheeldesk-page wheeldesk-portfolio-page"
         style={{
           flex: 1,
           minWidth: 0,
@@ -1012,9 +1162,9 @@ export default function PortfolioPage() {
 
       <section
         style={{
-          border: "1px solid #d1d5db",
+          border: "1px solid #1d3448",
           borderRadius: 8,
-          background: "#fff",
+          background: "rgba(7, 21, 35, 0.88)",
           padding: "0.8rem",
           display: "flex",
           justifyContent: "space-between",
@@ -1070,9 +1220,9 @@ export default function PortfolioPage() {
 
       <section
         style={{
-          border: "1px solid #d1d5db",
+          border: "1px solid #1d3448",
           borderRadius: 8,
-          background: "#fff",
+          background: "rgba(7, 21, 35, 0.88)",
           padding: "0.8rem",
           display: "flex",
           alignItems: "center",
@@ -1143,9 +1293,9 @@ export default function PortfolioPage() {
 
       <section
         style={{
-          border: "1px solid #d1d5db",
+          border: "1px solid #1d3448",
           borderRadius: 8,
-          background: "#fff",
+          background: "rgba(7, 21, 35, 0.88)",
           padding: "0.8rem"
         }}
       >
@@ -1168,13 +1318,14 @@ export default function PortfolioPage() {
             <div>Score: {Number(structureContext.prevailingScore).toFixed(2)}</div>
           </div>
         ) : (
-          <p style={{ margin: 0, fontSize: 12, color: "#6b7280" }}>
+          <p style={{ margin: 0, fontSize: 12, color: "#9fb4c7" }}>
             No market-structure snapshot found for {primarySymbol}.
           </p>
         )}
       </section>
       </div>
     </main>
+    </>
     </AuthGate>
   );
 }

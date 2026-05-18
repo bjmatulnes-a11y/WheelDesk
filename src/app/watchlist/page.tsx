@@ -555,7 +555,11 @@ export default function WatchlistCommandPage() {
       setAllSurfaces(deduped);
       setRows(sortedRows);
       setLastLoadedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
-      setStatus(`Loaded ${deduped.length} Supabase surface(s) across ${latestTickers.length} ticker(s).`);
+      setStatus(
+        deduped.length
+          ? `Loaded ${deduped.length} Supabase surface(s) across ${latestTickers.length} ticker(s).`
+          : "No Supabase surfaces returned. Confirm /api/supabase/surface-snapshot?mode=list works and that option_surface_snapshots has rows."
+      );
     } catch (error: any) {
       setStatus(error?.message ?? "Failed to load Supabase watchlist data.");
       setRows([]);
