@@ -937,7 +937,7 @@ export default function PortfolioPage() {
   return (
     <AuthGate>
     <main
-      className="wheeldesk-shell"
+      className="wheeldesk-shell wd-portfolio-dark"
       style={{
         display: "flex",
         minHeight: "100vh",
