@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { WheelDeskSideNav } from "../../components/WheelDeskSideNav";
 import ForecastChartPanel from "../../components/control-center/ForecastChartPanel";
+import ExpandedChartModal from "../../components/charts/ExpandedChartModal";
 import ScenarioPlaybookCard from "../../components/control-center/ScenarioPlaybookCard";
 import ModelReadoutCard from "../../components/control-center/ModelReadoutCard";
 import IVSurfaceCard from "../../components/control-center/IVSurfaceCard";
@@ -359,6 +360,30 @@ function Toggle({
   );
 }
 
+function ExpandChartButton({ onClick, label = "Expand Chart" }: { onClick: () => void; label?: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        border: "1px solid rgba(34, 211, 238, 0.35)",
+        background: "rgba(34, 211, 238, 0.12)",
+        color: colors.teal,
+        borderRadius: 999,
+        padding: "0.48rem 0.72rem",
+        fontSize: 12,
+        fontWeight: 950,
+        letterSpacing: "0.02em",
+        cursor: "pointer",
+        whiteSpace: "nowrap",
+        boxShadow: "0 10px 24px rgba(34, 211, 238, 0.08)",
+      }}
+    >
+      ⛶ {label}
+    </button>
+  );
+}
+
 export default function ControlCenterPage() {
   const [mounted, setMounted] = useState(false);
   const [ticker, setTicker] = useState("SOFI");
@@ -373,6 +398,7 @@ export default function ControlCenterPage() {
   const [profiles, setProfiles] = useState<PortfolioProfile[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState("");
   const [status, setStatus] = useState("");
+  const [chartExpanded, setChartExpanded] = useState(false);
   const [overlays, setOverlays] = useState<OverlayFlags>({
     prevailingSurfaceLevels: true,
     selectedChainLevels: false,
@@ -1066,6 +1092,7 @@ export default function ControlCenterPage() {
                                 ivSurface={chartIvSurface}
                                 flowOverlay={chartFlowOverlay}
                                 isLoading={candleLoading || surfaceLoading}
+                                headerAction={<ExpandChartButton onClick={() => setChartExpanded(true)} />}
                               />
 
                 <div
@@ -1165,6 +1192,36 @@ export default function ControlCenterPage() {
         )}
 
         {status ? <div style={{ color: colors.muted, marginTop: "1rem", fontSize: 12 }}>{status}</div> : null}
+      
+
+        <ExpandedChartModal
+          open={chartExpanded}
+          onClose={() => setChartExpanded(false)}
+          title={`${ticker} Structure Chart`}
+          subtitle="Expanded Control Center chart with candles, OI path, IV band, dealer pressure, wall migration, and flow overlays."
+          meta={
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", color: colors.muted, fontSize: 12, fontWeight: 850 }}>
+              <span>Surface: <strong style={{ color: colors.text }}>{selectedSurfaceDate || "N/A"}</strong></span>
+              <span>Expiration: <strong style={{ color: colors.text }}>{selectedExpiration || "N/A"}</strong></span>
+              <span>Candles: <strong style={{ color: colors.text }}>{candleTimeframe}</strong></span>
+              <span>Rows: <strong style={{ color: colors.text }}>{selectedChainSurface?.rows?.length ?? 0}</strong></span>
+            </div>
+          }
+        >
+          <ForecastChartPanel
+            key={`expanded-${ticker}-${selectedSurfaceDate}-${selectedExpiration}-${candleTimeframe}-${String(overlays.prevailingSurfaceLevels)}-${String(overlays.selectedChainLevels)}-${String(overlays.selectedChainPath)}-${String(overlays.selectedChainIvSurface)}-${String(overlays.dealerPressure)}-${String(overlays.wallMigration)}-${String(overlays.flowIntelligence)}`}
+            ticker={ticker}
+            candles={candles}
+            edge={chartEdge}
+            edgeLabelMode={chartEdgeLabelMode}
+            path={chartPath}
+            matrix={chartMatrix}
+            ivSurface={chartIvSurface}
+            flowOverlay={chartFlowOverlay}
+            isLoading={candleLoading || surfaceLoading}
+            chartHeight={720}
+          />
+        </ExpandedChartModal>
       </div>
     </main>
     </AuthGate>

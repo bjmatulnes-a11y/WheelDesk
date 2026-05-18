@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import {
   CandlestickSeries,
   ColorType,
@@ -26,6 +26,8 @@ type ForecastChartPanelProps = {
   ivSurface?: IVSurfaceSummary | null;
   flowOverlay?: any;
   isLoading?: boolean;
+  chartHeight?: number;
+  headerAction?: ReactNode;
 };
 
 type LinePoint = { time?: unknown; date?: unknown; value?: unknown; price?: unknown; adjustedCenter?: unknown; expiration?: unknown };
@@ -219,7 +221,9 @@ export default function ForecastChartPanel({
   matrix,
   ivSurface,
   flowOverlay,
-  isLoading = false
+  isLoading = false,
+  chartHeight = 470,
+  headerAction
 }: ForecastChartPanelProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -255,7 +259,7 @@ export default function ForecastChartPanel({
     if (!container) return;
 
     const chart = createChart(container, {
-      height: 470,
+      height: chartHeight,
       layout: {
         background: { type: ColorType.Solid, color: "#07111f" },
         textColor: "#b8c7dc"
@@ -404,7 +408,7 @@ export default function ForecastChartPanel({
       ivHalfUpperRef.current = null;
       ivHalfLowerRef.current = null;
     };
-  }, []);
+  }, [chartHeight]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -546,7 +550,7 @@ export default function ForecastChartPanel({
   const expectedMove = ivSurface?.expectedMove;
 
   return (
-    <section style={{ ...cardStyle, padding: "0.85rem", minHeight: 560, position: "relative" }}>
+    <section style={{ ...cardStyle, padding: "0.85rem", minHeight: chartHeight + 90, position: "relative" }}>
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "1rem", marginBottom: "0.45rem" }}>
         <div>
           <h2 style={{ margin: 0, color: colors.text, fontSize: 20, fontWeight: 950 }}>{ticker} Forecast Cone</h2>
@@ -560,26 +564,29 @@ export default function ForecastChartPanel({
           ) : null}
         </div>
 
-        <div style={{ textAlign: "right", minWidth: 130 }}>
-          <div style={{ color: colors.green, fontSize: 24, fontWeight: 950, lineHeight: 1 }}>{fmt(lastClose)}</div>
-          <div style={{ color: colors.muted, fontSize: 11, marginTop: 3 }}>Last candle close</div>
-          {ivSurface ? (
-            <div
-              style={{
-                color:
-                  ivSurface.skewBias === "bearish"
-                    ? colors.red
-                    : ivSurface.skewBias === "bullish"
-                      ? colors.green
-                      : colors.teal,
-                fontSize: 12,
-                fontWeight: 900,
-                marginTop: 8,
-              }}
-            >
-              Skew: {String(ivSurface.skewBias ?? "unknown").toUpperCase()}
-            </div>
-          ) : null}
+        <div style={{ display: "grid", gap: "0.6rem", justifyItems: "end", textAlign: "right", minWidth: 130 }}>
+          <div>
+            <div style={{ color: colors.green, fontSize: 24, fontWeight: 950, lineHeight: 1 }}>{fmt(lastClose)}</div>
+            <div style={{ color: colors.muted, fontSize: 11, marginTop: 3 }}>Last candle close</div>
+            {ivSurface ? (
+              <div
+                style={{
+                  color:
+                    ivSurface.skewBias === "bearish"
+                      ? colors.red
+                      : ivSurface.skewBias === "bullish"
+                        ? colors.green
+                        : colors.teal,
+                  fontSize: 12,
+                  fontWeight: 900,
+                  marginTop: 8,
+                }}
+              >
+                Skew: {String(ivSurface.skewBias ?? "unknown").toUpperCase()}
+              </div>
+            ) : null}
+          </div>
+          {headerAction ? <div>{headerAction}</div> : null}
         </div>
       </div>
 
@@ -590,7 +597,7 @@ export default function ForecastChartPanel({
           </div>
         ) : null}
 
-        <div ref={containerRef} style={{ width: "100%", height: 470 }} />
+        <div ref={containerRef} style={{ width: "100%", height: chartHeight }} />
 
         {!isLoading && (!candles || candles.length === 0) ? (
           <div
