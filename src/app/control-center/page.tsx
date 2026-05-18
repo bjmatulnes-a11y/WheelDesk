@@ -516,6 +516,32 @@ function ExpandChartButton({ onClick, label = "Expand Chart" }: { onClick: () =>
   );
 }
 
+function ChartRoomButton({ href, label = "Open Chart Room" }: { href: string; label?: string }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      style={{
+        border: "1px solid rgba(16, 185, 129, 0.36)",
+        background: "rgba(16, 185, 129, 0.12)",
+        color: colors.green,
+        borderRadius: 999,
+        padding: "0.48rem 0.72rem",
+        fontSize: 12,
+        fontWeight: 950,
+        letterSpacing: "0.02em",
+        cursor: "pointer",
+        whiteSpace: "nowrap",
+        textDecoration: "none",
+        boxShadow: "0 10px 24px rgba(16, 185, 129, 0.08)",
+      }}
+    >
+      ↗ {label}
+    </a>
+  );
+}
+
 export default function ControlCenterPage() {
   const [mounted, setMounted] = useState(false);
   const [ticker, setTicker] = useState("SOFI");
@@ -956,6 +982,15 @@ export default function ControlCenterPage() {
 
   const chartFlowOverlay = overlays.flowIntelligence ? flowIntelligence : null;
 
+  const chartRoomUrl = useMemo(() => {
+    const params = new URLSearchParams();
+    params.set("ticker", ticker);
+    if (selectedSurfaceDate) params.set("surfaceDate", selectedSurfaceDate);
+    if (selectedExpiration) params.set("expiration", selectedExpiration);
+    params.set("tf", candleTimeframe);
+    return `/control-center/chart?${params.toString()}`;
+  }, [ticker, selectedSurfaceDate, selectedExpiration, candleTimeframe]);
+
   const surfaceSupport = surfaceTraderEdge?.support ?? surfaceDealerPressure?.support;
   const surfaceResistance = surfaceTraderEdge?.resistance ?? surfaceDealerPressure?.resistance;
   const surfaceMagnet = surfaceTraderEdge?.magnet ?? surfaceDealerPressure?.magnet;
@@ -1180,7 +1215,12 @@ export default function ControlCenterPage() {
                                 ivSurface={chartIvSurface}
                                 flowOverlay={chartFlowOverlay}
                                 isLoading={candleLoading || surfaceLoading}
-                                headerAction={<ExpandChartButton onClick={() => setChartExpanded(true)} />}
+                                headerAction={
+                                  <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
+                                    <ExpandChartButton onClick={() => setChartExpanded(true)} />
+                                    <ChartRoomButton href={chartRoomUrl} />
+                                  </div>
+                                }
                               />
 
                 <div
@@ -1309,6 +1349,9 @@ export default function ControlCenterPage() {
                   compact
                   title="Expanded chart overlays"
                 />
+                <div style={{ marginTop: "0.65rem" }}>
+                  <ChartRoomButton href={chartRoomUrl} label="Open as Chart Room" />
+                </div>
               </div>
             </div>
           }
