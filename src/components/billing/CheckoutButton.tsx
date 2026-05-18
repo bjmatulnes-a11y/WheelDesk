@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { getSupabaseAuthClient } from "../../lib/auth/supabase-auth-client";
 import type { WheelDeskPlanId } from "../../lib/billing/plans";
 
@@ -15,7 +15,14 @@ export default function CheckoutButton({ planId, label }: CheckoutButtonProps) {
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
 
+  const billingEnabled = useMemo(() => process.env.NEXT_PUBLIC_BILLING_ENABLED === "true", []);
+
   async function startCheckout() {
+    if (!billingEnabled) {
+      setStatus("Checkout is not open yet. Billing is being finalized.");
+      return;
+    }
+
     setBusy(true);
     setStatus("Preparing secure checkout…");
 
@@ -55,12 +62,19 @@ export default function CheckoutButton({ planId, label }: CheckoutButtonProps) {
     }
   }
 
+  const buttonLabel = billingEnabled ? (busy ? "Opening Stripe…" : label) : "Coming soon";
+
   return (
     <div className="wd-checkout-action">
-      <button type="button" onClick={startCheckout} disabled={busy} className="wd-auth-primary wd-checkout-button">
-        {busy ? "Opening Stripe…" : label}
+      <button
+        type="button"
+        onClick={startCheckout}
+        disabled={busy || !billingEnabled}
+        className="wd-auth-primary wd-checkout-button"
+      >
+        {buttonLabel}
       </button>
-      {status ? <small>{status}</small> : null}
+      {status ? <small>{status}</small> : !billingEnabled ? <small>Founder billing is currently in preview.</small> : null}
     </div>
   );
 }

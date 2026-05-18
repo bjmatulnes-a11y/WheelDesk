@@ -5,6 +5,7 @@ export type WheelDeskPlan = {
   name: string;
   priceLabel: string;
   note: string;
+  stripeProductName: string;
   description: string;
   features: string[];
   highlight?: boolean;
@@ -14,27 +15,48 @@ export const WHEELDESK_PLANS: WheelDeskPlan[] = [
   {
     id: "founder",
     name: "Founder",
+    stripeProductName: "WheelDesk Founder",
     priceLabel: "$49",
-    note: "early access",
-    description: "For the first cohort validating the WheelDesk edge.",
-    features: ["Control Center", "Validation", "Portfolio risk console", "Scanner", "Mobile install"],
+    note: "per month · early access",
+    description: "Founder access for the first cohort validating the WheelDesk edge.",
+    features: [
+      "Control Center",
+      "Watchlist Command",
+      "Validation engine",
+      "Portfolio risk console",
+      "Mobile install",
+    ],
   },
   {
     id: "core",
     name: "Core",
+    stripeProductName: "WheelDesk Core",
     priceLabel: "$79",
     note: "per month",
-    description: "The main WheelDesk subscription for active premium sellers.",
-    features: ["OI surfaces", "Wheel repair tools", "Saved tickers", "Market Structure", "Basic validation"],
+    description: "The main WheelDesk subscription for active options traders.",
+    features: [
+      "OI surfaces",
+      "Dealer pressure context",
+      "Wheel repair tools",
+      "Saved ticker workflow",
+      "Basic validation receipts",
+    ],
     highlight: true,
   },
   {
     id: "research",
     name: "Research",
+    stripeProductName: "WheelDesk Research",
     priceLabel: "$129",
     note: "per month",
-    description: "The deeper edge stack for validation and structure research.",
-    features: ["Dealer pressure", "Wall migration", "Multi-chain confluence", "Validation history", "Research exports"],
+    description: "The deeper edge stack for validation and market-structure research.",
+    features: [
+      "Wall migration history",
+      "Multi-chain confluence",
+      "Advanced validation history",
+      "Research exports",
+      "Priority feature access",
+    ],
   },
 ];
 
@@ -52,4 +74,11 @@ export function getWheelDeskPlan(value: string | null | undefined): WheelDeskPla
 
 export function planLabel(value: string | null | undefined): string {
   return getWheelDeskPlan(value).name;
+}
+
+export function planSortRank(value: string | null | undefined): number {
+  if (value === "research") return 30;
+  if (value === "core") return 20;
+  if (value === "founder") return 10;
+  return 0;
 }

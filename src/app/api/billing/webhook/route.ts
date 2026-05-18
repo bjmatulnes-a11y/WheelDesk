@@ -100,23 +100,14 @@ function getInvoiceSubscriptionId(invoice: Stripe.Invoice): string | null {
       ? invoice.parent.subscription_details?.subscription
       : null;
 
-  if (typeof parentSubscription === "string") {
-    return parentSubscription;
-  }
+  if (typeof parentSubscription === "string") return parentSubscription;
 
-  // Compatibility fallback for older Stripe API payloads where invoice.subscription
-  // existed at the top level. Current Stripe TS types no longer expose this field.
   const legacyInvoice = invoice as Stripe.Invoice & {
     subscription?: string | Stripe.Subscription | null;
   };
 
-  if (typeof legacyInvoice.subscription === "string") {
-    return legacyInvoice.subscription;
-  }
-
-  if (legacyInvoice.subscription && typeof legacyInvoice.subscription === "object") {
-    return legacyInvoice.subscription.id;
-  }
+  if (typeof legacyInvoice.subscription === "string") return legacyInvoice.subscription;
+  if (legacyInvoice.subscription && typeof legacyInvoice.subscription === "object") return legacyInvoice.subscription.id;
 
   return null;
 }
@@ -168,9 +159,7 @@ export async function POST(request: Request) {
           );
         }
 
-        if (subscriptionId) {
-          await syncSubscriptionById(subscriptionId, userId, plan);
-        }
+        if (subscriptionId) await syncSubscriptionById(subscriptionId, userId, plan);
         break;
       }
 
@@ -186,9 +175,7 @@ export async function POST(request: Request) {
       case "invoice.payment_failed": {
         const invoice = event.data.object as Stripe.Invoice;
         const subscriptionId = getInvoiceSubscriptionId(invoice);
-        if (subscriptionId) {
-          await syncSubscriptionById(subscriptionId);
-        }
+        if (subscriptionId) await syncSubscriptionById(subscriptionId);
         break;
       }
 

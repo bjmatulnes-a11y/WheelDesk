@@ -3,6 +3,16 @@ import { isWheelDeskPlanId, type WheelDeskPlanId } from "./plans";
 
 let stripeClient: Stripe | null = null;
 
+export function isBillingEnabled(): boolean {
+  return process.env.BILLING_ENABLED === "true" || process.env.NEXT_PUBLIC_BILLING_ENABLED === "true";
+}
+
+export function requireBillingEnabled() {
+  if (!isBillingEnabled()) {
+    throw new Error("Billing is currently disabled while WheelDesk checkout is being finalized.");
+  }
+}
+
 export function getStripe(): Stripe {
   const secretKey = process.env.STRIPE_SECRET_KEY;
 
@@ -32,6 +42,20 @@ export function getStripePriceId(plan: WheelDeskPlanId): string {
   }
 
   return priceId;
+}
+
+export function getBillingConfigStatus() {
+  return {
+    billingEnabled: isBillingEnabled(),
+    siteUrl: process.env.NEXT_PUBLIC_SITE_URL ?? process.env.SITE_URL ?? null,
+    hasStripeSecretKey: Boolean(process.env.STRIPE_SECRET_KEY),
+    hasWebhookSecret: Boolean(process.env.STRIPE_WEBHOOK_SECRET),
+    priceIds: {
+      founder: Boolean(process.env.STRIPE_PRICE_FOUNDER),
+      core: Boolean(process.env.STRIPE_PRICE_CORE),
+      research: Boolean(process.env.STRIPE_PRICE_RESEARCH),
+    },
+  };
 }
 
 export function planFromStripePriceId(priceId: string | null | undefined): WheelDeskPlanId {

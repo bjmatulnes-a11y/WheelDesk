@@ -3,14 +3,16 @@ import CheckoutButton from "../../components/billing/CheckoutButton";
 import { WHEELDESK_PLANS } from "../../lib/billing/plans";
 
 type PricingPageProps = {
-  searchParams?: {
+  searchParams?: Promise<{
     checkout?: string;
     plan?: string;
-  };
+  }>;
 };
 
-export default function PricingPage({ searchParams }: PricingPageProps) {
-  const checkoutStatus = searchParams?.checkout;
+export default async function PricingPage({ searchParams }: PricingPageProps) {
+  const params = await searchParams;
+  const checkoutStatus = params?.checkout;
+  const billingEnabled = process.env.NEXT_PUBLIC_BILLING_ENABLED === "true";
 
   return (
     <main className="wd-landing wd-pricing-page">
@@ -36,6 +38,9 @@ export default function PricingPage({ searchParams }: PricingPageProps) {
           Login controls app access. Stripe controls subscription billing. Webhooks write the paid plan
           back into Supabase so WheelDesk can unlock entitlements by tier.
         </p>
+        {!billingEnabled ? (
+          <p className="wd-auth-status">Billing is in preview. Pricing is shown for setup and validation before checkout opens.</p>
+        ) : null}
         {checkoutStatus === "cancelled" ? (
           <p className="wd-auth-status">Checkout was cancelled. Pick a plan when you are ready.</p>
         ) : null}

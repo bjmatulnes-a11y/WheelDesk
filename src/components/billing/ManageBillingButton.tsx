@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { getSupabaseAuthClient } from "../../lib/auth/supabase-auth-client";
 
 type ManageBillingButtonProps = {
@@ -10,8 +10,14 @@ type ManageBillingButtonProps = {
 export default function ManageBillingButton({ disabled }: ManageBillingButtonProps) {
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
+  const billingEnabled = useMemo(() => process.env.NEXT_PUBLIC_BILLING_ENABLED === "true", []);
 
   async function openPortal() {
+    if (!billingEnabled) {
+      setStatus("Billing portal is not open yet.");
+      return;
+    }
+
     setBusy(true);
     setStatus("Opening billing portal…");
 
@@ -45,8 +51,8 @@ export default function ManageBillingButton({ disabled }: ManageBillingButtonPro
 
   return (
     <div className="wd-checkout-action">
-      <button type="button" onClick={openPortal} disabled={disabled || busy} className="wd-auth-secondary">
-        {busy ? "Opening…" : "Manage billing"}
+      <button type="button" onClick={openPortal} disabled={disabled || busy || !billingEnabled} className="wd-auth-secondary">
+        {busy ? "Opening…" : billingEnabled ? "Manage billing" : "Billing preview"}
       </button>
       {status ? <small>{status}</small> : null}
     </div>

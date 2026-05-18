@@ -27,7 +27,7 @@ function formatDate(value: string | null | undefined): string {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(new Date(value));
 }
 
-function AccountPageContent() {
+function AccountContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [user, setUser] = useState<User | null>(null);
@@ -79,6 +79,8 @@ function AccountPageContent() {
 
       if (searchParams.get("checkout") === "success") {
         setStatus("Checkout complete. Stripe webhook sync may take a moment; refresh if the plan still looks pending.");
+      } else if (searchParams.get("checkout") === "cancelled") {
+        setStatus("Checkout was cancelled. Your account was not charged.");
       } else {
         setStatus("Active session");
       }
@@ -141,8 +143,8 @@ function AccountPageContent() {
           <div className="wd-billing-note">
             <strong>Billing control</strong>
             <span>
-              Start a plan from Pricing. After checkout, Stripe webhooks update this page and the Supabase
-              subscription record used for tier-based access.
+              Stripe checkout creates the paid subscription. Stripe webhooks update Supabase, and WheelDesk reads
+              that subscription record for tier-based access.
             </span>
           </div>
 
@@ -159,11 +161,10 @@ function AccountPageContent() {
   );
 }
 
-
 export default function AccountPage() {
   return (
-    <Suspense fallback={<main className="wd-account-shell"><section className="wd-account-card"><p className="wd-account-muted">Loading account…</p></section></main>}>
-      <AccountPageContent />
+    <Suspense fallback={<main className="wd-account-shell"><section className="wd-account-card">Loading account…</section></main>}>
+      <AccountContent />
     </Suspense>
   );
 }

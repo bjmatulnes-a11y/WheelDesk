@@ -1,3 +1,5 @@
+import { planSortRank, type WheelDeskPlanId } from "./plans";
+
 export const BILLING_ACTIVE_STATUSES = new Set(["active", "trialing"]);
 
 export function hasActiveBillingStatus(status: string | null | undefined): boolean {
@@ -15,4 +17,13 @@ export function friendlyBillingStatus(status: string | null | undefined): string
   if (status === "incomplete_expired") return "Incomplete expired";
   if (status === "paused") return "Paused";
   return status;
+}
+
+export function hasPlanAccess(
+  activePlan: string | null | undefined,
+  activeStatus: string | null | undefined,
+  requiredPlan: WheelDeskPlanId,
+): boolean {
+  if (!hasActiveBillingStatus(activeStatus)) return false;
+  return planSortRank(activePlan) >= planSortRank(requiredPlan);
 }

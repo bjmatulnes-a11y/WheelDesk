@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
 import { supabaseServer } from "../../../../lib/supabase-server";
 import { getAuthenticatedUserFromRequest } from "../../../../lib/billing/auth-request";
-import { getSiteUrl, getStripe, getStripePriceId, sanitizePlanId } from "../../../../lib/billing/stripe-server";
+import {
+  getSiteUrl,
+  getStripe,
+  getStripePriceId,
+  requireBillingEnabled,
+  sanitizePlanId,
+} from "../../../../lib/billing/stripe-server";
 
 export const runtime = "nodejs";
 
@@ -9,8 +15,17 @@ type CheckoutRequestBody = {
   plan?: string;
 };
 
+function statusForBillingError(message: string) {
+  if (message.includes("disabled")) return 503;
+  if (message.includes("Missing STRIPE") || message.includes("Missing NEXT_PUBLIC")) return 500;
+  if (message.includes("bearer") || message.includes("Invalid session")) return 401;
+  return 400;
+}
+
 export async function POST(request: Request) {
   try {
+    requireBillingEnabled();
+
     const user = await getAuthenticatedUserFromRequest(request);
     const body = (await request.json().catch(() => ({}))) as CheckoutRequestBody;
     const plan = sanitizePlanId(body.plan);
@@ -79,6 +94,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ url: session.url });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not create checkout session.";
-    return NextResponse.json({ error: message }, { status: message.includes("Missing") ? 500 : 401 });
+    return NextResponse.json({ error: message }, { status: statusForBillingError(message) });
   }
 }
