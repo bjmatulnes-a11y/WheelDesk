@@ -5,11 +5,13 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import AuthGate from "../../../components/auth/AuthGate";
 import ForecastChartPanel from "../../../components/control-center/ForecastChartPanel";
+import OIFieldHorizonMatrix from "../../../components/control-center/OIFieldHorizonMatrix";
 import { colors, cardStyle } from "../../../components/control-center/styles";
 import { buildDealerPressureSummary } from "../../../lib/dealer-pressure-engine";
 import { buildFlowIntelligenceView } from "../../../lib/flow-intelligence-view";
 import { buildIVSurfaceSummary } from "../../../lib/iv-surface-engine";
 import { buildOIImpliedPath } from "../../../lib/oi-implied-path-engine";
+import { buildOIFieldForecast } from "../../../lib/oi-field-engine-v2";
 import { buildOIIntelligenceView } from "../../../lib/oi-intelligence-view";
 import { buildOIProjectionReport } from "../../../lib/oi-projection-engine";
 import { buildPredictiveMatrix } from "../../../lib/predictive-matrix-engine";
@@ -496,6 +498,22 @@ function ChartRoomContent() {
     [chainOIPath, chainDealerPressure, chainTraderEdge, chainWallMigration]
   );
 
+  const selectedExpirationDte = useMemo(() => {
+    return expirationOptions.find((item) => item.expiration === selectedExpiration)?.dte ?? null;
+  }, [expirationOptions, selectedExpiration]);
+
+  const oiFieldForecast = useMemo(
+    () => buildOIFieldForecast({
+      path: chainOIPath,
+      projectionReport: chainProjectionReport,
+      edgeSummary: chainTraderEdge,
+      wallMigration: chainWallMigration,
+      currentPrice: analysisPrice,
+      selectedExpirationDte,
+    }),
+    [chainOIPath, chainProjectionReport, chainTraderEdge, chainWallMigration, analysisPrice, selectedExpirationDte]
+  );
+
   const chainIVSurface = useMemo(() => {
     const dte = expirationOptions.find((item) => item.expiration === selectedExpiration)?.dte ?? 14;
     return buildIVSurfaceSummary({ surface: selectedChainSurface, currentPrice: analysisPrice, horizonDays: dte, candles });
@@ -658,6 +676,8 @@ function ChartRoomContent() {
             <MetricPill label="ATM IV" value={pct(chainIVSurface?.atmIv)} tone={colors.amber} />
             <MetricPill label="Flow Bias" value={(flowIntelligence?.bias ?? "neutral").toUpperCase()} tone={flowIntelligence?.bias === "bearish" ? colors.red : flowIntelligence?.bias === "bullish" ? colors.green : colors.amber} />
           </section>
+
+          {selectedSurface ? <OIFieldHorizonMatrix forecast={oiFieldForecast} /> : null}
 
           {selectedSurface ? (
             <ForecastChartPanel

@@ -8,6 +8,7 @@ import ScenarioPlaybookCard from "../../components/control-center/ScenarioPlaybo
 import ModelReadoutCard from "../../components/control-center/ModelReadoutCard";
 import IVSurfaceCard from "../../components/control-center/IVSurfaceCard";
 import PredictiveMatrixPanel from "../../components/control-center/PredictiveMatrixPanel";
+import OIFieldHorizonMatrix from "../../components/control-center/OIFieldHorizonMatrix";
 import ControlMatrixCard from "../../components/control-center/ControlMatrixCard";
 import ControlCommandDeck from "../../components/control-center/ControlCommandDeck";
 import TradersEdgeCard from "../../components/control-center/TradersEdgeCard";
@@ -16,6 +17,7 @@ import { colors, cardStyle } from "../../components/control-center/styles";
 import { buildDealerPressureSummary } from "../../lib/dealer-pressure-engine";
 import { buildAdaptivePositionControl } from "../../lib/nonlinear-mpc-engine";
 import { buildOIImpliedPath } from "../../lib/oi-implied-path-engine";
+import { buildOIFieldForecast } from "../../lib/oi-field-engine-v2";
 import { buildOIProjectionReport } from "../../lib/oi-projection-engine";
 import { buildPredictiveMatrix } from "../../lib/predictive-matrix-engine";
 import { buildIVSurfaceSummary } from "../../lib/iv-surface-engine";
@@ -899,6 +901,10 @@ export default function ControlCenterPage() {
     return chainDominanceScore(selectedSurface, selectedExpiration);
   }, [selectedSurface, selectedExpiration]);
 
+  const selectedExpirationDte = useMemo(() => {
+    return expirationOptions.find((item) => item.expiration === selectedExpiration)?.dte ?? null;
+  }, [expirationOptions, selectedExpiration]);
+
   const flowIntelligence = useMemo(() => {
     return buildFlowIntelligenceView({
       surface: selectedChainSurface,
@@ -914,6 +920,17 @@ export default function ControlCenterPage() {
       wallMigration: chainWallMigration,
     });
   }, [chainOIPath, chainDealerPressure, chainTraderEdge, chainWallMigration]);
+
+  const oiFieldForecast = useMemo(() => {
+    return buildOIFieldForecast({
+      path: chainOIPath,
+      projectionReport: chainOIProjection,
+      edgeSummary: chainTraderEdge,
+      wallMigration: chainWallMigration,
+      currentPrice: analysisPrice,
+      selectedExpirationDte,
+    });
+  }, [chainOIPath, chainOIProjection, chainTraderEdge, chainWallMigration, analysisPrice, selectedExpirationDte]);
 
   const adaptiveControl = useMemo(() => {
     return buildAdaptivePositionControl({
@@ -1233,6 +1250,7 @@ export default function ControlCenterPage() {
                 >
                   <PredictiveMatrixPanel matrix={predictiveMatrix} />
                   <ControlMatrixCard control={adaptiveControl} />
+                  <OIFieldHorizonMatrix forecast={oiFieldForecast} />
                 </div>
 
                 <div
