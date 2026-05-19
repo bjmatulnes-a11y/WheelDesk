@@ -690,6 +690,8 @@ function ChartRoomContent() {
               matrix={chartMatrix}
               ivSurface={chartIvSurface}
               flowOverlay={chartFlowOverlay}
+              fieldForecast={overlays.selectedChainPath ? oiFieldForecast : null}
+              structureFocus
               isLoading={candleLoading || surfaceLoading}
               chartHeight={760}
             />

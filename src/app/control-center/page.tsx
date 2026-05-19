@@ -1231,6 +1231,8 @@ export default function ControlCenterPage() {
                                 matrix={chartMatrix}
                                 ivSurface={chartIvSurface}
                                 flowOverlay={chartFlowOverlay}
+                                fieldForecast={overlays.selectedChainPath ? oiFieldForecast : null}
+                                structureFocus
                                 isLoading={candleLoading || surfaceLoading}
                                 headerAction={
                                   <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
@@ -1384,6 +1386,8 @@ export default function ControlCenterPage() {
             matrix={chartMatrix}
             ivSurface={chartIvSurface}
             flowOverlay={chartFlowOverlay}
+            fieldForecast={overlays.selectedChainPath ? oiFieldForecast : null}
+            structureFocus
             isLoading={candleLoading || surfaceLoading}
             chartHeight={720}
           />

@@ -14,6 +14,7 @@ import {
 } from "lightweight-charts";
 import { type CandleRecord } from "../../lib/wheeldesk-storage";
 import { type IVSurfaceSummary } from "../../lib/iv-surface-engine";
+import { type OIFieldForecastResult } from "../../lib/oi-field-engine-v2";
 import { colors, cardStyle } from "./styles";
 
 type ForecastChartPanelProps = {
@@ -25,6 +26,8 @@ type ForecastChartPanelProps = {
   matrix?: any;
   ivSurface?: IVSurfaceSummary | null;
   flowOverlay?: any;
+  fieldForecast?: OIFieldForecastResult | null;
+  structureFocus?: boolean;
   isLoading?: boolean;
   chartHeight?: number;
   headerAction?: ReactNode;
@@ -198,6 +201,52 @@ function futureTimesFromPath(path: any, lastTime: UTCTimestamp, horizonDays: num
   return generated;
 }
 
+function makeFieldForecastPath(
+  forecast: OIFieldForecastResult | null | undefined,
+  lastTime: UTCTimestamp,
+  lastClose: number,
+  valueKey: "baseTarget" | "upperBand" | "lowerBand"
+): ChartLinePoint[] {
+  if (!forecast?.horizons?.length) return [];
+
+  const rows: ChartLinePoint[] = [{ time: lastTime, value: lastClose }];
+
+  const horizons = [...forecast.horizons]
+    .filter((horizon) => Number.isFinite(Number(horizon.sessions)))
+    .sort((a, b) => Number(a.sessions) - Number(b.sessions));
+
+  for (const horizon of horizons) {
+    const value = toNumber(horizon[valueKey]);
+    if (value == null) continue;
+    rows.push({ time: addBusinessDays(lastTime, Math.max(1, Number(horizon.sessions))), value });
+  }
+
+  return uniqueAscending(rows);
+}
+
+function keyFieldHorizons(forecast: OIFieldForecastResult | null | undefined) {
+  if (!forecast?.horizons?.length) return [];
+  const preferred = new Set(["1D", "5D", "14D", "30D"]);
+  const rows = forecast.horizons.filter((horizon) => preferred.has(String(horizon.key)) || String(horizon.key).startsWith("EXP"));
+  return rows.length ? rows.slice(0, 5) : forecast.horizons.slice(0, 4);
+}
+
+function wheelHorizon(forecast: OIFieldForecastResult | null | undefined) {
+  if (!forecast?.horizons?.length) return null;
+  return (
+    forecast.horizons.find((horizon) => String(horizon.key) === "30D") ??
+    forecast.horizons.find((horizon) => String(horizon.bucket) === "wheel") ??
+    forecast.horizons.find((horizon) => String(horizon.bucket) === "expiration") ??
+    forecast.horizons[forecast.horizons.length - 1]
+  );
+}
+
+function activeFieldBand(forecast: OIFieldForecastResult | null | undefined) {
+  const horizon = wheelHorizon(forecast);
+  if (!horizon) return { lower: null as number | null, upper: null as number | null };
+  return { lower: toNumber(horizon.lowerBand), upper: toNumber(horizon.upperBand) };
+}
+
 function horizontalBand(times: UTCTimestamp[], value?: number | null): ChartLinePoint[] {
   if (value == null || !Number.isFinite(value)) return [];
   return uniqueAscending(times.map((time) => ({ time, value })));
@@ -221,6 +270,8 @@ export default function ForecastChartPanel({
   matrix,
   ivSurface,
   flowOverlay,
+  fieldForecast,
+  structureFocus = false,
   isLoading = false,
   chartHeight = 470,
   headerAction
@@ -237,6 +288,10 @@ export default function ForecastChartPanel({
   const ivLowerRef = useRef<ISeriesApi<"Line"> | null>(null);
   const ivHalfUpperRef = useRef<ISeriesApi<"Line"> | null>(null);
   const ivHalfLowerRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const fieldBaseRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const fieldUpperRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const fieldLowerRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const fieldWheelRef = useRef<ISeriesApi<"Line"> | null>(null);
   const priceLinesRef = useRef<IPriceLine[]>([]);
 
   const clearPriceLines = () => {
@@ -371,6 +426,39 @@ export default function ForecastChartPanel({
       lastValueVisible: false,
     });
 
+
+    const fieldBase = chart.addSeries(LineSeries, {
+      color: "rgba(34,211,238,0.95)",
+      lineWidth: 3,
+      lineStyle: LineStyle.Solid,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+
+    const fieldUpper = chart.addSeries(LineSeries, {
+      color: "rgba(34,197,94,0.58)",
+      lineWidth: 2,
+      lineStyle: LineStyle.Dashed,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+
+    const fieldLower = chart.addSeries(LineSeries, {
+      color: "rgba(251,113,133,0.58)",
+      lineWidth: 2,
+      lineStyle: LineStyle.Dashed,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+
+    const fieldWheel = chart.addSeries(LineSeries, {
+      color: "rgba(16,185,129,0.72)",
+      lineWidth: 2,
+      lineStyle: LineStyle.Dotted,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+
     chartRef.current = chart;
     candleRef.current = candlesSeries;
     baseRef.current = baseSeries;
@@ -382,6 +470,10 @@ export default function ForecastChartPanel({
     ivLowerRef.current = ivLower;
     ivHalfUpperRef.current = ivHalfUpper;
     ivHalfLowerRef.current = ivHalfLower;
+    fieldBaseRef.current = fieldBase;
+    fieldUpperRef.current = fieldUpper;
+    fieldLowerRef.current = fieldLower;
+    fieldWheelRef.current = fieldWheel;
 
     const resize = () => {
       if (!containerRef.current) return;
@@ -407,6 +499,10 @@ export default function ForecastChartPanel({
       ivLowerRef.current = null;
       ivHalfUpperRef.current = null;
       ivHalfLowerRef.current = null;
+      fieldBaseRef.current = null;
+      fieldUpperRef.current = null;
+      fieldLowerRef.current = null;
+      fieldWheelRef.current = null;
     };
   }, [chartHeight]);
 
@@ -417,7 +513,8 @@ export default function ForecastChartPanel({
 
     clearPriceLines();
 
-    const candleData = normalizeCandles(candles ?? []);
+    const allCandleData = normalizeCandles(candles ?? []);
+    const candleData = structureFocus && fieldForecast ? allCandleData.slice(-90) : allCandleData;
 
     candleSeries.setData(candleData);
 
@@ -435,6 +532,10 @@ export default function ForecastChartPanel({
       ivLowerRef.current?.setData([]);
       ivHalfUpperRef.current?.setData([]);
       ivHalfLowerRef.current?.setData([]);
+      fieldBaseRef.current?.setData([]);
+      fieldUpperRef.current?.setData([]);
+      fieldLowerRef.current?.setData([]);
+      fieldWheelRef.current?.setData([]);
       return;
     }
 
@@ -443,6 +544,7 @@ export default function ForecastChartPanel({
     const showEdge = Boolean(edge);
     const showMatrix = Boolean(matrix);
     const showFlowOverlay = Boolean(flowOverlay);
+    const showFieldForecast = Boolean(fieldForecast?.horizons?.length);
 
     const baseData = showPath ? makeAnchoredPath(path?.basePath, lastTime, lastClose) : [];
     const upperData = showPath ? makeAnchoredPath(path?.upperBand, lastTime, lastClose) : [];
@@ -455,6 +557,18 @@ export default function ForecastChartPanel({
     lowerRef.current?.setData(lowerData);
     bullRef.current?.setData(bullData);
     bearRef.current?.setData(bearData);
+
+    const fieldBaseData = showFieldForecast ? makeFieldForecastPath(fieldForecast, lastTime, lastClose, "baseTarget") : [];
+    const fieldUpperData = showFieldForecast ? makeFieldForecastPath(fieldForecast, lastTime, lastClose, "upperBand") : [];
+    const fieldLowerData = showFieldForecast ? makeFieldForecastPath(fieldForecast, lastTime, lastClose, "lowerBand") : [];
+    const wheel = wheelHorizon(fieldForecast);
+    const wheelFloor = toNumber(wheel?.lowerBand ?? null);
+    const fieldTimes = fieldBaseData.length ? fieldBaseData.map((point) => point.time) : [];
+
+    fieldBaseRef.current?.setData(fieldBaseData);
+    fieldUpperRef.current?.setData(fieldUpperData);
+    fieldLowerRef.current?.setData(fieldLowerData);
+    fieldWheelRef.current?.setData(showFieldForecast && wheelFloor != null ? horizontalBand(fieldTimes, wheelFloor) : []);
 
     const horizon = Number(ivSurface?.horizonDays ?? path?.horizonDays ?? path?.horizonSessions ?? 14);
     const times = showIvSurface ? futureTimesFromPath(path, lastTime, horizon) : [];
@@ -516,6 +630,19 @@ export default function ForecastChartPanel({
       addPriceLine({ price: matrix?.bearishFailure, color: "#fb7185", title: `▼ Bearish trigger ${fmt(matrix?.bearishFailure)}`, width: 2 });
     }
 
+    if (showFieldForecast) {
+      for (const horizonRow of keyFieldHorizons(fieldForecast)) {
+        const target = toNumber(horizonRow.baseTarget);
+        const label = String(horizonRow.label ?? horizonRow.key ?? "H");
+        const color = horizonRow.bias === "bearish" ? "#fb7185" : horizonRow.bias === "bullish" ? "#22c55e" : "#22d3ee";
+        addPriceLine({ price: target, color, title: `Field ${label} ${fmt(target)}`, dashed: true, width: label.startsWith("EXP") || label === "30D" ? 2 : 1 });
+      }
+
+      const band = activeFieldBand(fieldForecast);
+      addPriceLine({ price: band.upper, color: "#22c55e", title: `Field upper band ${fmt(band.upper)}`, dashed: true, width: 2 });
+      addPriceLine({ price: band.lower, color: "#fb7185", title: `Field lower band ${fmt(band.lower)}`, dashed: true, width: 2 });
+    }
+
     if (showIvSurface) {
       addPriceLine({ price: em?.upperOneSigma, color: "#22d3ee", title: `▲ ${horizon || 14}D IV upper ${fmt(em?.upperOneSigma)}`, width: 2 });
       addPriceLine({ price: em?.lowerOneSigma, color: "#22d3ee", title: `▼ ${horizon || 14}D IV lower ${fmt(em?.lowerOneSigma)}`, width: 2 });
@@ -543,7 +670,7 @@ export default function ForecastChartPanel({
 
     chart.timeScale().fitContent();
     chart.timeScale().scrollToPosition(8, false);
-  }, [candles, edge, edgeLabelMode, path, matrix, ivSurface, flowOverlay]);
+  }, [candles, edge, edgeLabelMode, path, matrix, ivSurface, flowOverlay, fieldForecast, structureFocus]);
 
   const lastClose = candles?.length ? toNumber(candles[candles.length - 1]?.close) : null;
   const horizon = Number(ivSurface?.horizonDays ?? path?.horizonDays ?? path?.horizonSessions ?? 14);
@@ -555,11 +682,16 @@ export default function ForecastChartPanel({
         <div>
           <h2 style={{ margin: 0, color: colors.text, fontSize: 20, fontWeight: 950 }}>{ticker} Forecast Cone</h2>
           <div style={{ color: colors.muted, fontSize: 12, marginTop: 2 }}>
-            Live candlestick chart + OI path + matched IV band over {horizon || 14} sessions
+            {fieldForecast ? "OI Field v2 horizon path + active structure band" : `Live candlestick chart + OI path + matched IV band over ${horizon || 14} sessions`}
           </div>
           {expectedMove ? (
             <div style={{ color: colors.teal, fontSize: 12, fontWeight: 900, marginTop: 6 }}>
               {horizon || 14}D IV band: {fmt(expectedMove.lowerOneSigma)}–{fmt(expectedMove.upperOneSigma)} · 1σ ±{fmt(expectedMove.oneSigma)} ({pct(expectedMove.expectedMovePct)}) · ATM IV {ivSurface?.atmIv != null ? pct(ivSurface.atmIv * 100) : "N/A"}
+            </div>
+          ) : null}
+          {fieldForecast ? (
+            <div style={{ color: colors.amber, fontSize: 12, fontWeight: 900, marginTop: 6 }}>
+              OI Field v2: {fieldForecast.baseBias.toUpperCase()} · confidence {fieldForecast.confidenceScore} · {structureFocus ? "structure-focused zoom" : "full chart view"}
             </div>
           ) : null}
         </div>
@@ -619,7 +751,10 @@ export default function ForecastChartPanel({
       </div>
 
       <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", color: colors.muted, fontSize: 11, marginTop: "0.65rem", alignItems: "center" }}>
-        {path ? <span><strong style={{ color: colors.text }}>Dashed white</strong> base path</span> : null}
+        {fieldForecast ? <span><strong style={{ color: colors.teal }}>Thick cyan</strong> OI Field v2 base path</span> : null}
+        {fieldForecast ? <span><strong style={{ color: colors.green }}>Green/red dashed</strong> field forecast band</span> : null}
+        {fieldForecast ? <span><strong style={{ color: "#10b981" }}>Dotted green</strong> wheel support floor</span> : null}
+        {path ? <span><strong style={{ color: colors.text }}>Dashed white</strong> legacy base path</span> : null}
         {path ? <span><strong style={{ color: colors.green }}>Green</strong> bullish unlock</span> : null}
         {path ? <span><strong style={{ color: colors.red }}>Red</strong> bearish failure</span> : null}
         {ivSurface ? <span><strong style={{ color: colors.teal }}>Cyan</strong> matched IV band</span> : null}
@@ -627,7 +762,7 @@ export default function ForecastChartPanel({
         {edge || path ? <span><strong style={{ color: "#d946ef" }}>Purple</strong> OI walls</span> : null}
         {flowOverlay ? <span><strong style={{ color: "#22d3ee" }}>Cyan/Pink</strong> flow strike clusters</span> : null}
         {path ? <span>Regime: <strong style={{ color: colors.text }}>{pathRegime(path)}</strong></span> : null}
-        {!path && !ivSurface && !edge && !matrix && !flowOverlay ? <span>Candles only</span> : null}
+        {!path && !ivSurface && !edge && !matrix && !flowOverlay && !fieldForecast ? <span>Candles only</span> : null}
       </div>
     </section>
   );
