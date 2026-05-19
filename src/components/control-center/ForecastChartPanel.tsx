@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   CandlestickSeries,
   ColorType,
@@ -17,6 +17,8 @@ import { type IVSurfaceSummary } from "../../lib/iv-surface-engine";
 import { type OIFieldForecastResult } from "../../lib/oi-field-engine-v2";
 import { colors, cardStyle } from "./styles";
 
+type ChartMode = "field-v2" | "classic" | "both" | "candles";
+
 type ForecastChartPanelProps = {
   ticker: string;
   candles: CandleRecord[];
@@ -31,6 +33,7 @@ type ForecastChartPanelProps = {
   isLoading?: boolean;
   chartHeight?: number;
   headerAction?: ReactNode;
+  defaultChartMode?: ChartMode;
 };
 
 type LinePoint = { time?: unknown; date?: unknown; value?: unknown; price?: unknown; adjustedCenter?: unknown; expiration?: unknown };
@@ -211,7 +214,7 @@ function makeFieldForecastPath(
 
   const rows: ChartLinePoint[] = [{ time: lastTime, value: lastClose }];
 
-  const horizons = [...forecast.horizons]
+  const horizons = visibleFieldHorizons(forecast)
     .filter((horizon) => Number.isFinite(Number(horizon.sessions)))
     .sort((a, b) => Number(a.sessions) - Number(b.sessions));
 
@@ -226,15 +229,56 @@ function makeFieldForecastPath(
 
 function keyFieldHorizons(forecast: OIFieldForecastResult | null | undefined) {
   if (!forecast?.horizons?.length) return [];
-  const preferred = new Set(["1D", "5D", "14D", "30D"]);
-  const rows = forecast.horizons.filter((horizon) => preferred.has(String(horizon.key)) || String(horizon.key).startsWith("EXP"));
-  return rows.length ? rows.slice(0, 5) : forecast.horizons.slice(0, 4);
+  const terminal = fieldTerminalSessions(forecast);
+  const preferred = new Set(terminal < 30 ? ["1D", "5D", "14D", "EXP"] : ["1D", "5D", "14D", "30D"]);
+  const rows = visibleFieldHorizons(forecast).filter((horizon) => preferred.has(String(horizon.key)) || String(horizon.key).startsWith("EXP"));
+  return rows.length ? rows.slice(0, 5) : visibleFieldHorizons(forecast).slice(0, 4);
+}
+
+function expirationHorizon(forecast: OIFieldForecastResult | null | undefined) {
+  if (!forecast?.horizons?.length) return null;
+  return forecast.horizons.find((horizon) => String(horizon.key).startsWith("EXP")) ?? null;
+}
+
+function fieldTerminalSessions(forecast: OIFieldForecastResult | null | undefined): number {
+  const exp = expirationHorizon(forecast);
+  const expSessions = toNumber(exp?.sessions);
+
+  // If the selected chain expires before 30 trading sessions, the chain expiration
+  // becomes the terminal forecast point. Otherwise, keep the primary WheelDesk
+  // field map visually anchored to the 30D premium-seller horizon.
+  if (expSessions != null && expSessions > 0 && expSessions <= 30) return Math.max(1, Math.round(expSessions));
+  return 30;
+}
+
+function visibleFieldHorizons(forecast: OIFieldForecastResult | null | undefined) {
+  if (!forecast?.horizons?.length) return [];
+
+  const terminal = fieldTerminalSessions(forecast);
+  const exp = expirationHorizon(forecast);
+  const expSessions = toNumber(exp?.sessions);
+
+  const rows = forecast.horizons
+    .filter((horizon) => {
+      const sessions = toNumber(horizon.sessions);
+      if (sessions == null) return false;
+      if (String(horizon.key).startsWith("EXP")) return expSessions != null && expSessions <= terminal;
+      return sessions <= terminal;
+    })
+    .sort((a, b) => Number(a.sessions) - Number(b.sessions));
+
+  if (rows.some((row) => String(row.key) === "30D") || terminal < 30) return rows;
+
+  const thirty = forecast.horizons.find((horizon) => String(horizon.key) === "30D");
+  return thirty ? [...rows, thirty].sort((a, b) => Number(a.sessions) - Number(b.sessions)) : rows;
 }
 
 function wheelHorizon(forecast: OIFieldForecastResult | null | undefined) {
   if (!forecast?.horizons?.length) return null;
+  const terminal = fieldTerminalSessions(forecast);
   return (
-    forecast.horizons.find((horizon) => String(horizon.key) === "30D") ??
+    forecast.horizons.find((horizon) => String(horizon.key) === "30D" && terminal >= 30) ??
+    expirationHorizon(forecast) ??
     forecast.horizons.find((horizon) => String(horizon.bucket) === "wheel") ??
     forecast.horizons.find((horizon) => String(horizon.bucket) === "expiration") ??
     forecast.horizons[forecast.horizons.length - 1]
@@ -261,6 +305,24 @@ function pathRegime(path: any): string {
   return value.replace(/_/g, " ");
 }
 
+function modeLabel(mode: ChartMode): string {
+  switch (mode) {
+    case "field-v2": return "OI Field v2";
+    case "classic": return "Classic OI";
+    case "both": return "Both";
+    case "candles": return "Candles";
+  }
+}
+
+function isNear(a?: number | null, b?: number | null): boolean {
+  if (a == null || b == null || !Number.isFinite(a) || !Number.isFinite(b)) return false;
+  return Math.abs(a - b) <= Math.max(0.01, Math.abs(a) * 0.0015);
+}
+
+function horizonByKey(forecast: OIFieldForecastResult | null | undefined, key: string) {
+  return forecast?.horizons?.find((horizon) => String(horizon.key) === key) ?? null;
+}
+
 export default function ForecastChartPanel({
   ticker,
   candles,
@@ -274,8 +336,10 @@ export default function ForecastChartPanel({
   structureFocus = false,
   isLoading = false,
   chartHeight = 470,
-  headerAction
+  headerAction,
+  defaultChartMode
 }: ForecastChartPanelProps) {
+  const [chartMode, setChartMode] = useState<ChartMode>(defaultChartMode ?? "field-v2");
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -428,15 +492,15 @@ export default function ForecastChartPanel({
 
 
     const fieldBase = chart.addSeries(LineSeries, {
-      color: "rgba(34,211,238,0.95)",
-      lineWidth: 3,
+      color: "rgba(103,232,249,0.98)",
+      lineWidth: 4,
       lineStyle: LineStyle.Solid,
       priceLineVisible: false,
       lastValueVisible: false,
     });
 
     const fieldUpper = chart.addSeries(LineSeries, {
-      color: "rgba(34,197,94,0.58)",
+      color: "rgba(34,197,94,0.75)",
       lineWidth: 2,
       lineStyle: LineStyle.Dashed,
       priceLineVisible: false,
@@ -444,7 +508,7 @@ export default function ForecastChartPanel({
     });
 
     const fieldLower = chart.addSeries(LineSeries, {
-      color: "rgba(251,113,133,0.58)",
+      color: "rgba(251,113,133,0.75)",
       lineWidth: 2,
       lineStyle: LineStyle.Dashed,
       priceLineVisible: false,
@@ -539,12 +603,16 @@ export default function ForecastChartPanel({
       return;
     }
 
-    const showPath = Boolean(path);
-    const showIvSurface = Boolean(ivSurface);
-    const showEdge = Boolean(edge);
-    const showMatrix = Boolean(matrix);
-    const showFlowOverlay = Boolean(flowOverlay);
-    const showFieldForecast = Boolean(fieldForecast?.horizons?.length);
+    const rawFieldForecast = Boolean(fieldForecast?.horizons?.length);
+    const effectiveMode: ChartMode = chartMode === "field-v2" && !rawFieldForecast ? "classic" : chartMode;
+    const showFieldForecast = rawFieldForecast && (effectiveMode === "field-v2" || effectiveMode === "both");
+    const showClassic = effectiveMode === "classic" || effectiveMode === "both";
+    const showPath = Boolean(path) && showClassic;
+    const showIvSurface = Boolean(ivSurface) && showClassic;
+    const showEdge = Boolean(edge) && showClassic;
+    const showMatrix = Boolean(matrix) && showClassic;
+    const showFlowOverlay = Boolean(flowOverlay) && showClassic;
+    const showFieldRails = showFieldForecast && Boolean(path);
 
     const baseData = showPath ? makeAnchoredPath(path?.basePath, lastTime, lastClose) : [];
     const upperData = showPath ? makeAnchoredPath(path?.upperBand, lastTime, lastClose) : [];
@@ -631,16 +699,21 @@ export default function ForecastChartPanel({
     }
 
     if (showFieldForecast) {
-      for (const horizonRow of keyFieldHorizons(fieldForecast)) {
-        const target = toNumber(horizonRow.baseTarget);
-        const label = String(horizonRow.label ?? horizonRow.key ?? "H");
-        const color = horizonRow.bias === "bearish" ? "#fb7185" : horizonRow.bias === "bullish" ? "#22c55e" : "#22d3ee";
-        addPriceLine({ price: target, color, title: `Field ${label} ${fmt(target)}`, dashed: true, width: label.startsWith("EXP") || label === "30D" ? 2 : 1 });
-      }
-
       const band = activeFieldBand(fieldForecast);
-      addPriceLine({ price: band.upper, color: "#22c55e", title: `Field upper band ${fmt(band.upper)}`, dashed: true, width: 2 });
-      addPriceLine({ price: band.lower, color: "#fb7185", title: `Field lower band ${fmt(band.lower)}`, dashed: true, width: 2 });
+      const terminal = wheelHorizon(fieldForecast);
+      const terminalLabel = String(terminal?.label ?? terminal?.key ?? "30D");
+      const terminalTarget = toNumber(terminal?.baseTarget);
+
+      addPriceLine({ price: band.upper, color: "#22c55e", title: `Field upper ${fmt(band.upper)}`, dashed: true, width: 2 });
+      addPriceLine({ price: terminalTarget, color: "#67e8f9", title: `Field base ${terminalLabel} ${fmt(terminalTarget)}`, dashed: false, width: 2 });
+      addPriceLine({ price: band.lower, color: "#fb7185", title: `Field lower ${fmt(band.lower)}`, dashed: true, width: 2 });
+
+      if (showFieldRails) {
+        const upperRail = toNumber(path?.invalidAbove ?? path?.callWall);
+        const lowerRail = toNumber(path?.invalidBelow ?? path?.putWall);
+        addPriceLine({ price: upperRail, color: "#22c55e", title: `Upper rail ${fmt(upperRail)}`, dashed: true, width: 2 });
+        addPriceLine({ price: lowerRail, color: "#fb7185", title: `Lower rail ${fmt(lowerRail)}`, dashed: true, width: 2 });
+      }
     }
 
     if (showIvSurface) {
@@ -670,11 +743,18 @@ export default function ForecastChartPanel({
 
     chart.timeScale().fitContent();
     chart.timeScale().scrollToPosition(8, false);
-  }, [candles, edge, edgeLabelMode, path, matrix, ivSurface, flowOverlay, fieldForecast, structureFocus]);
+  }, [candles, edge, edgeLabelMode, path, matrix, ivSurface, flowOverlay, fieldForecast, structureFocus, chartMode]);
 
   const lastClose = candles?.length ? toNumber(candles[candles.length - 1]?.close) : null;
   const horizon = Number(ivSurface?.horizonDays ?? path?.horizonDays ?? path?.horizonSessions ?? 14);
   const expectedMove = ivSurface?.expectedMove;
+  const terminal = wheelHorizon(fieldForecast);
+  const oneDay = horizonByKey(fieldForecast, "1D");
+  const fiveDay = horizonByKey(fieldForecast, "5D");
+  const fourteenDay = horizonByKey(fieldForecast, "14D");
+  const thirtyDay = horizonByKey(fieldForecast, "30D");
+  const fieldBand = activeFieldBand(fieldForecast);
+  const effectiveModeLabel = modeLabel(chartMode === "field-v2" && !fieldForecast ? "classic" : chartMode);
 
   return (
     <section style={{ ...cardStyle, padding: "0.85rem", minHeight: chartHeight + 90, position: "relative" }}>
@@ -718,7 +798,30 @@ export default function ForecastChartPanel({
               </div>
             ) : null}
           </div>
-          {headerAction ? <div>{headerAction}</div> : null}
+          <div style={{ display: "grid", gap: "0.45rem", justifyItems: "end" }}>
+            {headerAction ? <div>{headerAction}</div> : null}
+            <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap", justifyContent: "flex-end" }} aria-label="Chart mode">
+              {(["field-v2", "classic", "both", "candles"] as ChartMode[]).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setChartMode(mode)}
+                  style={{
+                    border: chartMode === mode ? "1px solid rgba(34,211,238,0.65)" : "1px solid rgba(148,163,184,0.22)",
+                    background: chartMode === mode ? "rgba(34,211,238,0.16)" : "rgba(15,23,42,0.72)",
+                    color: chartMode === mode ? colors.teal : colors.muted,
+                    borderRadius: 999,
+                    padding: "0.28rem 0.5rem",
+                    fontSize: 10,
+                    fontWeight: 950,
+                    cursor: "pointer",
+                  }}
+                >
+                  {modeLabel(mode)}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -726,6 +829,43 @@ export default function ForecastChartPanel({
         {isLoading ? (
           <div style={{ position: "absolute", top: 10, left: 12, zIndex: 3, color: colors.teal, fontSize: 12, fontWeight: 900, background: "rgba(7,17,31,0.78)", border: "1px solid rgba(34,211,238,0.22)", borderRadius: 999, padding: "0.25rem 0.55rem" }}>
             Loading candles…
+          </div>
+        ) : null}
+
+        {fieldForecast && chartMode !== "candles" ? (
+          <div
+            style={{
+              position: "absolute",
+              top: 10,
+              left: 12,
+              zIndex: 3,
+              display: "grid",
+              gap: 4,
+              minWidth: 250,
+              maxWidth: 390,
+              background: "rgba(7,17,31,0.82)",
+              border: "1px solid rgba(34,211,238,0.22)",
+              borderRadius: 12,
+              padding: "0.55rem 0.65rem",
+              boxShadow: "0 18px 42px rgba(0,0,0,0.28)",
+              pointerEvents: "none",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "0.75rem", alignItems: "center" }}>
+              <strong style={{ color: colors.teal, fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase" }}>{effectiveModeLabel}</strong>
+              <span style={{ color: fieldForecast.baseBias === "bearish" ? colors.red : fieldForecast.baseBias === "bullish" ? colors.green : colors.amber, fontSize: 11, fontWeight: 950 }}>
+                {fieldForecast.baseBias.toUpperCase()} · {fieldForecast.confidenceScore}
+              </span>
+            </div>
+            <div style={{ color: colors.text, fontSize: 12, fontWeight: 850 }}>
+              Base {String(terminal?.label ?? terminal?.key ?? "30D")}: <span style={{ color: colors.teal }}>{fmt(toNumber(terminal?.baseTarget))}</span> · Field range <span style={{ color: colors.red }}>{fmt(fieldBand.lower)}</span>–<span style={{ color: colors.green }}>{fmt(fieldBand.upper)}</span>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.45rem", color: colors.muted, fontSize: 11, fontWeight: 850 }}>
+              {oneDay ? <span>1D {fmt(toNumber(oneDay.baseTarget))}</span> : null}
+              {fiveDay ? <span>5D {fmt(toNumber(fiveDay.baseTarget))}</span> : null}
+              {fourteenDay ? <span>14D {fmt(toNumber(fourteenDay.baseTarget))}</span> : null}
+              {thirtyDay ? <span>30D {fmt(toNumber(thirtyDay.baseTarget))}</span> : null}
+            </div>
           </div>
         ) : null}
 
@@ -751,18 +891,13 @@ export default function ForecastChartPanel({
       </div>
 
       <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", color: colors.muted, fontSize: 11, marginTop: "0.65rem", alignItems: "center" }}>
-        {fieldForecast ? <span><strong style={{ color: colors.teal }}>Thick cyan</strong> OI Field v2 base path</span> : null}
-        {fieldForecast ? <span><strong style={{ color: colors.green }}>Green/red dashed</strong> field forecast band</span> : null}
-        {fieldForecast ? <span><strong style={{ color: "#10b981" }}>Dotted green</strong> wheel support floor</span> : null}
-        {path ? <span><strong style={{ color: colors.text }}>Dashed white</strong> legacy base path</span> : null}
-        {path ? <span><strong style={{ color: colors.green }}>Green</strong> bullish unlock</span> : null}
-        {path ? <span><strong style={{ color: colors.red }}>Red</strong> bearish failure</span> : null}
-        {ivSurface ? <span><strong style={{ color: colors.teal }}>Cyan</strong> matched IV band</span> : null}
-        {edge || path || matrix ? <span><strong style={{ color: colors.amber }}>Amber</strong> magnet</span> : null}
-        {edge || path ? <span><strong style={{ color: "#d946ef" }}>Purple</strong> OI walls</span> : null}
-        {flowOverlay ? <span><strong style={{ color: "#22d3ee" }}>Cyan/Pink</strong> flow strike clusters</span> : null}
-        {path ? <span>Regime: <strong style={{ color: colors.text }}>{pathRegime(path)}</strong></span> : null}
-        {!path && !ivSurface && !edge && !matrix && !flowOverlay && !fieldForecast ? <span>Candles only</span> : null}
+        <span>Mode: <strong style={{ color: colors.text }}>{effectiveModeLabel}</strong></span>
+        {fieldForecast && chartMode !== "classic" && chartMode !== "candles" ? <span><strong style={{ color: colors.teal }}>Thick cyan</strong> OI Field v2 base path to {String(terminal?.label ?? terminal?.key ?? "30D")}</span> : null}
+        {fieldForecast && chartMode !== "classic" && chartMode !== "candles" ? <span><strong style={{ color: colors.green }}>Green/red dashed</strong> upper/lower field band</span> : null}
+        {fieldForecast && chartMode !== "classic" && chartMode !== "candles" ? <span><strong style={{ color: "#10b981" }}>Dotted green</strong> wheel support floor</span> : null}
+        {path && (chartMode === "classic" || chartMode === "both") ? <span><strong style={{ color: colors.text }}>Dashed white</strong> legacy base path</span> : null}
+        {ivSurface && (chartMode === "classic" || chartMode === "both") ? <span><strong style={{ color: colors.teal }}>Cyan</strong> matched IV band</span> : null}
+        {edge || path || matrix ? <span>Regime: <strong style={{ color: colors.text }}>{path ? pathRegime(path) : fieldForecast?.regime ?? "mixed"}</strong></span> : null}
       </div>
     </section>
   );
