@@ -12,6 +12,7 @@ import AuthGate from "../../components/auth/AuthGate";
 const TODAY = new Date().toISOString().slice(0, 10);
 const HARVEST_TICKERS_KEY = "wheelDesk.dashboardHarvestTickers";
 const MAX_NORMAL_TICKERS = 10;
+const FOUNDER_SEED = ["SOFI", "AMD", "NVDA", "SPY", "QQQ", "AAPL", "MSFT", "PLTR"];
 
 type HarvestStatus = "idle" | "pending" | "fetching" | "saving" | "saved" | "failed" | "skipped";
 
@@ -77,6 +78,63 @@ type CalendarItem = {
   title: string;
   impact?: string;
   type?: string;
+};
+
+type Entitlement = {
+  plan: "founder" | "core" | "research" | string;
+  maxTickers: number;
+  maxReplacementsPerDay: number;
+  maxValidationHistoryDays?: number;
+};
+
+type SavedTicker = {
+  id: string;
+  symbol: string;
+  slot_index?: number | null;
+  source?: string | null;
+  created_at?: string;
+  ticker_universe?: {
+    name?: string | null;
+    asset_type?: string | null;
+    data_priority?: number | null;
+  } | null;
+};
+
+type UniverseTicker = {
+  symbol: string;
+  name?: string | null;
+  asset_type?: string | null;
+  data_priority?: number | null;
+};
+
+type ForecastDbRow = {
+  id?: string;
+  symbol?: string;
+  generated_at?: string;
+  snapshot_date?: string;
+  expiration?: string | null;
+  spot?: number | string | null;
+  bias?: string | null;
+  confidence?: number | string | null;
+  base_30d?: number | string | null;
+  upper_30d?: number | string | null;
+  lower_30d?: number | string | null;
+  expected_move_lower?: number | string | null;
+  expected_move_upper?: number | string | null;
+  trap_probability?: number | string | null;
+  wheel_support_hold_probability?: number | string | null;
+  posture?: string | null;
+};
+
+type CentralCommandRow = {
+  symbol: string;
+  name?: string | null;
+  assetType?: string | null;
+  forecast: ForecastDbRow | null;
+  surfaceDate?: string | null;
+  surfaceRows?: number | null;
+  surfaceChains?: number | null;
+  status: "ready" | "surface-only" | "needs-harvest";
 };
 
 const colors = {
@@ -476,6 +534,81 @@ async function tryFetchMarketCalendar(): Promise<CalendarItem[]> {
   }
 }
 
+function dateOnly(value: unknown): string {
+  const raw = String(value ?? "").trim();
+  return raw ? raw.slice(0, 10) : "";
+}
+
+function toNumber(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatPercent(value: unknown): string {
+  const n = toNumber(value);
+  return n == null ? "N/A" : `${n.toFixed(0)}%`;
+}
+
+function extractSurfaceArray(payload: any): any[] {
+  const candidates = [payload?.snapshots, payload?.surfaces, payload?.data, payload?.items, payload?.surfaceSnapshots];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) return candidate;
+  }
+  return payload?.snapshot || payload?.surface ? [payload.snapshot ?? payload.surface] : [];
+}
+
+function surfaceMeta(payload: any): Pick<CentralCommandRow, "surfaceDate" | "surfaceRows" | "surfaceChains"> {
+  const surfaces = extractSurfaceArray(payload);
+  const latest = surfaces
+    .map((surface) => {
+      const chains = Array.isArray(surface?.chains) ? surface.chains : Array.isArray(surface?.optionChains) ? surface.optionChains : [];
+      const rowCount = chains.reduce((sum: number, chain: any) => sum + (Array.isArray(chain?.rows) ? chain.rows.length : 0), 0);
+      return {
+        surfaceDate: dateOnly(surface?.snapshotDate ?? surface?.snapshot_date ?? surface?.date ?? surface?.asOfDate),
+        surfaceRows: Number(surface?.rowCount ?? surface?.row_count ?? rowCount ?? 0),
+        surfaceChains: Number(surface?.chainCount ?? surface?.chain_count ?? chains.length ?? 0),
+      };
+    })
+    .filter((item) => item.surfaceDate)
+    .sort((a, b) => b.surfaceDate.localeCompare(a.surfaceDate))[0];
+
+  return latest ?? { surfaceDate: null, surfaceRows: null, surfaceChains: null };
+}
+
+async function fetchLatestForecast(symbol: string): Promise<ForecastDbRow | null> {
+  try {
+    const response = await fetch(`/api/forecasts/oi-field?symbol=${encodeURIComponent(symbol)}&limit=1`, { cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) return null;
+    return Array.isArray(payload?.forecasts) ? payload.forecasts[0] ?? null : null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchLatestSurfaceMeta(symbol: string): Promise<Pick<CentralCommandRow, "surfaceDate" | "surfaceRows" | "surfaceChains">> {
+  try {
+    const response = await fetch(`/api/supabase/surface-snapshot?ticker=${encodeURIComponent(symbol)}`, { cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) return { surfaceDate: null, surfaceRows: null, surfaceChains: null };
+    return surfaceMeta(payload);
+  } catch {
+    return { surfaceDate: null, surfaceRows: null, surfaceChains: null };
+  }
+}
+
+function commandStatus(row: CentralCommandRow): string {
+  if (row.status === "ready") return "Forecast ready";
+  if (row.status === "surface-only") return "Surface captured";
+  return "Needs harvest";
+}
+
+function commandStatusColor(row: CentralCommandRow): string {
+  if (row.status === "ready") return colors.green;
+  if (row.status === "surface-only") return colors.amber;
+  return colors.red;
+}
+
 export default function DashboardPage() {
   const [mounted, setMounted] = useState(false);
   const [snapshotDate, setSnapshotDate] = useState(TODAY);
@@ -490,6 +623,17 @@ export default function DashboardPage() {
   const [news, setNews] = useState<NewsItem[]>([]);
   const [calendar, setCalendar] = useState<CalendarItem[]>([]);
   const [newsStatus, setNewsStatus] = useState("provider integration pending");
+  const [centralTickers, setCentralTickers] = useState<SavedTicker[]>([]);
+  const [centralEntitlement, setCentralEntitlement] = useState<Entitlement | null>(null);
+  const [centralUniverse, setCentralUniverse] = useState<UniverseTicker[]>([]);
+  const [centralTickerInput, setCentralTickerInput] = useState("");
+  const [centralReplaceSymbol, setCentralReplaceSymbol] = useState("");
+  const [centralRows, setCentralRows] = useState<CentralCommandRow[]>([]);
+  const [centralStatus, setCentralStatus] = useState("Loading central ticker slots...");
+  const [centralLoading, setCentralLoading] = useState(false);
+  const [centralSaving, setCentralSaving] = useState(false);
+  const [centralReplacementsUsed, setCentralReplacementsUsed] = useState(0);
+  const [centralLoadedAt, setCentralLoadedAt] = useState<string | null>(null);
 
   useEffect(() => {
     setMounted(true);
@@ -538,6 +682,154 @@ export default function DashboardPage() {
       cancelled = true;
     };
   }, [tickers]);
+
+  useEffect(() => {
+    refreshCentralCommandHub();
+    loadCentralUniverse();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function loadCentralUniverse(query = "") {
+    try {
+      const response = await fetch(`/api/ticker-universe?limit=80${query ? `&q=${encodeURIComponent(query)}` : ""}`, { cache: "no-store" });
+      const payload = await response.json().catch(() => null);
+      if (response.ok && Array.isArray(payload?.tickers)) setCentralUniverse(payload.tickers);
+    } catch {
+      // Helpful, but not required for the dashboard to render.
+    }
+  }
+
+  async function loadCentralWatchlist(): Promise<SavedTicker[]> {
+    const response = await fetch("/api/user-watchlist", { cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error ?? "Could not load central ticker slots.");
+    }
+
+    const items = Array.isArray(payload.tickers) ? payload.tickers : [];
+    setCentralTickers(items);
+    setCentralEntitlement(payload.entitlement ?? null);
+    setCentralReplacementsUsed(Number(payload.replacementsUsedToday ?? 0));
+    return items;
+  }
+
+  async function refreshCentralCommandHub(tickersOverride?: SavedTicker[]) {
+    setCentralLoading(true);
+    setCentralStatus("Loading central ticker slots, latest surfaces, and OI Field forecasts...");
+
+    try {
+      const slots = tickersOverride ?? (centralTickers.length ? centralTickers : await loadCentralWatchlist());
+      const symbols = slots.map((slot) => normalizeTickerInput(slot.symbol)).filter(Boolean);
+
+      if (!symbols.length) {
+        setCentralRows([]);
+        setCentralStatus("No central ticker slots yet. Seed founder defaults or add tickers from the universe.");
+        setCentralLoadedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+        return;
+      }
+
+      const pairs = await Promise.all(symbols.map(async (symbol) => {
+        const slot = slots.find((item) => normalizeTickerInput(item.symbol) === symbol);
+        const [forecast, meta] = await Promise.all([fetchLatestForecast(symbol), fetchLatestSurfaceMeta(symbol)]);
+        const status: CentralCommandRow["status"] = forecast ? "ready" : meta.surfaceDate ? "surface-only" : "needs-harvest";
+        return {
+          symbol,
+          name: slot?.ticker_universe?.name,
+          assetType: slot?.ticker_universe?.asset_type,
+          forecast,
+          ...meta,
+          status,
+        } satisfies CentralCommandRow;
+      }));
+
+      const statusRank: Record<CentralCommandRow["status"], number> = { ready: 3, "surface-only": 2, "needs-harvest": 1 };
+      const sorted = pairs.sort((a, b) => statusRank[b.status] - statusRank[a.status] || a.symbol.localeCompare(b.symbol));
+
+      setCentralRows(sorted);
+      setCentralLoadedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+      setCentralStatus(`Loaded ${symbols.length} central ticker slot(s): ${sorted.filter((row) => row.status === "ready").length} forecast-ready, ${sorted.filter((row) => row.status === "surface-only").length} surface-only.`);
+    } catch (error: any) {
+      setCentralStatus(error?.message ?? "Could not load central ticker command hub.");
+      setCentralRows([]);
+    } finally {
+      setCentralLoading(false);
+    }
+  }
+
+  async function addCentralTicker(symbolOverride?: string, replaceOverride?: string) {
+    const symbol = normalizeTickerInput(symbolOverride ?? centralTickerInput).replace(/[^A-Z0-9.\-^]/g, "");
+    const replaceSymbol = normalizeTickerInput(replaceOverride ?? centralReplaceSymbol).replace(/[^A-Z0-9.\-^]/g, "");
+    if (!symbol) return;
+
+    setCentralSaving(true);
+    setCentralStatus(`Saving ${symbol} to central ticker slots...`);
+
+    try {
+      const response = await fetch("/api/user-watchlist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol, replaceSymbol: replaceSymbol || undefined }),
+      });
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok || !payload?.ok) {
+        throw new Error(payload?.error ?? `Could not add ${symbol}.`);
+      }
+
+      setCentralTickerInput("");
+      setCentralReplaceSymbol("");
+      const slots = await loadCentralWatchlist();
+      await refreshCentralCommandHub(slots);
+    } catch (error: any) {
+      setCentralStatus(error?.message ?? `Could not add ${symbol}.`);
+    } finally {
+      setCentralSaving(false);
+    }
+  }
+
+  async function removeCentralTicker(symbol: string) {
+    const normalized = normalizeTickerInput(symbol);
+    if (!normalized) return;
+
+    setCentralSaving(true);
+    setCentralStatus(`Removing ${normalized} from central ticker slots...`);
+
+    try {
+      const response = await fetch(`/api/user-watchlist?symbol=${encodeURIComponent(normalized)}`, { method: "DELETE" });
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok || !payload?.ok) {
+        throw new Error(payload?.error ?? `Could not remove ${normalized}.`);
+      }
+
+      const slots = await loadCentralWatchlist();
+      await refreshCentralCommandHub(slots);
+    } catch (error: any) {
+      setCentralStatus(error?.message ?? `Could not remove ${normalized}.`);
+    } finally {
+      setCentralSaving(false);
+    }
+  }
+
+  async function seedCentralFounderDefaults() {
+    setCentralSaving(true);
+    setCentralStatus("Seeding founder defaults into central ticker slots...");
+
+    try {
+      for (const symbol of FOUNDER_SEED) {
+        await fetch("/api/user-watchlist", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ symbol }),
+        });
+      }
+      const slots = await loadCentralWatchlist();
+      await refreshCentralCommandHub(slots);
+    } finally {
+      setCentralSaving(false);
+    }
+  }
 
   const positions = useMemo(() => flattenPortfolioPositions(profiles), [profiles]);
   const groups = useMemo(() => groupPositionsByTicker(positions), [positions]);
@@ -714,6 +1006,14 @@ export default function DashboardPage() {
   const savedCount = queue.filter((item) => item.status === "saved").length;
   const failedCount = queue.filter((item) => item.status === "failed").length;
   const totalRows = queue.reduce((sum, item) => sum + (item.rowCount ?? 0), 0);
+  const centralUsedSlots = centralTickers.length;
+  const centralMaxSlots = Number(centralEntitlement?.maxTickers ?? 0);
+  const centralReplacementsLeft = Math.max(0, Number(centralEntitlement?.maxReplacementsPerDay ?? 0) - centralReplacementsUsed);
+  const centralReady = centralRows.filter((row) => row.status === "ready").length;
+  const centralSurfaceOnly = centralRows.filter((row) => row.status === "surface-only").length;
+  const centralNeedsHarvest = centralRows.filter((row) => row.status === "needs-harvest").length;
+  const centralTop = centralRows.find((row) => row.forecast) ?? centralRows[0] ?? null;
+  const centralSymbols = centralTickers.map((slot) => normalizeTickerInput(slot.symbol)).filter(Boolean);
 
   return (
     <AuthGate>
@@ -726,7 +1026,7 @@ export default function DashboardPage() {
         <header style={styles.header}>
           <div>
             <div style={styles.eyebrow}>WHEELDESK</div>
-            <h1 style={styles.title}>Portfolio Statement</h1>
+            <h1 style={styles.title}>Dashboard</h1>
           </div>
 
           <div style={styles.headerRight}>
@@ -737,6 +1037,141 @@ export default function DashboardPage() {
             </a>
           </div>
         </header>
+
+        <section style={styles.commandHub}>
+          <div style={styles.commandHeader}>
+            <div>
+              <div style={styles.eyebrow}>Central Ticker Universe</div>
+              <h2 style={styles.commandTitle}>Dashboard Command Hub</h2>
+              <p style={styles.commandSubtitle}>
+                Manage the tickers that WheelDesk tracks for your account. Shared OI surfaces, OI Field forecasts, and future validation receipts should flow from this central universe into Control Center, Chart Room, Validation, and Watchlist Command.
+              </p>
+            </div>
+
+            <div style={styles.commandStatusBox}>
+              <span>{centralLoadedAt ? `Updated ${centralLoadedAt}` : "Loading"}</span>
+              <strong>{centralUsedSlots}/{centralMaxSlots || "?"}</strong>
+              <small>{centralEntitlement?.plan ?? "founder"} ticker slots</small>
+            </div>
+          </div>
+
+          <div style={styles.commandStats}>
+            <div style={styles.commandStat}><span>Forecast Ready</span><strong style={{ color: colors.green }}>{centralReady}</strong></div>
+            <div style={styles.commandStat}><span>Surface Only</span><strong style={{ color: colors.amber }}>{centralSurfaceOnly}</strong></div>
+            <div style={styles.commandStat}><span>Needs Harvest</span><strong style={{ color: colors.red }}>{centralNeedsHarvest}</strong></div>
+            <div style={styles.commandStat}><span>Replacements Left</span><strong style={{ color: colors.cyan }}>{centralReplacementsLeft}</strong></div>
+          </div>
+
+          <div style={styles.commandControls}>
+            <label style={styles.label}>
+              Add from universe
+              <input
+                value={centralTickerInput}
+                onChange={(event) => {
+                  const value = event.target.value.toUpperCase();
+                  setCentralTickerInput(value);
+                  loadCentralUniverse(value);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    addCentralTicker();
+                  }
+                }}
+                placeholder="AMD, SOFI, NVDA..."
+                style={styles.input}
+                list="dashboard-central-universe"
+              />
+              <datalist id="dashboard-central-universe">
+                {centralUniverse.map((ticker) => (
+                  <option key={ticker.symbol} value={ticker.symbol}>
+                    {ticker.name ?? ticker.symbol}
+                  </option>
+                ))}
+              </datalist>
+            </label>
+
+            <label style={styles.label}>
+              Replace if full
+              <select value={centralReplaceSymbol} onChange={(event) => setCentralReplaceSymbol(event.target.value)} style={styles.input}>
+                <option value="">Do not replace</option>
+                {centralTickers.map((ticker) => (
+                  <option key={ticker.symbol} value={ticker.symbol}>{ticker.symbol}</option>
+                ))}
+              </select>
+            </label>
+
+            <button type="button" onClick={() => addCentralTicker()} disabled={centralSaving || centralLoading || !centralTickerInput.trim()} style={styles.primaryButton}>
+              {centralSaving ? "Saving..." : "Add Slot"}
+            </button>
+
+            <button type="button" onClick={seedCentralFounderDefaults} disabled={centralSaving || centralLoading || centralTickers.length > 0} style={styles.button}>
+              Seed Founder Defaults
+            </button>
+
+            <button type="button" onClick={() => refreshCentralCommandHub()} disabled={centralSaving || centralLoading} style={styles.button}>
+              {centralLoading ? "Refreshing..." : "Refresh Hub"}
+            </button>
+
+            <button type="button" onClick={() => runHarvest(centralSymbols)} disabled={running || !centralSymbols.length} style={styles.button}>
+              Harvest Central Slots
+            </button>
+          </div>
+
+          <div style={styles.commandMessage}>{centralStatus}</div>
+
+          {centralTop ? (
+            <div style={styles.commandTop}>
+              <div>
+                <div style={styles.eyebrow}>Start here</div>
+                <h3 style={styles.commandTopTitle}>{centralTop.symbol} · {commandStatus(centralTop)}</h3>
+                <p style={styles.commandSubtitle}>
+                  {centralTop.forecast
+                    ? `Bias ${centralTop.forecast.bias ?? "N/A"} · 30D base ${safeMoney(centralTop.forecast.base_30d)} · field ${safeMoney(centralTop.forecast.lower_30d)}–${safeMoney(centralTop.forecast.upper_30d)} · confidence ${formatPercent(centralTop.forecast.confidence)}.`
+                    : centralTop.surfaceDate
+                      ? `Surface captured on ${centralTop.surfaceDate}. Run Control Center to generate the latest OI Field forecast receipt.`
+                      : "No surface exists yet. Harvest this ticker before using it in the daily read."}
+                </p>
+              </div>
+              <div style={styles.commandTopActions}>
+                <a href={`/control-center?ticker=${encodeURIComponent(centralTop.symbol)}`} style={styles.controlButton}>Open Control</a>
+                <a href={`/control-center/chart?ticker=${encodeURIComponent(centralTop.symbol)}`} style={styles.controlButton}>Chart Room</a>
+                <a href="/watchlist" style={styles.controlButton}>Full Watchlist</a>
+              </div>
+            </div>
+          ) : null}
+
+          <div style={styles.centralSlotGrid}>
+            {centralRows.length ? centralRows.map((row) => (
+              <div key={row.symbol} style={styles.centralSlotCard}>
+                <div style={styles.centralSlotTop}>
+                  <strong>{row.symbol}</strong>
+                  <span style={{ color: commandStatusColor(row), fontWeight: 900 }}>{commandStatus(row)}</span>
+                </div>
+                <small style={styles.centralSlotName}>{row.name ?? row.assetType ?? "WheelDesk universe"}</small>
+                <div style={styles.centralForecastGrid}>
+                  <span>30D Base <strong>{safeMoney(row.forecast?.base_30d, "N/A")}</strong></span>
+                  <span>Lower <strong>{safeMoney(row.forecast?.lower_30d, "N/A")}</strong></span>
+                  <span>Upper <strong>{safeMoney(row.forecast?.upper_30d, "N/A")}</strong></span>
+                  <span>Trap <strong>{formatPercent(row.forecast?.trap_probability)}</strong></span>
+                </div>
+                <div style={styles.centralSlotFoot}>
+                  <span>Surface {row.surfaceDate ?? "none"}</span>
+                  <span>{row.surfaceRows ? `${safeInt(row.surfaceRows)} rows` : "no rows"}</span>
+                </div>
+                <div style={styles.centralSlotActions}>
+                  <a href={`/control-center?ticker=${encodeURIComponent(row.symbol)}`} style={styles.inlineAction}>Control</a>
+                  <a href={`/dashboard/validation?ticker=${encodeURIComponent(row.symbol)}`} style={styles.inlineAction}>Validate</a>
+                  <button type="button" onClick={() => removeCentralTicker(row.symbol)} style={styles.textButton} disabled={centralSaving}>Remove</button>
+                </div>
+              </div>
+            )) : (
+              <div style={styles.emptyCentral}>
+                No central ticker slots yet. Seed founder defaults or add a ticker from the universe.
+              </div>
+            )}
+          </div>
+        </section>
 
         <section style={styles.portfolioPanel}>
           <div style={styles.panelStrip}>
@@ -1163,6 +1598,143 @@ const styles: Record<string, React.CSSProperties> = {
     background: "#101827",
     padding: "0.45rem 0.65rem",
     fontWeight: 900,
+  },
+  commandHub: {
+    border: "1px solid rgba(38, 230, 255, 0.25)",
+    background: "linear-gradient(135deg, rgba(8, 34, 53, 0.94), rgba(5, 13, 24, 0.96))",
+    borderRadius: 18,
+    padding: "1rem",
+    display: "grid",
+    gap: "0.95rem",
+    boxShadow: "0 20px 60px rgba(0,0,0,0.22)",
+  },
+  commandHeader: {
+    display: "grid",
+    gridTemplateColumns: "minmax(0, 1fr) minmax(140px, 220px)",
+    gap: "1rem",
+    alignItems: "center",
+  },
+  commandTitle: {
+    color: colors.text,
+    margin: "0.25rem 0 0",
+    fontSize: 28,
+    letterSpacing: "-0.04em",
+  },
+  commandSubtitle: {
+    color: colors.muted,
+    margin: "0.45rem 0 0",
+    lineHeight: 1.45,
+    fontSize: 13,
+  },
+  commandStatusBox: {
+    border: `1px solid ${colors.border}`,
+    borderRadius: 14,
+    background: "rgba(2, 11, 20, 0.55)",
+    padding: "0.75rem",
+    display: "grid",
+    gap: 3,
+    textAlign: "center",
+    color: colors.muted,
+  },
+  commandStats: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
+    gap: "0.65rem",
+  },
+  commandStat: {
+    border: `1px solid ${colors.borderSoft}`,
+    borderRadius: 12,
+    background: "rgba(2, 11, 20, 0.45)",
+    padding: "0.65rem",
+    display: "grid",
+    gap: 4,
+  },
+  commandControls: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))",
+    gap: "0.7rem",
+    alignItems: "end",
+  },
+  commandMessage: {
+    border: `1px solid ${colors.borderSoft}`,
+    background: "rgba(2, 11, 20, 0.45)",
+    borderRadius: 12,
+    color: colors.muted,
+    padding: "0.65rem 0.75rem",
+    fontSize: 13,
+    lineHeight: 1.4,
+  },
+  commandTop: {
+    border: "1px solid rgba(38, 230, 255, 0.3)",
+    background: "rgba(13, 58, 73, 0.32)",
+    borderRadius: 14,
+    padding: "0.85rem",
+    display: "grid",
+    gridTemplateColumns: "minmax(0, 1fr) auto",
+    gap: "0.8rem",
+    alignItems: "center",
+  },
+  commandTopTitle: {
+    margin: "0.25rem 0 0",
+    color: colors.text,
+    fontSize: 20,
+    letterSpacing: "-0.03em",
+  },
+  commandTopActions: {
+    display: "flex",
+    gap: 8,
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
+  },
+  centralSlotGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))",
+    gap: "0.75rem",
+  },
+  centralSlotCard: {
+    border: `1px solid ${colors.border}`,
+    borderRadius: 14,
+    background: "rgba(7, 21, 35, 0.78)",
+    padding: "0.75rem",
+    minHeight: 172,
+    display: "grid",
+    gap: "0.45rem",
+  },
+  centralSlotTop: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, color: colors.text },
+  centralSlotName: { color: colors.muted, minHeight: 18 },
+  centralForecastGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: "0.45rem",
+    color: colors.muted,
+    fontSize: 12,
+  },
+  centralSlotFoot: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 8,
+    color: colors.muted2,
+    fontSize: 12,
+    borderTop: `1px solid ${colors.borderSoft}`,
+    paddingTop: "0.45rem",
+  },
+  centralSlotActions: { display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" },
+  inlineAction: { color: colors.cyan, textDecoration: "none", fontWeight: 900, fontSize: 12 },
+  textButton: {
+    border: "none",
+    background: "transparent",
+    color: colors.red,
+    fontWeight: 900,
+    cursor: "pointer",
+    padding: 0,
+    fontSize: 12,
+  },
+  emptyCentral: {
+    border: `1px dashed ${colors.border}`,
+    borderRadius: 14,
+    padding: "1rem",
+    color: colors.muted,
+    background: "rgba(2, 11, 20, 0.45)",
   },
   portfolioPanel: {
     background: colors.row,

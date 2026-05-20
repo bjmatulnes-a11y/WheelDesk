@@ -17,7 +17,7 @@ type WheelDeskSideNavProps = {
 
 const navItems: NavItem[] = [
   { key: "dashboard", href: "/dashboard", label: "Dashboard" },
-  { key: "watchlist", href: "/watchlist", label: "Watchlist" },
+  { key: "watchlist", href: "/watchlist", label: "Full Watchlist" },
   { key: "control-center", href: "/control-center", label: "Control Center" },
   { key: "wheel", href: "/dashboard/wheel", label: "Wheel" },
   { key: "validation", href: "/dashboard/validation", label: "Validation" },
@@ -60,7 +60,7 @@ export function WheelDeskSideNav({ active }: WheelDeskSideNavProps) {
       <div className="wheeldesk-side-info" style={styles.infoCard}>
         <div style={styles.infoTitle}>Market Structure</div>
         <div style={styles.infoText}>
-          Watchlist Command pulls from your central ticker slots, then routes the best names into the Control Center.
+          Dashboard manages your central ticker slots. Full Watchlist is the deeper triage view after the Dashboard morning read.
         </div>
       </div>
     </aside>
