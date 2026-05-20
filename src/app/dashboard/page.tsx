@@ -8,11 +8,26 @@ import { readPreferences } from "../../lib/wheeldesk-storage";
 import { SUPPORTED_TICKERS } from "../../lib/types";
 import { WheelDeskSideNav } from "../../components/WheelDeskSideNav";
 import AuthGate from "../../components/auth/AuthGate";
+import { getSupabaseAuthClient } from "../../lib/auth/supabase-auth-client";
 
 const TODAY = new Date().toISOString().slice(0, 10);
 const HARVEST_TICKERS_KEY = "wheelDesk.dashboardHarvestTickers";
 const MAX_NORMAL_TICKERS = 10;
 const FOUNDER_SEED = ["SOFI", "AMD", "NVDA", "SPY", "QQQ", "AAPL", "MSFT", "PLTR"];
+
+async function getDashboardAuthHeaders(includeJson = false): Promise<Record<string, string>> {
+  const headers: Record<string, string> = includeJson ? { "Content-Type": "application/json" } : {};
+
+  const { data } = await getSupabaseAuthClient().auth.getSession();
+  const token = data.session?.access_token;
+
+  if (!token) {
+    throw new Error("Login session is not ready yet. Refresh the dashboard or sign in again.");
+  }
+
+  headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
 
 type HarvestStatus = "idle" | "pending" | "fetching" | "saving" | "saved" | "failed" | "skipped";
 
@@ -700,7 +715,10 @@ export default function DashboardPage() {
   }
 
   async function loadCentralWatchlist(): Promise<SavedTicker[]> {
-    const response = await fetch("/api/user-watchlist", { cache: "no-store" });
+    const response = await fetch("/api/user-watchlist", {
+      cache: "no-store",
+      headers: await getDashboardAuthHeaders(),
+    });
     const payload = await response.json().catch(() => null);
 
     if (!response.ok || !payload?.ok) {
@@ -768,7 +786,7 @@ export default function DashboardPage() {
     try {
       const response = await fetch("/api/user-watchlist", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: await getDashboardAuthHeaders(true),
         body: JSON.stringify({ symbol, replaceSymbol: replaceSymbol || undefined }),
       });
       const payload = await response.json().catch(() => null);
@@ -796,7 +814,10 @@ export default function DashboardPage() {
     setCentralStatus(`Removing ${normalized} from central ticker slots...`);
 
     try {
-      const response = await fetch(`/api/user-watchlist?symbol=${encodeURIComponent(normalized)}`, { method: "DELETE" });
+      const response = await fetch(`/api/user-watchlist?symbol=${encodeURIComponent(normalized)}`, {
+        method: "DELETE",
+        headers: await getDashboardAuthHeaders(),
+      });
       const payload = await response.json().catch(() => null);
 
       if (!response.ok || !payload?.ok) {
@@ -820,7 +841,7 @@ export default function DashboardPage() {
       for (const symbol of FOUNDER_SEED) {
         await fetch("/api/user-watchlist", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: await getDashboardAuthHeaders(true),
           body: JSON.stringify({ symbol }),
         });
       }

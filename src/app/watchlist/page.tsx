@@ -17,8 +17,23 @@ import {
 import { buildOIIntelligenceView } from "../../lib/oi-intelligence-view";
 import { buildFlowIntelligenceView } from "../../lib/flow-intelligence-view";
 import { getPriceSeries } from "../../lib/data-provider";
+import { getSupabaseAuthClient } from "../../lib/auth/supabase-auth-client";
 
 const FOUNDER_SEED = ["SOFI", "AMD", "NVDA", "SPY", "QQQ", "AAPL", "MSFT", "PLTR"];
+
+async function getWatchlistAuthHeaders(includeJson = false): Promise<Record<string, string>> {
+  const headers: Record<string, string> = includeJson ? { "Content-Type": "application/json" } : {};
+
+  const { data } = await getSupabaseAuthClient().auth.getSession();
+  const token = data.session?.access_token;
+
+  if (!token) {
+    throw new Error("Login session is not ready yet. Refresh the watchlist or sign in again.");
+  }
+
+  headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
 
 type TriageStatus = "action" | "watch" | "avoid" | "stale" | "missing" | "review";
 
@@ -481,7 +496,10 @@ export default function WatchlistCommandPage() {
   }
 
   async function loadSavedWatchlist(): Promise<SavedTicker[]> {
-    const response = await fetch("/api/user-watchlist", { cache: "no-store" });
+    const response = await fetch("/api/user-watchlist", {
+      cache: "no-store",
+      headers: await getWatchlistAuthHeaders(),
+    });
     const payload = await response.json().catch(() => null);
 
     if (!response.ok || !payload?.ok) {
@@ -506,7 +524,7 @@ export default function WatchlistCommandPage() {
     try {
       const response = await fetch("/api/user-watchlist", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: await getWatchlistAuthHeaders(true),
         body: JSON.stringify({ symbol, replaceSymbol: replacement || undefined }),
       });
       const payload = await response.json().catch(() => null);
@@ -536,6 +554,7 @@ export default function WatchlistCommandPage() {
     try {
       const response = await fetch(`/api/user-watchlist?symbol=${encodeURIComponent(normalized)}`, {
         method: "DELETE",
+        headers: await getWatchlistAuthHeaders(),
       });
       const payload = await response.json().catch(() => null);
 
@@ -560,7 +579,7 @@ export default function WatchlistCommandPage() {
       for (const symbol of FOUNDER_SEED) {
         await fetch("/api/user-watchlist", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: await getWatchlistAuthHeaders(true),
           body: JSON.stringify({ symbol }),
         });
       }
