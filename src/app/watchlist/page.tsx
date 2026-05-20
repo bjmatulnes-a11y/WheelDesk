@@ -18,15 +18,61 @@ import { buildOIIntelligenceView } from "../../lib/oi-intelligence-view";
 import { buildFlowIntelligenceView } from "../../lib/flow-intelligence-view";
 import { getPriceSeries } from "../../lib/data-provider";
 
-const WATCHLIST_KEY = "wheelDesk.watchlistCommand.tickers";
-const DEFAULT_WATCHLIST = ["SOFI", "AAPL", "AMD", "NVDA", "MSFT", "MU", "PLTR", "SPY", "QQQ"];
+const FOUNDER_SEED = ["SOFI", "AMD", "NVDA", "SPY", "QQQ", "AAPL", "MSFT", "PLTR"];
 
 type TriageStatus = "action" | "watch" | "avoid" | "stale" | "missing" | "review";
 
+type Entitlement = {
+  plan: "founder" | "core" | "research";
+  maxTickers: number;
+  maxReplacementsPerDay: number;
+  maxValidationHistoryDays: number;
+};
+
+type SavedTicker = {
+  id: string;
+  symbol: string;
+  slot_index?: number | null;
+  source?: string | null;
+  created_at?: string;
+  ticker_universe?: {
+    name?: string | null;
+    asset_type?: string | null;
+    data_priority?: number | null;
+  } | null;
+};
+
+type UniverseTicker = {
+  symbol: string;
+  name?: string | null;
+  asset_type?: string;
+  data_priority?: number;
+};
+
+type ForecastDbRow = {
+  id: string;
+  symbol: string;
+  generated_at?: string;
+  snapshot_date?: string;
+  expiration?: string | null;
+  spot?: number | string | null;
+  bias?: string | null;
+  confidence?: number | string | null;
+  base_30d?: number | string | null;
+  upper_30d?: number | string | null;
+  lower_30d?: number | string | null;
+  expected_move_lower?: number | string | null;
+  expected_move_upper?: number | string | null;
+  trap_probability?: number | string | null;
+  wheel_support_hold_probability?: number | string | null;
+  posture?: string | null;
+};
+
 type WatchlistRow = {
   ticker: string;
+  savedTicker: SavedTicker;
   surface: OptionSurfaceSnapshot | null;
-  allSurfaces: OptionSurfaceSnapshot[];
+  forecast: ForecastDbRow | null;
   summary: TraderEdgeSummary | null;
   migration: WallMigrationSummary | null;
   oiRows: number;
@@ -62,37 +108,8 @@ function normalizeTicker(value: unknown): string {
   return String(value ?? "")
     .trim()
     .toUpperCase()
-    .replace(/[^A-Z0-9.\-]/g, "");
-}
-
-function uniqueTickers(values: string[]): string[] {
-  return Array.from(new Set(values.map(normalizeTicker).filter(Boolean))).slice(0, 50);
-}
-
-function parseTickerList(value: string): string[] {
-  return uniqueTickers(value.split(/[\s,;|]+/));
-}
-
-function readSavedTickers(): string[] {
-  if (typeof window === "undefined") return DEFAULT_WATCHLIST;
-
-  try {
-    const raw = window.localStorage.getItem(WATCHLIST_KEY);
-    const parsed = raw ? JSON.parse(raw) : null;
-    if (Array.isArray(parsed)) {
-      const tickers = uniqueTickers(parsed.map(String));
-      if (tickers.length) return tickers;
-    }
-  } catch {
-    // Bad localStorage should never break the daily page.
-  }
-
-  return DEFAULT_WATCHLIST;
-}
-
-function saveTickers(tickers: string[]): void {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(WATCHLIST_KEY, JSON.stringify(uniqueTickers(tickers)));
+    .replace(/[^A-Z0-9.\-]/g, "")
+    .slice(0, 12);
 }
 
 function dateOnly(value: unknown): string {
@@ -165,13 +182,7 @@ function normalizeSurfaceSnapshot(raw: any): OptionSurfaceSnapshot | null {
 }
 
 function extractSnapshots(payload: any): OptionSurfaceSnapshot[] {
-  const candidates = [
-    payload?.snapshots,
-    payload?.surfaces,
-    payload?.data,
-    payload?.items,
-    payload?.surfaceSnapshots,
-  ];
+  const candidates = [payload?.snapshots, payload?.surfaces, payload?.data, payload?.items, payload?.surfaceSnapshots];
 
   for (const candidate of candidates) {
     if (Array.isArray(candidate)) {
@@ -190,16 +201,13 @@ async function fetchSupabaseSurfaceList(): Promise<OptionSurfaceSnapshot[]> {
   const urls = [
     "/api/supabase/surface-snapshot?mode=list&limit=750",
     "/api/supabase/surface-snapshot?mode=list",
-    "/api/supabase/surface-snapshot",
   ];
 
   for (const url of urls) {
     try {
       const response = await fetch(url, { cache: "no-store" });
       const payload = await response.json().catch(() => null);
-
       if (!response.ok) continue;
-
       const snapshots = extractSnapshots(payload);
       if (snapshots.length) return snapshots;
     } catch {
@@ -216,12 +224,21 @@ async function fetchSupabaseSurfacesForTicker(ticker: string): Promise<OptionSur
   });
 
   const payload = await response.json().catch(() => null);
-
-  if (!response.ok) {
-    throw new Error(payload?.error ?? `Supabase surface request failed: ${response.status}`);
-  }
-
+  if (!response.ok) return [];
   return extractSnapshots(payload);
+}
+
+async function fetchForecastForTicker(ticker: string): Promise<ForecastDbRow | null> {
+  try {
+    const response = await fetch(`/api/forecasts/oi-field?symbol=${encodeURIComponent(ticker)}&limit=1`, {
+      cache: "no-store",
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) return null;
+    return Array.isArray(payload?.forecasts) ? payload.forecasts[0] ?? null : null;
+  } catch {
+    return null;
+  }
 }
 
 async function fetchCandles(ticker: string): Promise<CandleRecord[]> {
@@ -243,19 +260,26 @@ async function fetchCandles(ticker: string): Promise<CandleRecord[]> {
   }
 }
 
+function num(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function fmt(value: number | null | undefined, digits = 0): string {
   if (value == null || !Number.isFinite(value)) return "N/A";
   return value.toFixed(digits);
 }
 
-function money(value: number | null | undefined): string {
-  if (value == null || !Number.isFinite(value)) return "N/A";
-  return value.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 });
+function money(value: number | string | null | undefined): string {
+  const n = num(value);
+  if (n == null) return "N/A";
+  return n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 });
 }
 
-function pct(value: number | null | undefined): string {
-  if (value == null || !Number.isFinite(value)) return "N/A";
-  return `${value.toFixed(1)}%`;
+function pct(value: number | string | null | undefined): string {
+  const n = num(value);
+  if (n == null) return "N/A";
+  return `${n.toFixed(1)}%`;
 }
 
 function signed(value: number | null | undefined, digits = 2): string {
@@ -288,19 +312,38 @@ function rowStatus(args: {
   surface: OptionSurfaceSnapshot | null;
   summary: TraderEdgeSummary | null;
   oiAnomalies: number;
+  forecast: ForecastDbRow | null;
 }): Pick<WatchlistRow, "status" | "priority" | "statusLabel" | "reason"> {
-  const { surface, summary, oiAnomalies } = args;
+  const { surface, summary, oiAnomalies, forecast } = args;
 
-  if (!surface || !summary) {
+  if (!surface && !forecast) {
     return {
       status: "missing",
       priority: 20,
-      statusLabel: "Missing surface",
-      reason: "No Supabase OI surface found. Run Dashboard Harvest or load/save this ticker from Control Center.",
+      statusLabel: "Missing data",
+      reason: "No shared surface or OI Field forecast found yet. Harvest this ticker before trusting it.",
     };
   }
 
-  const staleDays = daysOld(surface.snapshotDate);
+  if (!surface && forecast) {
+    return {
+      status: "review",
+      priority: 48,
+      statusLabel: "Forecast only",
+      reason: "Latest OI forecast exists, but no current surface was found for full triage.",
+    };
+  }
+
+  if (!summary) {
+    return {
+      status: "review",
+      priority: 45,
+      statusLabel: "Needs review",
+      reason: "Surface exists but the Trader Edge calculation did not complete.",
+    };
+  }
+
+  const staleDays = daysOld(surface?.snapshotDate);
   if ((staleDays ?? 999) > 7) {
     return {
       status: "stale",
@@ -392,24 +435,14 @@ function StatCard({ label, value, help, tone = colors.teal }: { label: string; v
 function ActionBadge({ row }: { row: WatchlistRow }) {
   const tone = statusTone(row.status);
   return (
-    <span
-      style={{
-        border: `1px solid ${tone.border}`,
-        background: tone.bg,
-        color: tone.color,
-        borderRadius: 999,
-        padding: "0.22rem 0.5rem",
-        fontWeight: 900,
-        whiteSpace: "nowrap",
-      }}
-    >
+    <span style={{ border: `1px solid ${tone.border}`, background: tone.bg, color: tone.color, borderRadius: 999, padding: "0.22rem 0.5rem", fontWeight: 900, whiteSpace: "nowrap" }}>
       {row.statusLabel}
     </span>
   );
 }
 
 function buildDailyRead(counts: Record<TriageStatus | "all", number>, best: WatchlistRow | null): string {
-  if (!counts.all) return "No watchlist rows loaded yet. Run triage after harvesting OI surfaces.";
+  if (!counts.all) return "No saved tickers yet. Add symbols from the central WheelDesk universe to start the daily loop.";
   const parts = [
     `${counts.action} action candidate${counts.action === 1 ? "" : "s"}`,
     `${counts.watch} watch-only`,
@@ -421,69 +454,163 @@ function buildDailyRead(counts: Record<TriageStatus | "all", number>, best: Watc
 }
 
 export default function WatchlistCommandPage() {
-  const [tickerInput, setTickerInput] = useState(DEFAULT_WATCHLIST.join(", "));
+  const [savedTickers, setSavedTickers] = useState<SavedTicker[]>([]);
+  const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
+  const [replacementsUsedToday, setReplacementsUsedToday] = useState(0);
+  const [universe, setUniverse] = useState<UniverseTicker[]>([]);
+  const [tickerInput, setTickerInput] = useState("");
+  const [replaceSymbol, setReplaceSymbol] = useState("");
   const [allSurfaces, setAllSurfaces] = useState<OptionSurfaceSnapshot[]>([]);
   const [rows, setRows] = useState<WatchlistRow[]>([]);
   const [filter, setFilter] = useState<TriageStatus | "all">("all");
-  const [status, setStatus] = useState("Loading Supabase surfaces...");
+  const [status, setStatus] = useState("Loading central watchlist...");
   const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [lastLoadedAt, setLastLoadedAt] = useState<string | null>(null);
 
-  const requestedTickers = useMemo(() => parseTickerList(tickerInput), [tickerInput]);
+  async function loadUniverse(query = "") {
+    try {
+      const response = await fetch(`/api/ticker-universe?limit=80${query ? `&q=${encodeURIComponent(query)}` : ""}`, {
+        cache: "no-store",
+      });
+      const payload = await response.json().catch(() => null);
+      if (response.ok && Array.isArray(payload?.tickers)) setUniverse(payload.tickers);
+    } catch {
+      // Universe search is helpful, but it should not break the page.
+    }
+  }
 
-  async function loadWatchlist(tickersOverride?: string[]) {
-    setLoading(true);
-    setStatus("Loading Supabase surfaces...");
+  async function loadSavedWatchlist(): Promise<SavedTicker[]> {
+    const response = await fetch("/api/user-watchlist", { cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error ?? "Could not load your central watchlist.");
+    }
+
+    const tickers = Array.isArray(payload.tickers) ? payload.tickers : [];
+    setSavedTickers(tickers);
+    setEntitlement(payload.entitlement ?? null);
+    setReplacementsUsedToday(Number(payload.replacementsUsedToday ?? 0));
+    return tickers;
+  }
+
+  async function addTicker(symbolOverride?: string, replaceOverride?: string) {
+    const symbol = normalizeTicker(symbolOverride ?? tickerInput);
+    const replacement = normalizeTicker(replaceOverride ?? replaceSymbol);
+    if (!symbol) return;
+
+    setSaving(true);
+    setStatus(`Saving ${symbol} to your central watchlist...`);
 
     try {
-      const inputTickers = tickersOverride?.length ? tickersOverride : requestedTickers;
-      const listSnapshots = await fetchSupabaseSurfaceList();
-      let snapshots = listSnapshots;
+      const response = await fetch("/api/user-watchlist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol, replaceSymbol: replacement || undefined }),
+      });
+      const payload = await response.json().catch(() => null);
 
-      const tickers =
-        inputTickers.length > 0
-          ? inputTickers
-          : uniqueTickers(listSnapshots.map((surface) => String(surface.ticker ?? "")));
-
-      if (tickers.length > 0) {
-        const perTicker = await Promise.all(
-          tickers.map(async (ticker) => {
-            try {
-              return await fetchSupabaseSurfacesForTicker(ticker);
-            } catch {
-              return [];
-            }
-          })
-        );
-
-        snapshots = [...listSnapshots, ...perTicker.flat()];
+      if (!response.ok || !payload?.ok) {
+        throw new Error(payload?.error ?? `Could not add ${symbol}.`);
       }
+
+      setTickerInput("");
+      setReplaceSymbol("");
+      const tickers = await loadSavedWatchlist();
+      await loadWatchlist(tickers);
+    } catch (error: any) {
+      setStatus(error?.message ?? `Could not add ${symbol}.`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function removeTicker(symbol: string) {
+    const normalized = normalizeTicker(symbol);
+    if (!normalized) return;
+
+    setSaving(true);
+    setStatus(`Removing ${normalized} from your central watchlist...`);
+
+    try {
+      const response = await fetch(`/api/user-watchlist?symbol=${encodeURIComponent(normalized)}`, {
+        method: "DELETE",
+      });
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok || !payload?.ok) {
+        throw new Error(payload?.error ?? `Could not remove ${normalized}.`);
+      }
+
+      const tickers = await loadSavedWatchlist();
+      await loadWatchlist(tickers);
+    } catch (error: any) {
+      setStatus(error?.message ?? `Could not remove ${normalized}.`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function seedFounderDefaults() {
+    setSaving(true);
+    setStatus("Seeding founder defaults into your central watchlist...");
+
+    try {
+      for (const symbol of FOUNDER_SEED) {
+        await fetch("/api/user-watchlist", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ symbol }),
+        });
+      }
+      const tickers = await loadSavedWatchlist();
+      await loadWatchlist(tickers);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function loadWatchlist(tickersOverride?: SavedTicker[]) {
+    setLoading(true);
+    setStatus("Loading shared OI surfaces, forecasts, and candles...");
+
+    try {
+      const saved = tickersOverride ?? savedTickers;
+      const symbols = saved.map((row) => normalizeTicker(row.symbol)).filter(Boolean);
+
+      if (!symbols.length) {
+        setRows([]);
+        setAllSurfaces([]);
+        setLastLoadedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+        setStatus("No central watchlist tickers yet. Add tickers from the WheelDesk universe.");
+        return;
+      }
+
+      const listSnapshots = await fetchSupabaseSurfaceList();
+      const perTicker = await Promise.all(symbols.map((ticker) => fetchSupabaseSurfacesForTicker(ticker)));
+      const snapshots = [...listSnapshots, ...perTicker.flat()];
 
       const deduped = Array.from(
         new Map(
           snapshots.map((surface) => [
             `${normalizeTicker((surface as any).ticker)}_${dateOnly((surface as any).snapshotDate)}_${String((surface as any).surfaceKey ?? "")}`,
             surface,
-          ])
-        ).values()
+          ]),
+        ).values(),
       );
 
       const latest = latestSurfaceByTicker(deduped);
-      const latestTickers = uniqueTickers([
-        ...tickers,
-        ...latest.map((surface) => String(surface.ticker ?? "")),
-      ]);
-
-      saveTickers(tickers.length ? tickers : latestTickers);
-
-      const candlePairs = await Promise.all(
-        latestTickers.map(async (ticker) => [ticker, await fetchCandles(ticker)] as const)
-      );
-
+      const candlePairs = await Promise.all(symbols.map(async (ticker) => [ticker, await fetchCandles(ticker)] as const));
+      const forecastPairs = await Promise.all(symbols.map(async (ticker) => [ticker, await fetchForecastForTicker(ticker)] as const));
       const candleMap = Object.fromEntries(candlePairs);
-      const nextRows: WatchlistRow[] = latestTickers.map((ticker) => {
+      const forecastMap = Object.fromEntries(forecastPairs);
+
+      const nextRows: WatchlistRow[] = saved.map((savedTicker) => {
+        const ticker = normalizeTicker(savedTicker.symbol);
         const surface = latest.find((item) => normalizeTicker((item as any).ticker) === ticker) ?? null;
         const priorSurface = surface ? findPriorSurfaceForTicker(deduped, ticker, (surface as any).snapshotDate) : null;
+        const forecast = forecastMap[ticker] ?? null;
         const candles = candleMap[ticker] ?? [];
         let summary: TraderEdgeSummary | null = null;
         let migration: WallMigrationSummary | null = null;
@@ -527,15 +654,22 @@ export default function WatchlistCommandPage() {
           dataNotes.push("No saved Supabase OI surface found for this ticker.");
         }
 
+        if (forecast) {
+          dataNotes.push(`Latest OI Field forecast: ${dateOnly(forecast.snapshot_date ?? forecast.generated_at)}.`);
+        } else {
+          dataNotes.push("No OI Field forecast receipt stored yet.");
+        }
+
         if (summary?.dataQualityNotes?.length) dataNotes.push(...summary.dataQualityNotes.slice(0, 2));
         if ((migration as any)?.dataQualityNotes?.length) dataNotes.push(...(migration as any).dataQualityNotes.slice(0, 2));
 
-        const statusInfo = rowStatus({ surface, summary, oiAnomalies });
+        const statusInfo = rowStatus({ surface, summary, oiAnomalies, forecast });
 
         return {
           ticker,
+          savedTicker,
           surface,
-          allSurfaces: deduped.filter((item) => normalizeTicker((item as any).ticker) === ticker),
+          forecast,
           summary,
           migration,
           oiRows,
@@ -543,25 +677,27 @@ export default function WatchlistCommandPage() {
           flowBias,
           flowConfidence,
           changeText: buildChangeText(migration),
-          dataNotes: Array.from(new Set(dataNotes)).slice(0, 4),
+          dataNotes: Array.from(new Set(dataNotes)).slice(0, 5),
           ...statusInfo,
         };
       });
 
-      const sortedRows = nextRows.sort(
-        (a, b) => b.priority - a.priority || (b.summary?.edgeScore ?? 0) - (a.summary?.edgeScore ?? 0)
-      );
+      const sortedRows = nextRows.sort((a, b) => {
+        const slotA = Number(a.savedTicker.slot_index ?? 999);
+        const slotB = Number(b.savedTicker.slot_index ?? 999);
+        return b.priority - a.priority || (b.summary?.edgeScore ?? 0) - (a.summary?.edgeScore ?? 0) || slotA - slotB;
+      });
 
       setAllSurfaces(deduped);
       setRows(sortedRows);
       setLastLoadedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
       setStatus(
         deduped.length
-          ? `Loaded ${deduped.length} Supabase surface(s) across ${latestTickers.length} ticker(s).`
-          : "No Supabase surfaces returned. Confirm /api/supabase/surface-snapshot?mode=list works and that option_surface_snapshots has rows."
+          ? `Loaded ${deduped.length} shared surface(s), ${forecastPairs.filter(([, forecast]) => forecast).length} forecast receipt(s), and ${symbols.length} central ticker slot(s).`
+          : `Loaded ${symbols.length} central ticker slot(s), but no Supabase OI surfaces returned yet.`,
       );
     } catch (error: any) {
-      setStatus(error?.message ?? "Failed to load Supabase watchlist data.");
+      setStatus(error?.message ?? "Failed to load central watchlist data.");
       setRows([]);
     } finally {
       setLoading(false);
@@ -569,9 +705,17 @@ export default function WatchlistCommandPage() {
   }
 
   useEffect(() => {
-    const saved = readSavedTickers();
-    setTickerInput(saved.join(", "));
-    loadWatchlist(saved);
+    async function boot() {
+      await loadUniverse();
+      try {
+        const tickers = await loadSavedWatchlist();
+        await loadWatchlist(tickers);
+      } catch (error: any) {
+        setStatus(error?.message ?? "Could not initialize Watchlist Command.");
+      }
+    }
+
+    boot();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -591,12 +735,11 @@ export default function WatchlistCommandPage() {
 
   const best = visibleRows[0] ?? rows[0] ?? null;
   const dailyRead = buildDailyRead(counts, best);
-  const topThree = rows.filter((row) => row.surface).slice(0, 3);
-  const dataNotes = rows.flatMap((row) =>
-    row.dataNotes.length
-      ? row.dataNotes.map((note) => ({ ticker: row.ticker, note }))
-      : [{ ticker: row.ticker, note: "No major data-quality note." }]
-  );
+  const topThree = rows.filter((row) => row.surface || row.forecast).slice(0, 3);
+  const usedSlots = savedTickers.length;
+  const maxSlots = entitlement?.maxTickers ?? 0;
+  const replacementsLeft = Math.max(0, (entitlement?.maxReplacementsPerDay ?? 0) - replacementsUsedToday);
+  const atLimit = Boolean(maxSlots && usedSlots >= maxSlots);
 
   return (
     <AuthGate>
@@ -609,24 +752,23 @@ export default function WatchlistCommandPage() {
             "radial-gradient(circle at top left, rgba(34, 211, 238, 0.13), transparent 28%), radial-gradient(circle at top right, rgba(192, 132, 252, 0.08), transparent 24%), #020b14",
         }}
       >
-        <WheelDeskSideNav active="scanner" />
+        <WheelDeskSideNav active="watchlist" />
 
         <div className="wheeldesk-page" style={styles.page}>
           <header style={styles.header}>
             <div style={styles.headerCopy}>
-              <div style={styles.eyebrow}>Daily Edge Loop</div>
+              <div style={styles.eyebrow}>Central Ticker Universe</div>
               <h1 style={styles.title}>Watchlist Command</h1>
               <p style={styles.subtitle}>
-                Your morning desk for saved tickers: what deserves attention, what changed since yesterday, what to avoid,
-                and which names are worth opening in Control Center.
+                Your saved ticker slots now come from the central WheelDesk universe. Surfaces, OI Field forecasts, and future validation receipts are shared once per ticker instead of pulled separately per user.
               </p>
             </div>
 
             <div style={styles.actions}>
               <a href="/dashboard" style={styles.topLink}>Dashboard Harvest</a>
               <a href="/control-center" style={styles.topLink}>Control Center</a>
-              <button type="button" onClick={() => loadWatchlist()} style={styles.topButton} disabled={loading}>
-                {loading ? "Loading..." : "Reload Supabase"}
+              <button type="button" onClick={() => loadWatchlist()} style={styles.topButton} disabled={loading || saving}>
+                {loading ? "Loading..." : "Reload"}
               </button>
             </div>
           </header>
@@ -636,66 +778,91 @@ export default function WatchlistCommandPage() {
               <div style={styles.eyebrow}>Morning Read</div>
               <h2 style={styles.morningTitle}>{dailyRead}</h2>
               <p style={styles.morningText}>
-                This page replaces the old scanner flow. Use it first, then deep-dive the names that earn attention.
+                This is the first step toward the neural forecast dataset: fixed ticker universe, shared OI forecasts, and consistent receipts by symbol/date/horizon.
               </p>
             </div>
             <div style={styles.morningMeta}>
               <span>{lastLoadedAt ? `Last refresh ${lastLoadedAt}` : "Loading initial read"}</span>
-              <strong>{allSurfaces.length}</strong>
-              <small>Supabase surfaces</small>
+              <strong>{usedSlots}/{maxSlots || "?"}</strong>
+              <small>{entitlement?.plan ?? "founder"} ticker slots</small>
             </div>
           </section>
 
           <section style={styles.panel}>
             <div style={styles.watchlistGrid}>
               <label style={styles.label}>
-                Watchlist tickers
+                Add ticker from WheelDesk universe
                 <input
                   value={tickerInput}
-                  onChange={(event) => setTickerInput(event.target.value.toUpperCase())}
-                  onBlur={() => saveTickers(parseTickerList(tickerInput))}
-                  placeholder="SOFI, AAPL, AMD, NVDA"
+                  onChange={(event) => {
+                    const value = event.target.value.toUpperCase();
+                    setTickerInput(value);
+                    loadUniverse(value);
+                  }}
+                  list="wheeldesk-universe-symbols"
+                  placeholder="AMD, SOFI, NVDA..."
                   style={styles.input}
                 />
+                <datalist id="wheeldesk-universe-symbols">
+                  {universe.map((ticker) => (
+                    <option key={ticker.symbol} value={ticker.symbol}>
+                      {ticker.name ?? ticker.symbol}
+                    </option>
+                  ))}
+                </datalist>
               </label>
 
-              <button type="button" onClick={() => loadWatchlist()} style={styles.primaryButton} disabled={loading}>
-                Run Watchlist Triage
+              <label style={styles.label}>
+                Replace existing ticker if at limit
+                <select value={replaceSymbol} onChange={(event) => setReplaceSymbol(event.target.value)} style={styles.input}>
+                  <option value="">Do not replace</option>
+                  {savedTickers.map((ticker) => (
+                    <option key={ticker.symbol} value={ticker.symbol}>{ticker.symbol}</option>
+                  ))}
+                </select>
+              </label>
+
+              <button type="button" onClick={() => addTicker()} style={styles.primaryButton} disabled={loading || saving || !tickerInput.trim()}>
+                {saving ? "Saving..." : atLimit && !replaceSymbol ? "Limit Reached" : "Add Ticker"}
               </button>
 
-              <button
-                type="button"
-                onClick={() => {
-                  setTickerInput(DEFAULT_WATCHLIST.join(", "));
-                  saveTickers(DEFAULT_WATCHLIST);
-                  loadWatchlist(DEFAULT_WATCHLIST);
-                }}
-                style={styles.secondaryButton}
-                disabled={loading}
-              >
-                Reset Defaults
+              <button type="button" onClick={seedFounderDefaults} style={styles.secondaryButton} disabled={loading || saving || usedSlots > 0}>
+                Seed Founder Defaults
               </button>
 
-              <div style={styles.statusText}>{status}</div>
+              <div style={styles.statusText}>
+                {status}
+                <br />
+                Replacements left today: <strong>{replacementsLeft}</strong>
+              </div>
             </div>
+
+            {savedTickers.length ? (
+              <div style={styles.slotStrip}>
+                {savedTickers.map((ticker) => (
+                  <span key={ticker.symbol} style={styles.slotPill}>
+                    <strong>{ticker.symbol}</strong>
+                    <button type="button" onClick={() => removeTicker(ticker.symbol)} style={styles.removeButton} disabled={saving}>×</button>
+                  </span>
+                ))}
+              </div>
+            ) : null}
           </section>
 
           <section style={styles.statsGrid}>
-            <StatCard label="Tracked" value={counts.all} help="watchlist names" />
+            <StatCard label="Slots" value={`${usedSlots}/${maxSlots || "?"}`} help="central ticker limit" />
             <StatCard label="Action" value={counts.action} help="clean candidates" tone={colors.green} />
             <StatCard label="Watch" value={counts.watch} help="needs confirmation" tone={colors.amber} />
             <StatCard label="Avoid" value={counts.avoid} help="trap risk" tone={colors.red} />
-            <StatCard label="Stale/Missing" value={counts.stale + counts.missing} help="refresh required" tone="#94a3b8" />
-            <StatCard label="Review" value={counts.review} help="data or conflict" tone={colors.purple} />
+            <StatCard label="Surfaces" value={allSurfaces.length} help="shared OI snapshots" tone={colors.teal} />
+            <StatCard label="Forecasts" value={rows.filter((row) => row.forecast).length} help="OI Field receipts" tone={colors.purple} />
           </section>
 
           {best ? (
             <section style={styles.commandPanel}>
               <div>
                 <div style={styles.eyebrow}>Top Priority</div>
-                <h2 style={{ margin: "0.25rem 0", color: colors.white }}>
-                  {best.ticker} · {best.statusLabel}
-                </h2>
+                <h2 style={{ margin: "0.25rem 0", color: colors.white }}>{best.ticker} · {best.statusLabel}</h2>
                 <p style={{ color: colors.muted, margin: 0, lineHeight: 1.45 }}>{best.reason}</p>
                 <p style={{ color: colors.dim, margin: "0.6rem 0 0", lineHeight: 1.4 }}>{best.changeText}</p>
               </div>
@@ -703,7 +870,7 @@ export default function WatchlistCommandPage() {
                 <StatCard label="Edge" value={fmt(best.summary?.edgeScore)} help={best.summary?.actionBucket ?? "N/A"} tone={colors.teal} />
                 <StatCard label="Wheel" value={fmt(best.summary?.wheelScore)} help="wheel fit" tone={colors.green} />
                 <StatCard label="Trap" value={fmt(best.summary?.trapRisk)} help="lower is better" tone={best.summary && best.summary.trapRisk >= 70 ? colors.red : colors.green} />
-                <StatCard label="Freshness" value={`${daysOld(best.surface?.snapshotDate) ?? "N/A"}d`} help={best.surface?.snapshotDate ?? "no surface"} tone={colors.amber} />
+                <StatCard label="30D Base" value={money(best.forecast?.base_30d)} help="latest OI Field" tone={colors.purple} />
                 <a href={`/control-center?ticker=${encodeURIComponent(best.ticker)}`} style={styles.primaryLink}>Open Control Center</a>
               </div>
             </section>
@@ -721,7 +888,7 @@ export default function WatchlistCommandPage() {
                   <small>edge</small>
                 </div>
                 <h3 style={styles.spotlightTitle}>{row.summary?.actionBucket ?? row.statusLabel}</h3>
-                <p style={styles.spotlightText}>{row.changeText}</p>
+                <p style={styles.spotlightText}>{row.forecast ? `30D field: ${money(row.forecast.lower_30d)} – ${money(row.forecast.upper_30d)} · base ${money(row.forecast.base_30d)}` : row.changeText}</p>
                 <a href={`/control-center?ticker=${encodeURIComponent(row.ticker)}`} style={styles.inlineLink}>Deep dive →</a>
               </article>
             ))}
@@ -741,10 +908,7 @@ export default function WatchlistCommandPage() {
                 key={key}
                 type="button"
                 onClick={() => setFilter(key)}
-                style={{
-                  ...styles.filterButton,
-                  ...(filter === key ? styles.filterButtonActive : {}),
-                }}
+                style={{ ...styles.filterButton, ...(filter === key ? styles.filterButtonActive : {}) }}
               >
                 {label} ({count})
               </button>
@@ -754,9 +918,9 @@ export default function WatchlistCommandPage() {
           <section style={styles.tablePanel}>
             <div style={styles.tableHeader}>
               <div>
-                <h3 style={{ margin: 0, color: colors.white }}>Ticker Triage</h3>
+                <h3 style={{ margin: 0, color: colors.white }}>Central Ticker Triage</h3>
                 <p style={{ margin: "0.35rem 0 0", color: colors.muted, fontSize: 13 }}>
-                  Ranked by action priority, Trader Edge, trap risk, freshness, OI anomalies, wall migration, and flow pressure.
+                  Ranked by action priority, Trader Edge, OI Field forecast coverage, trap risk, freshness, wall migration, and flow pressure.
                 </p>
               </div>
             </div>
@@ -766,23 +930,7 @@ export default function WatchlistCommandPage() {
                 <thead>
                   <tr>
                     {[
-                      "Ticker",
-                      "Status",
-                      "Best Action",
-                      "Edge",
-                      "Wheel",
-                      "CSP",
-                      "CC",
-                      "Trap",
-                      "Support",
-                      "Magnet",
-                      "Resistance",
-                      "Flow",
-                      "OI",
-                      "What Changed",
-                      "Fresh",
-                      "Data",
-                      "Open",
+                      "Ticker", "Status", "Best Action", "Edge", "Wheel", "Trap", "Support", "Magnet", "Resistance", "30D Base", "30D Field", "Flow", "OI", "Changed", "Fresh", "Data", "Open",
                     ].map((header) => (
                       <th key={header} style={styles.th}>{header}</th>
                     ))}
@@ -797,39 +945,25 @@ export default function WatchlistCommandPage() {
                           <td style={styles.tdTicker}>{row.ticker}</td>
                           <td style={styles.td}><ActionBadge row={row} /></td>
                           <td style={{ ...styles.td, minWidth: 280, whiteSpace: "normal" }}>
-                            <strong style={{ color: colors.white }}>{summary?.actionBucket ?? "No surface"}</strong>
+                            <strong style={{ color: colors.white }}>{summary?.actionBucket ?? row.statusLabel}</strong>
                             <div style={{ color: colors.muted, marginTop: 3 }}>{row.reason}</div>
                           </td>
                           <td style={styles.td}><Score value={summary?.edgeScore} /></td>
                           <td style={styles.td}><Score value={summary?.wheelScore} /></td>
-                          <td style={styles.td}><Score value={summary?.cspScore} /></td>
-                          <td style={styles.td}><Score value={summary?.coveredCallScore} /></td>
                           <td style={styles.td}><Score value={summary?.trapRisk} invert /></td>
                           <td style={styles.td}>{money(summary?.support)}<br /><small>{pct(summary?.supportCushionPct)}</small></td>
                           <td style={styles.td}>{money(summary?.magnet)}</td>
                           <td style={styles.td}>{money(summary?.resistance)}<br /><small>{pct(summary?.resistanceCushionPct)}</small></td>
+                          <td style={styles.td}>{money(row.forecast?.base_30d)}<br /><small>{row.forecast?.bias ?? "no bias"}</small></td>
+                          <td style={styles.td}>{money(row.forecast?.lower_30d)} – {money(row.forecast?.upper_30d)}<br /><small>conf {fmt(num(row.forecast?.confidence), 0)}</small></td>
                           <td style={styles.td}>
-                            <strong style={{ color: row.flowBias === "BULLISH" ? colors.green : row.flowBias === "BEARISH" ? colors.red : colors.amber }}>
-                              {row.flowBias}
-                            </strong>
+                            <strong style={{ color: row.flowBias === "BULLISH" ? colors.green : row.flowBias === "BEARISH" ? colors.red : colors.amber }}>{row.flowBias}</strong>
                             <br />
                             <small>{fmt(row.flowConfidence)} / 100</small>
                           </td>
-                          <td style={styles.td}>
-                            {row.oiRows.toLocaleString()} rows
-                            <br />
-                            <small>{row.oiAnomalies} anomalies</small>
-                          </td>
-                          <td style={{ ...styles.td, minWidth: 260, whiteSpace: "normal" }}>
-                            {row.changeText}
-                            <br />
-                            <small>{(row.migration as any)?.interpretation ?? "Need at least two saved surfaces."}</small>
-                          </td>
-                          <td style={styles.td}>
-                            {row.surface ? `${daysOld(row.surface.snapshotDate) ?? "N/A"}d` : "N/A"}
-                            <br />
-                            <small>{row.surface?.snapshotDate ?? "missing"}</small>
-                          </td>
+                          <td style={styles.td}>{row.oiRows.toLocaleString()} rows<br /><small>{row.oiAnomalies} anomalies</small></td>
+                          <td style={{ ...styles.td, minWidth: 240, whiteSpace: "normal" }}>{row.changeText}</td>
+                          <td style={styles.td}>{daysOld(row.surface?.snapshotDate) ?? "N/A"}d<br /><small>{row.surface?.snapshotDate ?? "no surface"}</small></td>
                           <td style={styles.td}><Score value={summary?.dataQualityScore} /></td>
                           <td style={styles.td}>
                             <a href={`/control-center?ticker=${encodeURIComponent(row.ticker)}`} style={styles.inlineLink}>Control</a>
@@ -841,9 +975,7 @@ export default function WatchlistCommandPage() {
                     })
                   ) : (
                     <tr>
-                      <td style={styles.td} colSpan={17}>
-                        No rows match the selected filter. Add tickers, run Dashboard Harvest, or reload Supabase.
-                      </td>
+                      <td style={styles.td} colSpan={17}>No rows match the selected filter. Add tickers from the central universe or seed founder defaults.</td>
                     </tr>
                   )}
                 </tbody>
@@ -853,8 +985,8 @@ export default function WatchlistCommandPage() {
 
           <section style={styles.bottomGrid}>
             <article style={styles.notePanel}>
-              <div style={styles.eyebrow}>What changed since yesterday?</div>
-              <h3 style={styles.noteTitle}>Signal movement</h3>
+              <div style={styles.eyebrow}>What changed?</div>
+              <h3 style={styles.noteTitle}>Wall migration</h3>
               <div style={styles.noteList}>
                 {rows.slice(0, 8).map((row) => (
                   <div key={row.ticker} style={styles.noteItem}>
@@ -866,13 +998,13 @@ export default function WatchlistCommandPage() {
             </article>
 
             <article style={styles.notePanel}>
-              <div style={styles.eyebrow}>Data quality</div>
-              <h3 style={styles.noteTitle}>Receipts before action</h3>
+              <div style={styles.eyebrow}>Forecast coverage</div>
+              <h3 style={styles.noteTitle}>OI Field receipts</h3>
               <div style={styles.noteList}>
-                {dataNotes.slice(0, 8).map((item, index) => (
-                  <div key={`${item.ticker}-${index}`} style={styles.noteItem}>
-                    <strong>{item.ticker}</strong>
-                    <span>{item.note}</span>
+                {rows.slice(0, 8).map((row) => (
+                  <div key={row.ticker} style={styles.noteItem}>
+                    <strong>{row.ticker}</strong>
+                    <span>{row.forecast ? `Base 30D ${money(row.forecast.base_30d)} · field ${money(row.forecast.lower_30d)}–${money(row.forecast.upper_30d)}` : "No stored OI Field forecast yet."}</span>
                   </div>
                 ))}
               </div>
@@ -880,7 +1012,7 @@ export default function WatchlistCommandPage() {
           </section>
 
           <section style={styles.footerNote}>
-            <strong>Page role:</strong> Watchlist Command is the daily return page. It is not a broad market scanner. It ranks your saved Supabase surfaces, shows what changed, flags traps/stale data, and sends the user into Control Center or Validation with intent.
+            <strong>Architecture shift:</strong> Watchlist now reads from central user ticker slots. The expensive market data and OI Field forecasts should be stored once per ticker/snapshot, then shared across subscribers. This is the bridge to validation receipts and later neural forecast training.
           </section>
         </div>
       </main>
@@ -889,348 +1021,58 @@ export default function WatchlistCommandPage() {
 }
 
 const styles: Record<string, any> = {
-  page: {
-    flex: 1,
-    minWidth: 0,
-    padding: "1.1rem 1.4rem 2rem",
-    display: "grid",
-    gap: "1rem",
-    alignContent: "start",
-  },
-  header: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: "1rem",
-    alignItems: "center",
-    flexWrap: "wrap",
-  },
-  headerCopy: {
-    maxWidth: 760,
-  },
-  eyebrow: {
-    color: colors.teal,
-    fontSize: 11,
-    fontWeight: 950,
-    letterSpacing: "0.14em",
-    textTransform: "uppercase",
-  },
-  title: {
-    margin: 0,
-    color: colors.white,
-    letterSpacing: "-0.05em",
-    fontSize: "clamp(28px, 4vw, 46px)",
-    lineHeight: 0.96,
-  },
-  subtitle: {
-    margin: "0.55rem 0 0",
-    color: colors.muted,
-    fontSize: 14,
-    lineHeight: 1.45,
-  },
-  actions: {
-    display: "flex",
-    gap: 8,
-    flexWrap: "wrap",
-  },
-  topLink: {
-    border: "1px solid #22d3ee55",
-    borderRadius: 10,
-    padding: "0.55rem 0.75rem",
-    textDecoration: "none",
-    color: "#67e8f9",
-    background: "#071523",
-    fontWeight: 900,
-  },
-  topButton: {
-    border: `1px solid ${colors.border}`,
-    borderRadius: 10,
-    padding: "0.55rem 0.75rem",
-    color: colors.text,
-    background: "#071523",
-    fontWeight: 900,
-    cursor: "pointer",
-  },
-  morningPanel: {
-    border: "1px solid rgba(34, 211, 238, 0.28)",
-    borderRadius: 18,
-    background: "linear-gradient(135deg, rgba(8, 47, 62, 0.72), rgba(7, 21, 35, 0.82))",
-    padding: "1rem",
-    display: "grid",
-    gridTemplateColumns: "minmax(0, 1fr) minmax(150px, 220px)",
-    gap: "1rem",
-    alignItems: "center",
-  },
-  morningTitle: {
-    margin: "0.3rem 0 0",
-    color: colors.white,
-    fontSize: "clamp(20px, 3vw, 30px)",
-    letterSpacing: "-0.04em",
-    lineHeight: 1.08,
-  },
-  morningText: {
-    margin: "0.65rem 0 0",
-    color: "#b8cce0",
-    lineHeight: 1.45,
-  },
-  morningMeta: {
-    border: `1px solid ${colors.borderSoft}`,
-    borderRadius: 16,
-    background: "rgba(2, 11, 20, 0.58)",
-    padding: "0.9rem",
-    display: "grid",
-    gap: 3,
-    textAlign: "center",
-    color: colors.muted,
-  },
-  panel: {
-    border: `1px solid ${colors.border}`,
-    borderRadius: 14,
-    background: colors.panel,
-    padding: "0.9rem",
-  },
-  watchlistGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))",
-    gap: "0.85rem",
-    alignItems: "end",
-  },
-  label: {
-    display: "grid",
-    gap: 5,
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: 900,
-  },
-  input: {
-    width: "100%",
-    minWidth: 0,
-    border: `1px solid ${colors.border}`,
-    borderRadius: 11,
-    background: "#020b14",
-    color: colors.text,
-    padding: "0.62rem 0.72rem",
-  },
-  primaryButton: {
-    border: "1px solid #22d3ee77",
-    borderRadius: 11,
-    background: "#06313f",
-    color: "#67e8f9",
-    padding: "0.64rem 0.9rem",
-    fontWeight: 950,
-    cursor: "pointer",
-  },
-  secondaryButton: {
-    border: `1px solid ${colors.border}`,
-    borderRadius: 11,
-    background: "#071523",
-    color: colors.text,
-    padding: "0.64rem 0.9rem",
-    fontWeight: 900,
-    cursor: "pointer",
-  },
-  statusText: {
-    color: colors.muted,
-    fontSize: 12,
-    lineHeight: 1.35,
-  },
-  statsGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
-    gap: "0.75rem",
-  },
-  statCard: {
-    border: `1px solid ${colors.border}`,
-    borderRadius: 14,
-    background: colors.panel,
-    padding: "0.75rem",
-    minHeight: 80,
-  },
-  statLabel: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: 900,
-    textTransform: "uppercase",
-  },
-  statValue: {
-    fontSize: 24,
-    fontWeight: 950,
-    marginTop: 5,
-  },
-  statHelp: {
-    color: colors.muted,
-    fontSize: 11,
-    marginTop: 4,
-  },
-  commandPanel: {
-    border: `1px solid ${colors.border}`,
-    borderRadius: 16,
-    background: colors.panel,
-    padding: "1rem",
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 330px), 1fr))",
-    gap: "1rem",
-    alignItems: "center",
-  },
-  priorityMetrics: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
-    gap: "0.75rem",
-    alignItems: "stretch",
-  },
-  primaryLink: {
-    border: "1px solid #22d3ee77",
-    borderRadius: 14,
-    background: "#06313f",
-    color: "#67e8f9",
-    textDecoration: "none",
-    fontWeight: 950,
-    display: "grid",
-    placeItems: "center",
-    padding: "0.75rem",
-  },
-  topGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 250px), 1fr))",
-    gap: "0.85rem",
-  },
-  spotlightCard: {
-    border: `1px solid ${colors.border}`,
-    borderRadius: 16,
-    background: colors.panel,
-    padding: "0.9rem",
-    minHeight: 190,
-  },
-  spotlightTop: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
-    color: colors.white,
-    fontWeight: 950,
-    fontSize: 18,
-  },
-  spotlightScore: {
-    display: "flex",
-    gap: 8,
-    alignItems: "baseline",
-    marginTop: 14,
-  },
-  spotlightTitle: {
-    margin: "0.55rem 0 0.35rem",
-    color: "#67e8f9",
-    letterSpacing: "-0.03em",
-  },
-  spotlightText: {
-    color: colors.muted,
-    lineHeight: 1.42,
-    margin: "0 0 0.7rem",
-  },
-  filterPanel: {
-    border: `1px solid ${colors.border}`,
-    borderRadius: 14,
-    background: colors.panel,
-    padding: "0.65rem",
-    display: "flex",
-    gap: "0.5rem",
-    flexWrap: "wrap",
-  },
-  filterButton: {
-    border: `1px solid ${colors.border}`,
-    borderRadius: 999,
-    background: "#071523",
-    color: colors.muted,
-    padding: "0.38rem 0.7rem",
-    cursor: "pointer",
-    fontWeight: 900,
-  },
-  filterButtonActive: {
-    border: "1px solid #22d3ee77",
-    color: "#67e8f9",
-    background: "#06313f",
-  },
-  tablePanel: {
-    border: `1px solid ${colors.border}`,
-    borderRadius: 14,
-    background: colors.panel,
-    overflow: "hidden",
-  },
-  tableHeader: {
-    padding: "0.9rem",
-    borderBottom: `1px solid ${colors.border}`,
-  },
-  table: {
-    width: "100%",
-    minWidth: 1420,
-    borderCollapse: "collapse",
-    fontSize: 12,
-  },
-  th: {
-    textAlign: "left",
-    padding: 8,
-    borderBottom: `1px solid ${colors.border}`,
-    color: colors.muted,
-    background: "#071523",
-    whiteSpace: "nowrap",
-  },
-  tr: {
-    borderBottom: `1px solid ${colors.border}`,
-  },
-  td: {
-    padding: 8,
-    color: colors.text,
-    verticalAlign: "top",
-    whiteSpace: "nowrap",
-  },
-  tdTicker: {
-    padding: 8,
-    color: colors.white,
-    fontSize: 14,
-    fontWeight: 950,
-  },
-  inlineLink: {
-    color: colors.teal,
-    fontWeight: 900,
-    textDecoration: "none",
-  },
-  bottomGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))",
-    gap: "0.85rem",
-  },
-  notePanel: {
-    border: `1px solid ${colors.border}`,
-    borderRadius: 14,
-    background: colors.panel,
-    padding: "0.9rem",
-    color: colors.muted,
-    fontSize: 13,
-    lineHeight: 1.45,
-  },
-  noteTitle: {
-    margin: "0.35rem 0 0.75rem",
-    color: colors.white,
-    letterSpacing: "-0.03em",
-  },
-  noteList: {
-    display: "grid",
-    gap: 8,
-  },
-  noteItem: {
-    display: "grid",
-    gridTemplateColumns: "64px minmax(0, 1fr)",
-    gap: 10,
-    padding: "0.55rem",
-    border: `1px solid ${colors.borderSoft}`,
-    borderRadius: 12,
-    background: "rgba(2, 11, 20, 0.45)",
-  },
-  footerNote: {
-    border: `1px solid ${colors.border}`,
-    borderRadius: 14,
-    background: colors.panel2,
-    padding: "0.85rem",
-    color: colors.muted,
-    fontSize: 13,
-    lineHeight: 1.45,
-  },
+  page: { flex: 1, minWidth: 0, padding: "1.1rem 1.4rem 2rem", display: "grid", gap: "1rem", alignContent: "start" },
+  header: { display: "flex", justifyContent: "space-between", gap: "1rem", alignItems: "center", flexWrap: "wrap" },
+  headerCopy: { maxWidth: 820 },
+  eyebrow: { color: colors.teal, fontSize: 11, fontWeight: 950, letterSpacing: "0.14em", textTransform: "uppercase" },
+  title: { margin: 0, color: colors.white, letterSpacing: "-0.05em", fontSize: "clamp(28px, 4vw, 46px)", lineHeight: 0.96 },
+  subtitle: { margin: "0.55rem 0 0", color: colors.muted, fontSize: 14, lineHeight: 1.45 },
+  actions: { display: "flex", gap: 8, flexWrap: "wrap" },
+  topLink: { border: "1px solid #22d3ee55", borderRadius: 10, padding: "0.55rem 0.75rem", textDecoration: "none", color: "#67e8f9", background: "#071523", fontWeight: 900 },
+  topButton: { border: `1px solid ${colors.border}`, borderRadius: 10, padding: "0.55rem 0.75rem", color: colors.text, background: "#071523", fontWeight: 900, cursor: "pointer" },
+  morningPanel: { border: "1px solid rgba(34, 211, 238, 0.28)", borderRadius: 18, background: "linear-gradient(135deg, rgba(8, 47, 62, 0.72), rgba(7, 21, 35, 0.82))", padding: "1rem", display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(150px, 220px)", gap: "1rem", alignItems: "center" },
+  morningTitle: { margin: "0.3rem 0 0", color: colors.white, fontSize: "clamp(20px, 3vw, 30px)", letterSpacing: "-0.04em", lineHeight: 1.08 },
+  morningText: { margin: "0.65rem 0 0", color: "#b8cce0", lineHeight: 1.45 },
+  morningMeta: { border: `1px solid ${colors.borderSoft}`, borderRadius: 16, background: "rgba(2, 11, 20, 0.58)", padding: "0.9rem", display: "grid", gap: 3, textAlign: "center", color: colors.muted },
+  panel: { border: `1px solid ${colors.border}`, borderRadius: 14, background: colors.panel, padding: "0.9rem" },
+  watchlistGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: "0.85rem", alignItems: "end" },
+  label: { display: "grid", gap: 5, color: colors.muted, fontSize: 12, fontWeight: 900 },
+  input: { width: "100%", minWidth: 0, border: `1px solid ${colors.border}`, borderRadius: 11, background: "#020b14", color: colors.text, padding: "0.62rem 0.72rem" },
+  primaryButton: { border: "1px solid #22d3ee77", borderRadius: 11, background: "#06313f", color: "#67e8f9", padding: "0.64rem 0.9rem", fontWeight: 950, cursor: "pointer" },
+  secondaryButton: { border: `1px solid ${colors.border}`, borderRadius: 11, background: "#071523", color: colors.text, padding: "0.64rem 0.9rem", fontWeight: 900, cursor: "pointer" },
+  statusText: { color: colors.muted, fontSize: 12, lineHeight: 1.35 },
+  slotStrip: { display: "flex", flexWrap: "wrap", gap: 8, marginTop: "0.85rem" },
+  slotPill: { display: "inline-flex", alignItems: "center", gap: 8, border: `1px solid ${colors.borderSoft}`, background: "rgba(2, 11, 20, 0.5)", color: colors.text, borderRadius: 999, padding: "0.35rem 0.45rem 0.35rem 0.65rem" },
+  removeButton: { border: "1px solid rgba(251, 113, 133, 0.45)", background: "rgba(251, 113, 133, 0.1)", color: colors.red, borderRadius: 999, width: 22, height: 22, cursor: "pointer" },
+  statsGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "0.75rem" },
+  statCard: { border: `1px solid ${colors.border}`, borderRadius: 14, background: colors.panel, padding: "0.75rem", minHeight: 80 },
+  statLabel: { color: colors.muted, fontSize: 11, fontWeight: 900, textTransform: "uppercase" },
+  statValue: { fontSize: 24, fontWeight: 950, marginTop: 5 },
+  statHelp: { color: colors.muted, fontSize: 11, marginTop: 4 },
+  commandPanel: { border: `1px solid ${colors.border}`, borderRadius: 16, background: colors.panel, padding: "1rem", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 330px), 1fr))", gap: "1rem", alignItems: "center" },
+  priorityMetrics: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "0.75rem", alignItems: "stretch" },
+  primaryLink: { border: "1px solid #22d3ee77", borderRadius: 14, background: "#06313f", color: "#67e8f9", textDecoration: "none", fontWeight: 950, display: "grid", placeItems: "center", padding: "0.75rem" },
+  topGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 250px), 1fr))", gap: "0.85rem" },
+  spotlightCard: { border: `1px solid ${colors.border}`, borderRadius: 16, background: colors.panel, padding: "0.9rem", minHeight: 190 },
+  spotlightTop: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, color: colors.white, fontWeight: 950, fontSize: 18 },
+  spotlightScore: { display: "flex", gap: 8, alignItems: "baseline", marginTop: 14 },
+  spotlightTitle: { margin: "0.55rem 0 0.35rem", color: "#67e8f9", letterSpacing: "-0.03em" },
+  spotlightText: { color: colors.muted, lineHeight: 1.42, margin: "0 0 0.7rem" },
+  filterPanel: { border: `1px solid ${colors.border}`, borderRadius: 14, background: colors.panel, padding: "0.65rem", display: "flex", gap: "0.5rem", flexWrap: "wrap" },
+  filterButton: { border: `1px solid ${colors.border}`, borderRadius: 999, background: "#071523", color: colors.muted, padding: "0.38rem 0.7rem", cursor: "pointer", fontWeight: 900 },
+  filterButtonActive: { border: "1px solid #22d3ee77", color: "#67e8f9", background: "#06313f" },
+  tablePanel: { border: `1px solid ${colors.border}`, borderRadius: 14, background: colors.panel, overflow: "hidden" },
+  tableHeader: { padding: "0.9rem", borderBottom: `1px solid ${colors.border}` },
+  table: { width: "100%", minWidth: 1500, borderCollapse: "collapse", fontSize: 12 },
+  th: { textAlign: "left", padding: 8, borderBottom: `1px solid ${colors.border}`, color: colors.muted, background: "#071523", whiteSpace: "nowrap" },
+  tr: { borderBottom: `1px solid ${colors.border}` },
+  td: { padding: 8, color: colors.text, verticalAlign: "top", whiteSpace: "nowrap" },
+  tdTicker: { padding: 8, color: colors.white, fontSize: 14, fontWeight: 950 },
+  inlineLink: { color: colors.teal, fontWeight: 900, textDecoration: "none" },
+  bottomGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))", gap: "0.85rem" },
+  notePanel: { border: `1px solid ${colors.border}`, borderRadius: 14, background: colors.panel, padding: "0.9rem", color: colors.muted, fontSize: 13, lineHeight: 1.45 },
+  noteTitle: { margin: "0.35rem 0 0.75rem", color: colors.white, letterSpacing: "-0.03em" },
+  noteList: { display: "grid", gap: 8 },
+  noteItem: { display: "grid", gridTemplateColumns: "64px minmax(0, 1fr)", gap: 10, padding: "0.55rem", border: `1px solid ${colors.borderSoft}`, borderRadius: 12, background: "rgba(2, 11, 20, 0.45)" },
+  footerNote: { border: `1px solid ${colors.border}`, borderRadius: 14, background: colors.panel2, padding: "0.85rem", color: colors.muted, fontSize: 13, lineHeight: 1.45 },
 };

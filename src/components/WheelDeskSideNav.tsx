@@ -3,25 +3,30 @@
 import Link from "next/link";
 import AuthStatusPill from "./auth/AuthStatusPill";
 
+type NavKey = "dashboard" | "watchlist" | "scanner" | "positions" | "wheel" | "control-center" | "validation";
+
 type NavItem = {
   href: string;
   label: string;
+  key: Exclude<NavKey, "scanner">;
 };
 
 type WheelDeskSideNavProps = {
-  active: "dashboard" | "scanner" | "positions" | "wheel" | "control-center" | "validation";
+  active: NavKey;
 };
 
-const navItems: Array<NavItem & { key: WheelDeskSideNavProps["active"] }> = [
+const navItems: NavItem[] = [
   { key: "dashboard", href: "/dashboard", label: "Dashboard" },
-  { key: "scanner", href: "/dashboard/scanner", label: "Watchlist" },
-  { key: "positions", href: "/portfolio", label: "Positions" },
-  { key: "wheel", href: "/dashboard/wheel", label: "Wheel" },
+  { key: "watchlist", href: "/watchlist", label: "Watchlist" },
   { key: "control-center", href: "/control-center", label: "Control Center" },
+  { key: "wheel", href: "/dashboard/wheel", label: "Wheel" },
   { key: "validation", href: "/dashboard/validation", label: "Validation" },
+  { key: "positions", href: "/portfolio", label: "Portfolio" },
 ];
 
 export function WheelDeskSideNav({ active }: WheelDeskSideNavProps) {
+  const activeKey = active === "scanner" ? "watchlist" : active;
+
   return (
     <aside className="wheeldesk-side-nav" style={styles.sidebar}>
       <div style={styles.brandRow}>
@@ -31,7 +36,7 @@ export function WheelDeskSideNav({ active }: WheelDeskSideNavProps) {
 
       <nav className="wheeldesk-nav" style={styles.nav}>
         {navItems.map((item) => {
-          const isActive = item.key === active;
+          const isActive = item.key === activeKey;
 
           return (
             <Link
@@ -55,8 +60,7 @@ export function WheelDeskSideNav({ active }: WheelDeskSideNavProps) {
       <div className="wheeldesk-side-info" style={styles.infoCard}>
         <div style={styles.infoTitle}>Market Structure</div>
         <div style={styles.infoText}>
-          Control Center turns OI path, dealer pressure, and position context into a
-          receding-horizon action map.
+          Watchlist Command pulls from your central ticker slots, then routes the best names into the Control Center.
         </div>
       </div>
     </aside>
@@ -65,7 +69,7 @@ export function WheelDeskSideNav({ active }: WheelDeskSideNavProps) {
 
 export const SIDENAV_WIDTH = 244;
 
-const styles: Record<string, React.CSSProperties> = {
+const styles: Record<string, any> = {
   sidebar: {
     width: SIDENAV_WIDTH,
     minHeight: "100vh",
@@ -134,8 +138,12 @@ const styles: Record<string, React.CSSProperties> = {
     boxShadow: "inset 0 0 0 1px rgba(34, 211, 238, 0.08)",
   },
 
+  accountRow: {
+    marginTop: "auto",
+  },
+
   infoCard: {
-    marginTop: 26,
+    marginTop: 0,
     border: "1px solid #22384c",
     background: "rgba(10, 25, 41, 0.8)",
     borderRadius: 11,

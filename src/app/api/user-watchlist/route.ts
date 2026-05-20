@@ -11,7 +11,7 @@ type WatchlistBody = {
 };
 
 async function getUserPlan(userId: string): Promise<string> {
-  const { data } = await supabaseServer
+  const { data: subscription } = await supabaseServer
     .from("subscriptions")
     .select("plan,status,current_period_end")
     .eq("user_id", userId)
@@ -20,15 +20,16 @@ async function getUserPlan(userId: string): Promise<string> {
     .limit(1)
     .maybeSingle();
 
-  if (data?.plan) return data.plan;
+  if (subscription?.plan) return subscription.plan;
 
+  // Profiles have changed during the beta; read all columns and tolerate either name.
   const { data: profile } = await supabaseServer
     .from("profiles")
-    .select("selected_plan")
+    .select("*")
     .eq("id", userId)
     .maybeSingle();
 
-  return profile?.selected_plan ?? "founder";
+  return (profile as any)?.selected_plan ?? (profile as any)?.plan ?? "founder";
 }
 
 async function getEntitlement(planValue: string) {
@@ -82,7 +83,7 @@ export async function GET(request: Request) {
 
     return NextResponse.json({
       ok: true,
-      plan,
+      plan: entitlement.plan,
       entitlement,
       replacementsUsedToday: await replacementCountToday(user.id),
       tickers: data ?? [],
@@ -127,8 +128,9 @@ export async function POST(request: Request) {
 
     const { data: currentRows, error: listError } = await supabaseServer
       .from("user_watchlist_tickers")
-      .select("id,symbol")
+      .select("id,symbol,slot_index")
       .eq("user_id", user.id)
+      .order("slot_index", { ascending: true, nullsFirst: false })
       .order("created_at", { ascending: true });
 
     if (listError) {
@@ -137,10 +139,20 @@ export async function POST(request: Request) {
 
     const current = currentRows ?? [];
     if (current.some((row) => row.symbol === symbol)) {
-      return NextResponse.json({ ok: true, message: `${symbol} is already on your watchlist.` });
+      return NextResponse.json({ ok: true, message: `${symbol} is already on your watchlist.`, entitlement });
     }
 
+    let slotIndex = current.length;
+
     if (replaceSymbol) {
+      const replacedRow = current.find((row) => row.symbol === replaceSymbol);
+      if (!replacedRow) {
+        return NextResponse.json(
+          { ok: false, error: `${replaceSymbol} is not currently on your watchlist.` },
+          { status: 404 },
+        );
+      }
+
       const used = await replacementCountToday(user.id);
       if (used >= entitlement.maxReplacementsPerDay) {
         return NextResponse.json(
@@ -153,6 +165,8 @@ export async function POST(request: Request) {
           { status: 429 },
         );
       }
+
+      slotIndex = Number(replacedRow.slot_index ?? current.indexOf(replacedRow));
 
       const { error: deleteError } = await supabaseServer
         .from("user_watchlist_tickers")
@@ -184,8 +198,8 @@ export async function POST(request: Request) {
     const { error: insertError } = await supabaseServer.from("user_watchlist_tickers").insert({
       user_id: user.id,
       symbol,
-      slot_index: current.length,
-      source: "user",
+      slot_index: slotIndex,
+      source: replaceSymbol ? "replacement" : "user",
     });
 
     if (insertError) {
