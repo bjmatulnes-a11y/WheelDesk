@@ -87,6 +87,7 @@ export default function FAQPage() {
         <nav className="wd-landing-links" aria-label="FAQ page navigation">
           <Link href="/about">About</Link>
           <Link href="/demo">Demo</Link>
+          <Link href="/contact">Contact</Link>
           <Link href="/login">Login</Link>
           <Link href="/signup">Create Account</Link>
         </nav>
@@ -135,7 +136,7 @@ export default function FAQPage() {
 
       <footer className="wd-landing-footer">
         <span>WheelDesk · thewheeldesk.com</span>
-        <span>FAQ · About · Demo · Mobile</span>
+        <span>FAQ · About · Demo · Contact · Mobile</span>
       </footer>
     </main>
   );

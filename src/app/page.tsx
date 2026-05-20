@@ -24,6 +24,7 @@ export default function LandingPage() {
           <Link href="/pricing">Pricing</Link>
           <Link href="/faq">FAQ</Link>
           <Link href="/about">About</Link>
+          <Link href="/contact">Contact</Link>
           <Link href="/login">Login</Link>
           <Link href="/signup">Create Account</Link>
         </nav>
@@ -190,7 +191,7 @@ export default function LandingPage() {
 
       <footer className="wd-landing-footer">
         <span>WheelDesk · thewheeldesk.com</span>
-        <span>Control Center · Validation · Portfolio · Pricing · Mobile · FAQ · About</span>
+        <span>Control Center · Validation · Portfolio · Pricing · Mobile · FAQ · About · Contact</span>
       </footer>
     </main>
   );

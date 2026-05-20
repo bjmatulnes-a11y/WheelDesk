@@ -49,6 +49,7 @@ export default function AboutPage() {
         <nav className="wd-landing-links" aria-label="About page navigation">
           <Link href="/demo">Demo</Link>
           <Link href="/faq">FAQ</Link>
+          <Link href="/contact">Contact</Link>
           <Link href="/login">Login</Link>
           <Link href="/signup">Create Account</Link>
         </nav>
@@ -128,7 +129,7 @@ export default function AboutPage() {
 
       <footer className="wd-landing-footer">
         <span>WheelDesk · thewheeldesk.com</span>
-        <span>About · FAQ · Demo · Control Center</span>
+        <span>About · FAQ · Demo · Contact · Control Center</span>
       </footer>
     </main>
   );
