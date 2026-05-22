@@ -14,11 +14,30 @@ import {
 export const runtime = "nodejs";
 
 const FORECAST_RETURN_SELECT =
-  "id, symbol, snapshot_date, expiration, generated_at, source, model_status, engine_version, training_eligible, outcome_status";
+  "id, symbol, snapshot_date, expiration, generated_at, model_status, engine_version, training_eligible, outcome_status, capture_session, capture_kind";
 
-const FORECAST_LEGACY_RETURN_SELECT = "id, symbol, snapshot_date, expiration, generated_at, source";
+type ForecastReturnRow = {
+  id: string;
+  symbol: string;
+  snapshot_date: string;
+  expiration: string | null;
+  generated_at: string;
+  model_status?: string | null;
+  engine_version?: string | null;
+  training_eligible?: boolean | null;
+  outcome_status?: string | null;
+  capture_session?: string | null;
+  capture_kind?: string | null;
+};
 
-type SavedForecastRow = Record<string, unknown>;
+function captureSessionFromPayload(payload: OIFieldForecastPayload): string {
+  return String((payload as any).captureSession ?? (payload as any).capture_session ?? payload.inputs?.captureSession ?? "manual").toLowerCase();
+}
+
+function captureKindFromPayload(payload: OIFieldForecastPayload): string {
+  return String((payload as any).captureKind ?? (payload as any).capture_kind ?? "manual").toLowerCase();
+}
+
 
 function fieldFromHorizon(payload: OIFieldForecastPayload, key: ForecastHorizonKey, field: "base" | "upper" | "lower") {
   return finiteNumber(horizonByKey(payload, key)?.[field]);
@@ -34,6 +53,8 @@ function toDbPayload(payload: OIFieldForecastPayload, userId: string | null) {
     user_id: userId,
     surface_snapshot_id: payload.surfaceSnapshotId ?? null,
     source: payload.source ?? "control_center",
+    capture_session: captureSessionFromPayload(payload),
+    capture_kind: captureKindFromPayload(payload),
     provider: payload.provider ?? null,
     snapshot_date: snapshotDate,
     expiration,
@@ -100,12 +121,16 @@ function stripNeuralFields(dbPayload: Record<string, unknown>) {
     "final_forecast",
     "training_eligible",
     "outcome_status",
+    "capture_session",
+    "capture_kind",
+    "capture_run_id",
+    "forecast_anchor_at",
   ].forEach((key) => delete clone[key]);
   return clone;
 }
 
 function isMissingNeuralColumnError(message: string) {
-  return /engine_version|model_status|nn_model_version|baseline_forecast|feature_vector|nn_adjustment|final_forecast|training_eligible|outcome_status|schema cache|column/i.test(message);
+  return /engine_version|model_status|nn_model_version|baseline_forecast|feature_vector|nn_adjustment|final_forecast|training_eligible|outcome_status|capture_session|capture_kind|capture_run_id|forecast_anchor_at|schema cache|column/i.test(message);
 }
 
 export async function GET(request: Request) {
@@ -170,48 +195,42 @@ export async function POST(request: Request) {
       );
     }
 
+    let schemaMode: "nn-ready" | "legacy" = "nn-ready";
+    let savedForecast: ForecastReturnRow | Record<string, unknown> | null = null;
+
     const saveResult = await supabaseServer
       .from("oi_field_forecasts")
       .upsert(dbPayload, { onConflict: "symbol,snapshot_date,expiration,source" })
       .select(FORECAST_RETURN_SELECT)
-      .single();
+      .single<ForecastReturnRow>();
 
-    let savedForecast = saveResult.data as SavedForecastRow | null;
-    let saveError = saveResult.error;
-    let savedWithNeuralFields = true;
-
-    // Backward-compatible fallback: if the latest NN-ready schema migration has
-    // not been run yet, save the legacy forecast columns so capture still works.
-    // Once public.oi_field_forecasts has the NN-ready columns, this path will not run.
-    if (saveError && isMissingNeuralColumnError(saveError.message)) {
+    if (saveResult.error && isMissingNeuralColumnError(saveResult.error.message)) {
+      schemaMode = "legacy";
       const retry = await supabaseServer
         .from("oi_field_forecasts")
         .upsert(stripNeuralFields(dbPayload), { onConflict: "symbol,snapshot_date,expiration,source" })
-        .select(FORECAST_LEGACY_RETURN_SELECT)
+        .select("id,symbol,snapshot_date,expiration,generated_at")
         .single();
 
-      savedForecast = retry.data as SavedForecastRow | null;
-      saveError = retry.error;
-      savedWithNeuralFields = false;
-    }
+      if (retry.error) {
+        return NextResponse.json(
+          { ok: false, error: retry.error.message, saveError: saveResult.error.message, schemaMode },
+          { status: 500 }
+        );
+      }
 
-    if (saveError) {
-      return NextResponse.json({ ok: false, error: saveError.message }, { status: 500 });
+      savedForecast = retry.data ?? null;
+    } else if (saveResult.error) {
+      return NextResponse.json({ ok: false, error: saveResult.error.message }, { status: 500 });
+    } else {
+      savedForecast = saveResult.data ?? null;
     }
 
     if (!savedForecast) {
-      return NextResponse.json(
-        { ok: false, error: "Forecast save did not return a row." },
-        { status: 500 },
-      );
+      return NextResponse.json({ ok: false, error: "Forecast save did not return a row.", schemaMode }, { status: 500 });
     }
 
-    return NextResponse.json({
-      ok: true,
-      forecast: savedForecast,
-      neuralReady: savedWithNeuralFields,
-      schemaMode: savedWithNeuralFields ? "nn-ready" : "legacy",
-    });
+    return NextResponse.json({ ok: true, forecast: savedForecast, schemaMode });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not save OI field forecast.";
     return NextResponse.json({ ok: false, error: message }, { status: 500 });

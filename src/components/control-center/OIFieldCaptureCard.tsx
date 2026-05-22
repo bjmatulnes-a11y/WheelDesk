@@ -6,16 +6,14 @@ import type { OIFieldForecastResult } from "../../lib/oi-field-engine-v2";
 import { buildOIFieldForecastCapturePayload, wheelHorizon } from "../../lib/oi-forecast-capture-payload";
 import { getSupabaseAuthClient } from "../../lib/auth/supabase-auth-client";
 
+type CaptureSession = "premarket" | "midday" | "close" | "manual";
+
 type CaptureResult = {
   id?: string;
   symbol?: string;
   snapshot_date?: string;
   expiration?: string | null;
   generated_at?: string;
-  model_status?: string | null;
-  engine_version?: string | null;
-  training_eligible?: boolean | null;
-  outcome_status?: string | null;
 };
 
 type Props = {
@@ -30,6 +28,7 @@ type Props = {
   selectedSurface?: any | null;
   selectedChainSurface?: any | null;
   source?: string;
+  defaultCaptureSession?: CaptureSession;
   compact?: boolean;
   onCaptured?: (forecast: CaptureResult | null) => void;
 };
@@ -70,12 +69,14 @@ export default function OIFieldCaptureCard({
   selectedSurface,
   selectedChainSurface,
   source = "control_center",
+  defaultCaptureSession = "manual",
   compact = false,
   onCaptured,
 }: Props) {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [lastCapture, setLastCapture] = useState<CaptureResult | null>(null);
+  const [captureSession, setCaptureSession] = useState<CaptureSession>(defaultCaptureSession);
 
   const payload = useMemo(
     () =>
@@ -91,8 +92,9 @@ export default function OIFieldCaptureCard({
         selectedSurface,
         selectedChainSurface,
         source,
+        inputs: { captureSession },
       }),
-    [ticker, spot, snapshotDate, expiration, dte, surfaceSnapshotId, forecast, ivSurface, selectedSurface, selectedChainSurface, source]
+    [ticker, spot, snapshotDate, expiration, dte, surfaceSnapshotId, forecast, ivSurface, selectedSurface, selectedChainSurface, source, captureSession]
   );
 
   const wheel = wheelHorizon(forecast);
@@ -108,7 +110,7 @@ export default function OIFieldCaptureCard({
       const response = await fetch("/api/forecasts/oi-field", {
         method: "POST",
         headers: await authHeader(),
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ ...payload, captureSession, captureKind: source === "forecast_harvest" ? "scheduled" : "manual" }),
       });
 
       const result = await response.json().catch(() => null);
@@ -146,9 +148,30 @@ export default function OIFieldCaptureCard({
             Capture OI Field v2 Forecast
           </h3>
           <p style={{ color: colors.muted, margin: "0.35rem 0 0", fontSize: 12 }}>
-            Saves the current horizon map, baseline forecast, feature vector, and NN-ready final forecast shell so future training can learn the residual correction.
+            Saves the current horizon map to Supabase so Dashboard, Watchlist, Validation, and the future neural dataset can read the same forecast.
           </p>
         </div>
+
+        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <select
+            value={captureSession}
+            onChange={(event) => setCaptureSession(event.target.value as CaptureSession)}
+            style={{
+              border: "1px solid rgba(148, 163, 184, 0.24)",
+              background: "rgba(15, 23, 42, 0.88)",
+              color: colors.text,
+              borderRadius: 999,
+              padding: "0.55rem 0.7rem",
+              fontSize: 12,
+              fontWeight: 900,
+            }}
+            title="Capture session label. Keep scheduled training captures consistent; manual is for testing/debugging."
+          >
+            <option value="premarket">Premarket</option>
+            <option value="midday">Midday</option>
+            <option value="close">Close</option>
+            <option value="manual">Manual</option>
+          </select>
 
         <button
           type="button"
@@ -168,6 +191,7 @@ export default function OIFieldCaptureCard({
         >
           {saving ? "Capturing..." : "Capture Forecast"}
         </button>
+        </div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "0.65rem" }}>
@@ -178,6 +202,10 @@ export default function OIFieldCaptureCard({
         <div style={miniBoxStyle}>
           <span>Snapshot</span>
           <strong>{payload?.snapshotDate ?? snapshotDate ?? "N/A"}</strong>
+        </div>
+        <div style={miniBoxStyle}>
+          <span>Session</span>
+          <strong>{captureSession}</strong>
         </div>
         <div style={miniBoxStyle}>
           <span>Expiration</span>
@@ -195,29 +223,6 @@ export default function OIFieldCaptureCard({
           <span>Confidence</span>
           <strong>{forecast?.confidenceScore ?? "N/A"}</strong>
         </div>
-        <div style={miniBoxStyle}>
-          <span>Neural Status</span>
-          <strong>{String(payload?.modelStatus ?? "collecting").replace("_", " ")}</strong>
-        </div>
-        <div style={miniBoxStyle}>
-          <span>Training Eligible</span>
-          <strong>{payload?.trainingEligible ? "Yes" : "Pending"}</strong>
-        </div>
-      </div>
-
-      <div
-        style={{
-          border: "1px solid rgba(34, 211, 238, 0.18)",
-          background: "rgba(34, 211, 238, 0.06)",
-          borderRadius: 14,
-          padding: "0.7rem 0.8rem",
-          color: colors.muted,
-          fontSize: 12,
-          lineHeight: 1.45,
-        }}
-      >
-        <strong style={{ color: colors.teal }}>NN evolution:</strong> OI Field v2 remains the deterministic baseline. Captured feature vectors and matured outcomes will later train a residual correction layer.
-        <span style={{ color: colors.text }}> Current model: collecting data / no NN adjustment active.</span>
       </div>
 
       <div style={{ color: message.includes("failed") || message.includes("Could") ? colors.red : colors.muted, fontSize: 12 }}>

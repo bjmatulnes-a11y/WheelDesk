@@ -36,10 +36,54 @@ type ForecastChartPanelProps = {
   headerAction?: ReactNode;
   defaultChartMode?: ChartMode;
   defaultForecastAxisMode?: ForecastAxisMode;
+  defaultForecastDivergence?: boolean;
 };
 
 type LinePoint = { time?: unknown; date?: unknown; value?: unknown; price?: unknown; adjustedCenter?: unknown; expiration?: unknown };
 type ChartLinePoint = { time: UTCTimestamp; value: number };
+
+type CapturedForecastRow = {
+  id?: string;
+  symbol?: string;
+  generated_at?: string;
+  snapshot_date?: string;
+  expiration?: string | null;
+  spot?: number | string | null;
+  source?: string | null;
+  capture_session?: string | null;
+  base_1d?: number | string | null;
+  base_3d?: number | string | null;
+  base_5d?: number | string | null;
+  base_10d?: number | string | null;
+  base_14d?: number | string | null;
+  base_30d?: number | string | null;
+  upper_1d?: number | string | null;
+  upper_3d?: number | string | null;
+  upper_5d?: number | string | null;
+  upper_10d?: number | string | null;
+  upper_14d?: number | string | null;
+  upper_30d?: number | string | null;
+  lower_1d?: number | string | null;
+  lower_3d?: number | string | null;
+  lower_5d?: number | string | null;
+  lower_10d?: number | string | null;
+  lower_14d?: number | string | null;
+  lower_30d?: number | string | null;
+};
+
+type DivergenceReadout = {
+  status: "pending" | "tracking" | "diverging_bullish" | "diverging_bearish" | "broken_upper" | "broken_lower" | "reverting";
+  label: string;
+  tone: string;
+  actualClose: number | null;
+  forecastBase: number | null;
+  forecastUpper: number | null;
+  forecastLower: number | null;
+  divergence: number | null;
+  divergencePct: number | null;
+  normalizedDivergence: number | null;
+  elapsedSessions: number | null;
+};
 
 type CandleSeriesData = {
   time: UTCTimestamp;
@@ -179,6 +223,168 @@ function addBusinessDays(baseTime: UTCTimestamp, businessDays: number): UTCTimes
     if (day !== 0 && day !== 6) added += 1;
   }
   return Math.floor(d.getTime() / 1000) as UTCTimestamp;
+}
+
+function businessDaysBetween(startTime: UTCTimestamp, endTime: UTCTimestamp): number {
+  const start = new Date(Number(startTime) * 1000);
+  const end = new Date(Number(endTime) * 1000);
+  if (end.getTime() <= start.getTime()) return 0;
+
+  let count = 0;
+  const d = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
+  const endDate = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate()));
+
+  while (d < endDate) {
+    d.setUTCDate(d.getUTCDate() + 1);
+    const day = d.getUTCDay();
+    if (day !== 0 && day !== 6) count += 1;
+  }
+
+  return count;
+}
+
+function capturedAnchorTime(row: CapturedForecastRow | null | undefined): UTCTimestamp | null {
+  return dateToTime(row?.generated_at ?? row?.snapshot_date);
+}
+
+function capturedAnchorPrice(row: CapturedForecastRow | null | undefined, fallback: number): number {
+  return toNumber(row?.spot) ?? fallback;
+}
+
+function capturedHorizonRows(row: CapturedForecastRow | null | undefined, side: "base" | "upper" | "lower") {
+  if (!row) return [];
+  const keys = [
+    [1, `${side}_1d`],
+    [3, `${side}_3d`],
+    [5, `${side}_5d`],
+    [10, `${side}_10d`],
+    [14, `${side}_14d`],
+    [30, `${side}_30d`],
+  ] as const;
+
+ return keys
+  .map(([sessions, key]) => ({
+    sessions: Number(sessions),
+    value: toNumber((row as any)[key]),
+  }))
+  .filter(
+    (item): item is { sessions: number; value: number } =>
+      item.value !== null
+  )
+  .sort((a, b) => a.sessions - b.sessions);
+}
+
+function capturedForecastAt(row: CapturedForecastRow | null | undefined, sessions: number, side: "base" | "upper" | "lower"): number | null {
+  const rows = capturedHorizonRows(row, side);
+  if (!rows.length) return null;
+  if (sessions <= rows[0].sessions) return rows[0].value;
+
+  for (let i = 1; i < rows.length; i += 1) {
+    const prev = rows[i - 1];
+    const next = rows[i];
+    if (sessions <= next.sessions) {
+      const span = Math.max(1, next.sessions - prev.sessions);
+      const t = (sessions - prev.sessions) / span;
+      return prev.value + (next.value - prev.value) * t;
+    }
+  }
+
+  return rows[rows.length - 1].value;
+}
+
+function makeCapturedForecastPath(
+  row: CapturedForecastRow | null | undefined,
+  lastTime: UTCTimestamp,
+  lastClose: number,
+  side: "base" | "upper" | "lower"
+): ChartLinePoint[] {
+  if (!row) return [];
+
+  const anchorTime = capturedAnchorTime(row) ?? lastTime;
+  const anchorValue = side === "base" ? capturedAnchorPrice(row, lastClose) : capturedForecastAt(row, 1, side);
+  if (anchorValue == null) return [];
+
+  const points: ChartLinePoint[] = [{ time: anchorTime, value: anchorValue }];
+
+  for (const item of capturedHorizonRows(row, side)) {
+    points.push({ time: addBusinessDays(anchorTime, item.sessions), value: item.value });
+  }
+
+  return uniqueAscending(points);
+}
+
+function capturedDivergenceReadout(row: CapturedForecastRow | null | undefined, candleData: CandleSeriesData[]): DivergenceReadout | null {
+  if (!row || !candleData.length) return null;
+
+  const anchorTime = capturedAnchorTime(row);
+  if (!anchorTime) return null;
+
+  const afterAnchor = candleData.filter((candle) => Number(candle.time) >= Number(anchorTime));
+  const latest = afterAnchor.length ? afterAnchor[afterAnchor.length - 1] : candleData[candleData.length - 1];
+  if (!latest) return null;
+
+  const elapsedSessions = businessDaysBetween(anchorTime, latest.time);
+  const forecastBase = capturedForecastAt(row, elapsedSessions || 1, "base");
+  const forecastUpper = capturedForecastAt(row, elapsedSessions || 1, "upper");
+  const forecastLower = capturedForecastAt(row, elapsedSessions || 1, "lower");
+  const actualClose = latest.close;
+
+  if (forecastBase == null || actualClose == null) {
+    return {
+      status: "pending",
+      label: "Waiting for comparable candles",
+      tone: "#94a3b8",
+      actualClose: actualClose ?? null,
+      forecastBase,
+      forecastUpper,
+      forecastLower,
+      divergence: null,
+      divergencePct: null,
+      normalizedDivergence: null,
+      elapsedSessions,
+    };
+  }
+
+  const divergence = actualClose - forecastBase;
+  const divergencePct = forecastBase !== 0 ? (divergence / forecastBase) * 100 : null;
+  const width = forecastUpper != null && forecastLower != null ? Math.max(0.01, forecastUpper - forecastLower) : null;
+  const normalizedDivergence = width != null ? divergence / width : null;
+
+  let status: DivergenceReadout["status"] = "tracking";
+  let label = "Tracking forecast";
+  let tone = "#67e8f9";
+
+  if (forecastUpper != null && actualClose > forecastUpper) {
+    status = "broken_upper";
+    label = "Broken upper field";
+    tone = "#22c55e";
+  } else if (forecastLower != null && actualClose < forecastLower) {
+    status = "broken_lower";
+    label = "Broken lower field";
+    tone = "#fb7185";
+  } else if (normalizedDivergence != null && normalizedDivergence > 0.22) {
+    status = "diverging_bullish";
+    label = "Diverging bullish";
+    tone = "#22c55e";
+  } else if (normalizedDivergence != null && normalizedDivergence < -0.22) {
+    status = "diverging_bearish";
+    label = "Diverging bearish";
+    tone = "#fb7185";
+  }
+
+  return {
+    status,
+    label,
+    tone,
+    actualClose,
+    forecastBase,
+    forecastUpper,
+    forecastLower,
+    divergence,
+    divergencePct,
+    normalizedDivergence,
+    elapsedSessions,
+  };
 }
 
 function futureTimesFromPath(path: any, lastTime: UTCTimestamp, horizonDays: number): UTCTimestamp[] {
@@ -418,12 +624,16 @@ export default function ForecastChartPanel({
   chartHeight = 470,
   headerAction,
   defaultChartMode,
-  defaultForecastAxisMode
+  defaultForecastAxisMode,
+  defaultForecastDivergence
 }: ForecastChartPanelProps) {
   const [chartMode, setChartMode] = useState<ChartMode>(defaultChartMode ?? "field-v2");
   const [forecastAxisMode, setForecastAxisMode] = useState<ForecastAxisMode>(
     defaultForecastAxisMode ?? (chartHeight >= 620 ? "full" : "compact")
   );
+  const [forecastDivergenceEnabled, setForecastDivergenceEnabled] = useState(defaultForecastDivergence ?? chartHeight >= 620);
+  const [capturedForecast, setCapturedForecast] = useState<CapturedForecastRow | null>(null);
+  const [capturedForecastStatus, setCapturedForecastStatus] = useState("");
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -440,7 +650,43 @@ export default function ForecastChartPanel({
   const fieldUpperRef = useRef<ISeriesApi<"Line"> | null>(null);
   const fieldLowerRef = useRef<ISeriesApi<"Line"> | null>(null);
   const fieldWheelRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const divergenceBaseRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const divergenceUpperRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const divergenceLowerRef = useRef<ISeriesApi<"Line"> | null>(null);
   const priceLinesRef = useRef<IPriceLine[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const symbol = String(ticker ?? "").trim().toUpperCase();
+    if (!symbol || !forecastDivergenceEnabled) {
+      setCapturedForecast(null);
+      setCapturedForecastStatus("");
+      return;
+    }
+
+    async function loadCapturedForecast() {
+      try {
+        setCapturedForecastStatus("Loading captured forecast…");
+        const response = await fetch(`/api/forecasts/oi-field/latest?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" });
+        const payload = await response.json().catch(() => null);
+        if (cancelled) return;
+        if (!response.ok || !payload?.ok) throw new Error(payload?.error ?? `Latest forecast request failed: ${response.status}`);
+        setCapturedForecast(payload.forecast ?? null);
+        setCapturedForecastStatus(payload.forecast ? "Captured forecast loaded" : "No captured forecast yet");
+      } catch (error) {
+        if (!cancelled) {
+          setCapturedForecast(null);
+          setCapturedForecastStatus(error instanceof Error ? error.message : "Could not load captured forecast.");
+        }
+      }
+    }
+
+    loadCapturedForecast();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [ticker, forecastDivergenceEnabled]);
 
   const clearPriceLines = () => {
     const series = candleRef.current;
@@ -607,6 +853,30 @@ export default function ForecastChartPanel({
       lastValueVisible: false,
     });
 
+    const divergenceBase = chart.addSeries(LineSeries, {
+      color: "rgba(250,250,250,0.95)",
+      lineWidth: 3,
+      lineStyle: LineStyle.Solid,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+
+    const divergenceUpper = chart.addSeries(LineSeries, {
+      color: "rgba(34,197,94,0.42)",
+      lineWidth: 1,
+      lineStyle: LineStyle.Dotted,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+
+    const divergenceLower = chart.addSeries(LineSeries, {
+      color: "rgba(251,113,133,0.42)",
+      lineWidth: 1,
+      lineStyle: LineStyle.Dotted,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+
     chartRef.current = chart;
     candleRef.current = candlesSeries;
     baseRef.current = baseSeries;
@@ -622,6 +892,9 @@ export default function ForecastChartPanel({
     fieldUpperRef.current = fieldUpper;
     fieldLowerRef.current = fieldLower;
     fieldWheelRef.current = fieldWheel;
+    divergenceBaseRef.current = divergenceBase;
+    divergenceUpperRef.current = divergenceUpper;
+    divergenceLowerRef.current = divergenceLower;
 
     const resize = () => {
       if (!containerRef.current) return;
@@ -651,6 +924,9 @@ export default function ForecastChartPanel({
       fieldUpperRef.current = null;
       fieldLowerRef.current = null;
       fieldWheelRef.current = null;
+      divergenceBaseRef.current = null;
+      divergenceUpperRef.current = null;
+      divergenceLowerRef.current = null;
     };
   }, [chartHeight]);
 
@@ -691,6 +967,9 @@ export default function ForecastChartPanel({
       fieldUpperRef.current?.setData([]);
       fieldLowerRef.current?.setData([]);
       fieldWheelRef.current?.setData([]);
+      divergenceBaseRef.current?.setData([]);
+      divergenceUpperRef.current?.setData([]);
+      divergenceLowerRef.current?.setData([]);
       return;
     }
 
@@ -703,6 +982,7 @@ export default function ForecastChartPanel({
     const showMatrix = Boolean(matrix) && showClassic;
     const showFlowOverlay = Boolean(flowOverlay) && showClassic;
     const showFieldRails = showFieldForecast && Boolean(path);
+    const showCapturedDivergence = forecastDivergenceEnabled && Boolean(capturedForecast) && effectiveMode !== "candles";
 
     const baseData = showPath ? makeAnchoredPath(path?.basePath, lastTime, lastClose) : [];
     const upperData = showPath ? makeAnchoredPath(path?.upperBand, lastTime, lastClose) : [];
@@ -728,6 +1008,13 @@ export default function ForecastChartPanel({
     fieldUpperRef.current?.setData(fieldUpperData);
     fieldLowerRef.current?.setData(fieldLowerData);
     fieldWheelRef.current?.setData(showFieldForecast && wheelFloor != null ? horizontalBand(fieldTimes, wheelFloor) : []);
+
+    const divergenceBaseData = showCapturedDivergence ? makeCapturedForecastPath(capturedForecast, lastTime, lastClose, "base") : [];
+    const divergenceUpperData = showCapturedDivergence ? makeCapturedForecastPath(capturedForecast, lastTime, lastClose, "upper") : [];
+    const divergenceLowerData = showCapturedDivergence ? makeCapturedForecastPath(capturedForecast, lastTime, lastClose, "lower") : [];
+    divergenceBaseRef.current?.setData(divergenceBaseData);
+    divergenceUpperRef.current?.setData(divergenceUpperData);
+    divergenceLowerRef.current?.setData(divergenceLowerData);
 
     const horizon = Number(ivSurface?.horizonDays ?? path?.horizonDays ?? path?.horizonSessions ?? 14);
     const times = showIvSurface ? futureTimesFromPath(path, lastTime, horizon) : [];
@@ -807,6 +1094,13 @@ export default function ForecastChartPanel({
       }
     }
 
+    if (showCapturedDivergence) {
+      const divReadout = capturedDivergenceReadout(capturedForecast, candleData);
+      addPriceLine({ price: divReadout?.forecastBase, color: "#f8fafc", title: `Captured base ${fmt(divReadout?.forecastBase)}`, dashed: false, width: 2 });
+      addPriceLine({ price: divReadout?.forecastUpper, color: "#22c55e", title: `Captured upper ${fmt(divReadout?.forecastUpper)}`, dashed: true, width: 1 });
+      addPriceLine({ price: divReadout?.forecastLower, color: "#fb7185", title: `Captured lower ${fmt(divReadout?.forecastLower)}`, dashed: true, width: 1 });
+    }
+
     if (showIvSurface) {
       addPriceLine({ price: em?.upperOneSigma, color: "#22d3ee", title: `▲ ${horizon || 14}D IV upper ${fmt(em?.upperOneSigma)}`, width: 2 });
       addPriceLine({ price: em?.lowerOneSigma, color: "#22d3ee", title: `▼ ${horizon || 14}D IV lower ${fmt(em?.lowerOneSigma)}`, width: 2 });
@@ -845,7 +1139,7 @@ export default function ForecastChartPanel({
       chart.timeScale().fitContent();
       chart.timeScale().scrollToPosition(8, false);
     }
-  }, [candles, edge, edgeLabelMode, path, matrix, ivSurface, flowOverlay, fieldForecast, structureFocus, chartMode, forecastAxisMode]);
+  }, [candles, edge, edgeLabelMode, path, matrix, ivSurface, flowOverlay, fieldForecast, structureFocus, chartMode, forecastAxisMode, capturedForecast, forecastDivergenceEnabled]);
 
   const lastClose = candles?.length ? toNumber(candles[candles.length - 1]?.close) : null;
   const horizon = Number(ivSurface?.horizonDays ?? path?.horizonDays ?? path?.horizonSessions ?? 14);
@@ -859,6 +1153,7 @@ export default function ForecastChartPanel({
   const thirtyDay = horizonByKey(fieldForecast, "30D");
   const fieldBand = activeFieldBandForAxis(fieldForecast, forecastAxisMode);
   const effectiveModeLabel = modeLabel(chartMode === "field-v2" && !fieldForecast ? "classic" : chartMode);
+  const divergenceReadout = forecastDivergenceEnabled ? capturedDivergenceReadout(capturedForecast, normalizeCandles(candles ?? [])) : null;
 
   return (
     <section style={{ ...cardStyle, padding: "0.85rem", minHeight: chartHeight + 90, position: "relative" }}>
@@ -949,6 +1244,23 @@ export default function ForecastChartPanel({
                 ))}
               </div>
             ) : null}
+            <button
+              type="button"
+              onClick={() => setForecastDivergenceEnabled((value) => !value)}
+              style={{
+                border: forecastDivergenceEnabled ? "1px solid rgba(248,250,252,0.7)" : "1px solid rgba(148,163,184,0.22)",
+                background: forecastDivergenceEnabled ? "rgba(248,250,252,0.12)" : "rgba(15,23,42,0.72)",
+                color: forecastDivergenceEnabled ? "#f8fafc" : colors.muted,
+                borderRadius: 999,
+                padding: "0.25rem 0.48rem",
+                fontSize: 10,
+                fontWeight: 950,
+                cursor: "pointer",
+              }}
+              title={capturedForecastStatus || "Overlay the latest captured forecast and compare actual price against it."}
+            >
+              Forecast Divergence
+            </button>
           </div>
         </div>
       </div>
@@ -997,6 +1309,16 @@ export default function ForecastChartPanel({
               {fourteenDay ? <span>14D {fmt(toNumber(fourteenDay.baseTarget))}</span> : null}
               {thirtyDay ? <span>30D {fmt(toNumber(thirtyDay.baseTarget))}</span> : null}
             </div>
+            {forecastDivergenceEnabled && divergenceReadout ? (
+              <div style={{ borderTop: "1px solid rgba(148,163,184,0.16)", marginTop: 4, paddingTop: 5, display: "grid", gap: 3 }}>
+                <strong style={{ color: divergenceReadout.tone, fontSize: 11, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                  {divergenceReadout.label}
+                </strong>
+                <span style={{ color: colors.muted, fontSize: 11, fontWeight: 850 }}>
+                  Actual {fmt(divergenceReadout.actualClose)} vs captured base {fmt(divergenceReadout.forecastBase)} · Δ {fmt(divergenceReadout.divergence)} ({divergenceReadout.divergencePct == null ? "N/A" : `${divergenceReadout.divergencePct.toFixed(1)}%`}) · +{divergenceReadout.elapsedSessions ?? 0}D
+                </span>
+              </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -1029,6 +1351,8 @@ export default function ForecastChartPanel({
         {fieldForecast && chartMode !== "classic" && chartMode !== "candles" ? <span><strong style={{ color: "#10b981" }}>Dotted green</strong> wheel support floor</span> : null}
         {path && (chartMode === "classic" || chartMode === "both") ? <span><strong style={{ color: colors.text }}>Dashed white</strong> legacy base path</span> : null}
         {ivSurface && (chartMode === "classic" || chartMode === "both") ? <span><strong style={{ color: colors.teal }}>Cyan</strong> matched IV band</span> : null}
+        {forecastDivergenceEnabled ? <span>Forecast divergence: <strong style={{ color: divergenceReadout?.tone ?? colors.text }}>{divergenceReadout?.label ?? (capturedForecastStatus || "No captured forecast")}</strong></span> : null}
+        {forecastDivergenceEnabled && capturedForecast?.generated_at ? <span>Captured: <strong style={{ color: colors.text }}>{new Date(capturedForecast.generated_at).toLocaleString()}</strong></span> : null}
         {edge || path || matrix ? <span>Regime: <strong style={{ color: colors.text }}>{path ? pathRegime(path) : fieldForecast?.regime ?? "mixed"}</strong></span> : null}
       </div>
     </section>

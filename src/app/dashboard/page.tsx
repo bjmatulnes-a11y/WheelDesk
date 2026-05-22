@@ -141,6 +141,28 @@ type ForecastDbRow = {
   posture?: string | null;
 };
 
+type ForecastHarvestRunResult = {
+  ok?: boolean;
+  runId?: string | null;
+  captureSession?: string;
+  requested?: number;
+  captured?: number;
+  failed?: number;
+  items?: Array<{ symbol: string; status: string; forecastId?: string | null; message?: string }>;
+  error?: string;
+};
+
+type NNReadiness = {
+  captured?: number;
+  waiting?: number;
+  partial?: number;
+  matured?: number;
+  collecting?: number;
+  active?: number;
+  neuralStatus?: string;
+  horizonCounts?: Record<string, number>;
+};
+
 type CentralCommandRow = {
   symbol: string;
   name?: string | null;
@@ -612,6 +634,22 @@ async function fetchLatestSurfaceMeta(symbol: string): Promise<Pick<CentralComma
   }
 }
 
+async function fetchNNReadiness(): Promise<NNReadiness | null> {
+  try {
+    const response = await fetch("/api/forecast-harvest/readiness", { cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) return null;
+    return payload as NNReadiness;
+  } catch {
+    return null;
+  }
+}
+
+function readinessLabel(value?: string | null): string {
+  const normalized = String(value ?? "collecting").replace(/_/g, " ");
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
 function commandStatus(row: CentralCommandRow): string {
   if (row.status === "ready") return "Forecast ready";
   if (row.status === "surface-only") return "Surface captured";
@@ -649,6 +687,11 @@ export default function DashboardPage() {
   const [centralSaving, setCentralSaving] = useState(false);
   const [centralReplacementsUsed, setCentralReplacementsUsed] = useState(0);
   const [centralLoadedAt, setCentralLoadedAt] = useState<string | null>(null);
+  const [forecastHarvestRunning, setForecastHarvestRunning] = useState(false);
+  const [forecastHarvestResult, setForecastHarvestResult] = useState<ForecastHarvestRunResult | null>(null);
+  const [forecastHarvestStatus, setForecastHarvestStatus] = useState("Forecast harvest idle.");
+  const [captureSession, setCaptureSession] = useState("premarket");
+  const [nnReadiness, setNnReadiness] = useState<NNReadiness | null>(null);
 
   useEffect(() => {
     setMounted(true);
@@ -701,6 +744,7 @@ export default function DashboardPage() {
   useEffect(() => {
     refreshCentralCommandHub();
     loadCentralUniverse();
+    loadNNReadiness();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -772,6 +816,38 @@ export default function DashboardPage() {
       setCentralRows([]);
     } finally {
       setCentralLoading(false);
+    }
+  }
+
+  async function loadNNReadiness() {
+    const readiness = await fetchNNReadiness();
+    if (readiness) setNnReadiness(readiness);
+  }
+
+  async function runForecastHarvest() {
+    const symbols = centralSymbols.length ? centralSymbols : centralTickers.map((slot) => normalizeTickerInput(slot.symbol)).filter(Boolean);
+    if (!symbols.length || forecastHarvestRunning) return;
+
+    setForecastHarvestRunning(true);
+    setForecastHarvestStatus(`Running forecast harvest for ${symbols.length} ticker(s)...`);
+
+    try {
+      const response = await fetch("/api/forecast-harvest/run", {
+        method: "POST",
+        headers: await getDashboardAuthHeaders(true),
+        body: JSON.stringify({ symbols, captureSession, notes: { source: "dashboard_command_hub" } }),
+      });
+      const payload = (await response.json().catch(() => null)) as ForecastHarvestRunResult | null;
+
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error ?? `Forecast harvest failed: ${response.status}`);
+
+      setForecastHarvestResult(payload);
+      setForecastHarvestStatus(`Forecast harvest complete: ${payload.captured ?? 0}/${payload.requested ?? symbols.length} captured · ${payload.failed ?? 0} failed · session ${payload.captureSession ?? captureSession}.`);
+      await Promise.all([refreshCentralCommandHub(), loadNNReadiness()]);
+    } catch (error: any) {
+      setForecastHarvestStatus(error?.message ?? "Forecast harvest failed.");
+    } finally {
+      setForecastHarvestRunning(false);
     }
   }
 
@@ -1082,6 +1158,8 @@ export default function DashboardPage() {
             <div style={styles.commandStat}><span>Surface Only</span><strong style={{ color: colors.amber }}>{centralSurfaceOnly}</strong></div>
             <div style={styles.commandStat}><span>Needs Harvest</span><strong style={{ color: colors.red }}>{centralNeedsHarvest}</strong></div>
             <div style={styles.commandStat}><span>Replacements Left</span><strong style={{ color: colors.cyan }}>{centralReplacementsLeft}</strong></div>
+            <div style={styles.commandStat}><span>Forecasts Captured</span><strong style={{ color: colors.cyan }}>{safeInt(nnReadiness?.captured ?? 0)}</strong></div>
+            <div style={styles.commandStat}><span>Neural Status</span><strong style={{ color: colors.amber }}>{readinessLabel(nnReadiness?.neuralStatus)}</strong></div>
           </div>
 
           <div style={styles.commandControls}>
@@ -1135,12 +1213,35 @@ export default function DashboardPage() {
               {centralLoading ? "Refreshing..." : "Refresh Hub"}
             </button>
 
+            <label style={styles.label}>
+              Forecast session
+              <select value={captureSession} onChange={(event) => setCaptureSession(event.target.value)} style={styles.input}>
+                <option value="premarket">Premarket</option>
+                <option value="midday">Midday</option>
+                <option value="close">Close</option>
+                <option value="manual">Manual</option>
+              </select>
+            </label>
+
             <button type="button" onClick={() => runHarvest(centralSymbols)} disabled={running || !centralSymbols.length} style={styles.button}>
               Harvest Central Slots
+            </button>
+
+            <button type="button" onClick={runForecastHarvest} disabled={forecastHarvestRunning || !centralSymbols.length} style={styles.primaryButton}>
+              {forecastHarvestRunning ? "Capturing..." : "Run Forecast Harvest"}
             </button>
           </div>
 
           <div style={styles.commandMessage}>{centralStatus}</div>
+          <div style={styles.commandMessage}>
+            <strong style={{ color: colors.cyan }}>Forecast harvest:</strong> {forecastHarvestStatus}
+            {forecastHarvestResult?.items?.length ? (
+              <span style={{ display: "block", marginTop: 6, color: colors.muted }}>
+                {forecastHarvestResult.items.slice(0, 6).map((item) => `${item.symbol}: ${item.status}`).join(" · ")}
+                {forecastHarvestResult.items.length > 6 ? ` · +${forecastHarvestResult.items.length - 6} more` : ""}
+              </span>
+            ) : null}
+          </div>
 
           {centralTop ? (
             <div style={styles.commandTop}>
