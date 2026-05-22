@@ -97,6 +97,15 @@ CREATE TABLE IF NOT EXISTS public.oi_field_forecasts (
   posture TEXT,
   inputs JSONB,
   forecast JSONB,
+  engine_version TEXT DEFAULT 'oi-field-v2',
+  model_status TEXT NOT NULL DEFAULT 'collecting', -- collecting, research_preview, eligible, active, disabled
+  nn_model_version TEXT,
+  baseline_forecast JSONB,
+  feature_vector JSONB,
+  nn_adjustment JSONB,
+  final_forecast JSONB,
+  training_eligible BOOLEAN NOT NULL DEFAULT TRUE,
+  outcome_status TEXT NOT NULL DEFAULT 'waiting', -- waiting, partial, matured, excluded
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (symbol, snapshot_date, expiration, source)
 );
@@ -135,6 +144,12 @@ CREATE INDEX IF NOT EXISTS idx_oi_field_forecasts_symbol_generated
 
 CREATE INDEX IF NOT EXISTS idx_oi_field_forecasts_snapshot
   ON public.oi_field_forecasts (snapshot_date DESC, symbol, expiration);
+
+CREATE INDEX IF NOT EXISTS idx_oi_field_forecasts_model_status
+  ON public.oi_field_forecasts (model_status, outcome_status, generated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_oi_field_forecasts_training
+  ON public.oi_field_forecasts (training_eligible, outcome_status, symbol);
 
 CREATE INDEX IF NOT EXISTS idx_oi_field_outcomes_forecast
   ON public.oi_field_forecast_outcomes (forecast_id, horizon);

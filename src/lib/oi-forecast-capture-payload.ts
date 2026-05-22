@@ -69,6 +69,139 @@ function expectedMove(ivSurface: any | null | undefined) {
   return { oneSigma, lower, upper };
 }
 
+function firstFinite(...values: unknown[]): number | null {
+  for (const value of values) {
+    const parsed = finite(value);
+    if (parsed != null) return parsed;
+  }
+  return null;
+}
+
+function extractRows(surface: any | null | undefined): any[] {
+  if (Array.isArray(surface?.rows)) return surface.rows;
+  if (Array.isArray(surface?.chains?.[0]?.rows)) return surface.chains[0].rows;
+  if (Array.isArray(surface?.chain?.rows)) return surface.chain.rows;
+  return [];
+}
+
+function sumBy(rows: any[], predicate: (row: any) => boolean, selector: (row: any) => unknown): number {
+  return rows.reduce((sum, row) => {
+    if (!predicate(row)) return sum;
+    const value = finite(selector(row));
+    return sum + (value ?? 0);
+  }, 0);
+}
+
+function optionType(row: any): string {
+  return String(row?.type ?? row?.optionType ?? row?.side ?? row?.contractType ?? row?.putCall ?? "").toLowerCase();
+}
+
+function strike(row: any): number | null {
+  return firstFinite(row?.strike, row?.strikePrice, row?.price);
+}
+
+function oi(row: any): number {
+  return firstFinite(row?.openInterest, row?.oi, row?.open_interest) ?? 0;
+}
+
+function findWall(rows: any[], type: "call" | "put"): { strike: number | null; openInterest: number | null } {
+  const typed = rows
+    .filter((row) => optionType(row).includes(type) || optionType(row) === (type === "call" ? "c" : "p"))
+    .map((row) => ({ strike: strike(row), openInterest: oi(row) }))
+    .filter((row) => row.strike != null);
+
+  if (!typed.length) return { strike: null, openInterest: null };
+
+  typed.sort((a, b) => (b.openInterest ?? 0) - (a.openInterest ?? 0));
+  return typed[0];
+}
+
+function buildBaselineForecast(forecast: OIFieldForecastResult, horizons: any[]) {
+  return {
+    engineVersion: forecast.version,
+    baseBias: forecast.baseBias,
+    confidenceScore: forecast.confidenceScore,
+    regime: forecast.regime,
+    shortTermScore: forecast.shortTermScore,
+    swingScore: forecast.swingScore,
+    wheelScore: forecast.wheelScore,
+    horizons,
+    readout: forecast.readout,
+    engineNotes: forecast.engineNotes ?? [],
+  };
+}
+
+function buildFeatureVector(args: OIFieldCaptureArgs, forecast: OIFieldForecastResult, wheel: OIFieldHorizonForecast | null) {
+  const rows = extractRows(args.selectedChainSurface);
+  const callWall = findWall(rows, "call");
+  const putWall = findWall(rows, "put");
+  const totalCallOi = sumBy(rows, (row) => optionType(row).includes("call") || optionType(row) === "c", oi);
+  const totalPutOi = sumBy(rows, (row) => optionType(row).includes("put") || optionType(row) === "p", oi);
+  const totalOi = totalCallOi + totalPutOi;
+  const spot = finite(args.spot ?? forecast.currentPrice);
+  const callWallDistancePct = spot && callWall.strike ? ((callWall.strike - spot) / spot) * 100 : null;
+  const putWallDistancePct = spot && putWall.strike ? ((spot - putWall.strike) / spot) * 100 : null;
+  const em = expectedMove(args.ivSurface);
+
+  return {
+    schemaVersion: "wd-feature-vector-v1",
+    symbol: String(args.ticker || forecast.ticker || "").trim().toUpperCase(),
+    spot,
+    snapshotDate: normalizeDate(args.snapshotDate ?? forecast.snapshotDate),
+    expiration: normalizeDate(args.expiration),
+    dte: finite(args.dte ?? forecast.selectedExpirationDte),
+    engineVersion: forecast.version,
+    regime: forecast.regime,
+    baseBias: forecast.baseBias,
+    confidenceScore: forecast.confidenceScore,
+    shortTermScore: forecast.shortTermScore,
+    swingScore: forecast.swingScore,
+    wheelScore: forecast.wheelScore,
+    structureBandLower: finite(wheel?.lowerBand),
+    structureBandUpper: finite(wheel?.upperBand),
+    structureBandWidthPct:
+      spot && wheel?.lowerBand != null && wheel?.upperBand != null
+        ? ((Number(wheel.upperBand) - Number(wheel.lowerBand)) / spot) * 100
+        : null,
+    expectedMove: em.oneSigma,
+    expectedMoveLower: em.lower,
+    expectedMoveUpper: em.upper,
+    expectedMoveWidthPct: spot && em.oneSigma != null ? (em.oneSigma / spot) * 100 : null,
+    atmIv: finite(args.ivSurface?.atmIv),
+    ivRank: finite(args.ivSurface?.ivRank),
+    ivPercentile: finite(args.ivSurface?.ivPercentile),
+    ivSkewBias: args.ivSurface?.skewBias ?? null,
+    callWallStrike: callWall.strike,
+    callWallOpenInterest: callWall.openInterest,
+    putWallStrike: putWall.strike,
+    putWallOpenInterest: putWall.openInterest,
+    totalCallOi,
+    totalPutOi,
+    totalOi,
+    putCallOiRatio: totalCallOi > 0 ? totalPutOi / totalCallOi : null,
+    callWallDistancePct,
+    putWallDistancePct,
+    selectedChainRows: rows.length || null,
+    surfaceChains: Array.isArray(args.selectedSurface?.chains) ? args.selectedSurface.chains.length : null,
+    pinProbability: finite(wheel?.pinProbability),
+    upperTouchProbability: finite(wheel?.upperWallTouchProbability),
+    lowerBreakProbability: finite(wheel?.lowerWallBreakProbability),
+    trapProbability: finite(wheel?.trapProbability),
+    wheelSupportHoldProbability: finite(wheel?.wheelSupportHoldProbability),
+    posture: wheel?.premiumSellerPosture ?? null,
+    userInputs: args.inputs ?? {},
+  };
+}
+
+function buildFinalForecast(baselineForecast: Record<string, unknown>, nnAdjustment: Record<string, unknown> | null) {
+  return {
+    schemaVersion: "wd-final-forecast-v1",
+    source: nnAdjustment ? "oi-field-v2-plus-nn" : "oi-field-v2-baseline",
+    baseline: baselineForecast,
+    nnAdjustment,
+  };
+}
+
 export function buildOIFieldForecastCapturePayload(args: OIFieldCaptureArgs) {
   const forecast = args.forecast;
   const spot = finite(args.spot ?? forecast?.currentPrice);
@@ -109,6 +242,11 @@ export function buildOIFieldForecastCapturePayload(args: OIFieldCaptureArgs) {
     })
     .filter(Boolean);
 
+  const baselineForecast = buildBaselineForecast(forecast, horizons);
+  const featureVector = buildFeatureVector(args, forecast, wheel);
+  const nnAdjustment = null;
+  const finalForecast = buildFinalForecast(baselineForecast, nnAdjustment);
+
   return {
     symbol: String(args.ticker || forecast.ticker || "").trim().toUpperCase(),
     spot,
@@ -133,6 +271,15 @@ export function buildOIFieldForecastCapturePayload(args: OIFieldCaptureArgs) {
     wheelSupportHoldProbability: finite(wheel?.wheelSupportHoldProbability),
     posture: wheel?.premiumSellerPosture ?? null,
     horizons,
+    engineVersion: forecast.version,
+    modelStatus: "collecting",
+    nnModelVersion: null,
+    baselineForecast,
+    featureVector,
+    nnAdjustment,
+    finalForecast,
+    trainingEligible: Boolean(horizons.length && spot && args.expiration),
+    outcomeStatus: "waiting",
     inputs: {
       ...args.inputs,
       engineVersion: forecast.version,

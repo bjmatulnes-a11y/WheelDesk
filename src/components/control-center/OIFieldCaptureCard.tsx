@@ -12,6 +12,10 @@ type CaptureResult = {
   snapshot_date?: string;
   expiration?: string | null;
   generated_at?: string;
+  model_status?: string | null;
+  engine_version?: string | null;
+  training_eligible?: boolean | null;
+  outcome_status?: string | null;
 };
 
 type Props = {
@@ -142,7 +146,7 @@ export default function OIFieldCaptureCard({
             Capture OI Field v2 Forecast
           </h3>
           <p style={{ color: colors.muted, margin: "0.35rem 0 0", fontSize: 12 }}>
-            Saves the current horizon map to Supabase so Dashboard, Watchlist, Validation, and the future neural dataset can read the same forecast.
+            Saves the current horizon map, baseline forecast, feature vector, and NN-ready final forecast shell so future training can learn the residual correction.
           </p>
         </div>
 
@@ -191,6 +195,29 @@ export default function OIFieldCaptureCard({
           <span>Confidence</span>
           <strong>{forecast?.confidenceScore ?? "N/A"}</strong>
         </div>
+        <div style={miniBoxStyle}>
+          <span>Neural Status</span>
+          <strong>{String(payload?.modelStatus ?? "collecting").replace("_", " ")}</strong>
+        </div>
+        <div style={miniBoxStyle}>
+          <span>Training Eligible</span>
+          <strong>{payload?.trainingEligible ? "Yes" : "Pending"}</strong>
+        </div>
+      </div>
+
+      <div
+        style={{
+          border: "1px solid rgba(34, 211, 238, 0.18)",
+          background: "rgba(34, 211, 238, 0.06)",
+          borderRadius: 14,
+          padding: "0.7rem 0.8rem",
+          color: colors.muted,
+          fontSize: 12,
+          lineHeight: 1.45,
+        }}
+      >
+        <strong style={{ color: colors.teal }}>NN evolution:</strong> OI Field v2 remains the deterministic baseline. Captured feature vectors and matured outcomes will later train a residual correction layer.
+        <span style={{ color: colors.text }}> Current model: collecting data / no NN adjustment active.</span>
       </div>
 
       <div style={{ color: message.includes("failed") || message.includes("Could") ? colors.red : colors.muted, fontSize: 12 }}>

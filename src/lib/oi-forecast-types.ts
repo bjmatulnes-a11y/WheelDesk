@@ -16,6 +16,13 @@ export type ForecastHorizonPayload = {
   posture?: string | null;
 };
 
+export type NeuralForecastModelStatus =
+  | "collecting"
+  | "research_preview"
+  | "eligible"
+  | "active"
+  | "disabled";
+
 export type OIFieldForecastPayload = {
   symbol: string;
   spot: number;
@@ -42,6 +49,18 @@ export type OIFieldForecastPayload = {
   horizons?: ForecastHorizonPayload[];
   inputs?: Record<string, unknown> | null;
   forecast?: Record<string, unknown> | null;
+
+  // Neural-network-ready capture fields. These are populated even while NN is not active
+  // so the deterministic OI Field engine can become the baseline training dataset.
+  engineVersion?: string | null;
+  modelStatus?: NeuralForecastModelStatus | string | null;
+  nnModelVersion?: string | null;
+  baselineForecast?: Record<string, unknown> | null;
+  featureVector?: Record<string, unknown> | null;
+  nnAdjustment?: Record<string, unknown> | null;
+  finalForecast?: Record<string, unknown> | null;
+  trainingEligible?: boolean | null;
+  outcomeStatus?: string | null;
 };
 
 export const FORECAST_HORIZONS: ForecastHorizonKey[] = ["1D", "3D", "5D", "10D", "14D", "30D", "EXP"];

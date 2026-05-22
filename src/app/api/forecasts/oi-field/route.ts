@@ -13,6 +13,13 @@ import {
 
 export const runtime = "nodejs";
 
+const FORECAST_RETURN_SELECT =
+  "id, symbol, snapshot_date, expiration, generated_at, source, model_status, engine_version, training_eligible, outcome_status";
+
+const FORECAST_LEGACY_RETURN_SELECT = "id, symbol, snapshot_date, expiration, generated_at, source";
+
+type SavedForecastRow = Record<string, unknown>;
+
 function fieldFromHorizon(payload: OIFieldForecastPayload, key: ForecastHorizonKey, field: "base" | "upper" | "lower") {
   return finiteNumber(horizonByKey(payload, key)?.[field]);
 }
@@ -69,7 +76,36 @@ function toDbPayload(payload: OIFieldForecastPayload, userId: string | null) {
     posture: payload.posture ?? null,
     inputs: payload.inputs ?? null,
     forecast: payload.forecast ?? { horizons: payload.horizons ?? FORECAST_HORIZONS.map((horizon) => ({ horizon })) },
+    engine_version: payload.engineVersion ?? payload.inputs?.engineVersion ?? null,
+    model_status: payload.modelStatus ?? "collecting",
+    nn_model_version: payload.nnModelVersion ?? null,
+    baseline_forecast: payload.baselineForecast ?? payload.forecast ?? null,
+    feature_vector: payload.featureVector ?? payload.inputs ?? null,
+    nn_adjustment: payload.nnAdjustment ?? null,
+    final_forecast: payload.finalForecast ?? payload.forecast ?? null,
+    training_eligible: payload.trainingEligible ?? true,
+    outcome_status: payload.outcomeStatus ?? "waiting",
   };
+}
+
+function stripNeuralFields(dbPayload: Record<string, unknown>) {
+  const clone = { ...dbPayload };
+  [
+    "engine_version",
+    "model_status",
+    "nn_model_version",
+    "baseline_forecast",
+    "feature_vector",
+    "nn_adjustment",
+    "final_forecast",
+    "training_eligible",
+    "outcome_status",
+  ].forEach((key) => delete clone[key]);
+  return clone;
+}
+
+function isMissingNeuralColumnError(message: string) {
+  return /engine_version|model_status|nn_model_version|baseline_forecast|feature_vector|nn_adjustment|final_forecast|training_eligible|outcome_status|schema cache|column/i.test(message);
 }
 
 export async function GET(request: Request) {
@@ -134,17 +170,48 @@ export async function POST(request: Request) {
       );
     }
 
-    const { data, error } = await supabaseServer
+    const saveResult = await supabaseServer
       .from("oi_field_forecasts")
       .upsert(dbPayload, { onConflict: "symbol,snapshot_date,expiration,source" })
-      .select("id,symbol,snapshot_date,expiration,generated_at")
+      .select(FORECAST_RETURN_SELECT)
       .single();
 
-    if (error) {
-      return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    let savedForecast = saveResult.data as SavedForecastRow | null;
+    let saveError = saveResult.error;
+    let savedWithNeuralFields = true;
+
+    // Backward-compatible fallback: if the latest NN-ready schema migration has
+    // not been run yet, save the legacy forecast columns so capture still works.
+    // Once public.oi_field_forecasts has the NN-ready columns, this path will not run.
+    if (saveError && isMissingNeuralColumnError(saveError.message)) {
+      const retry = await supabaseServer
+        .from("oi_field_forecasts")
+        .upsert(stripNeuralFields(dbPayload), { onConflict: "symbol,snapshot_date,expiration,source" })
+        .select(FORECAST_LEGACY_RETURN_SELECT)
+        .single();
+
+      savedForecast = retry.data as SavedForecastRow | null;
+      saveError = retry.error;
+      savedWithNeuralFields = false;
     }
 
-    return NextResponse.json({ ok: true, forecast: data });
+    if (saveError) {
+      return NextResponse.json({ ok: false, error: saveError.message }, { status: 500 });
+    }
+
+    if (!savedForecast) {
+      return NextResponse.json(
+        { ok: false, error: "Forecast save did not return a row." },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({
+      ok: true,
+      forecast: savedForecast,
+      neuralReady: savedWithNeuralFields,
+      schemaMode: savedWithNeuralFields ? "nn-ready" : "legacy",
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not save OI field forecast.";
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
