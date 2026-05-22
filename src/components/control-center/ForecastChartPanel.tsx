@@ -18,6 +18,7 @@ import { type OIFieldForecastResult } from "../../lib/oi-field-engine-v2";
 import { colors, cardStyle } from "./styles";
 
 type ChartMode = "field-v2" | "classic" | "both" | "candles";
+type ForecastAxisMode = "compact" | "full" | "expiration";
 
 type ForecastChartPanelProps = {
   ticker: string;
@@ -34,6 +35,7 @@ type ForecastChartPanelProps = {
   chartHeight?: number;
   headerAction?: ReactNode;
   defaultChartMode?: ChartMode;
+  defaultForecastAxisMode?: ForecastAxisMode;
 };
 
 type LinePoint = { time?: unknown; date?: unknown; value?: unknown; price?: unknown; adjustedCenter?: unknown; expiration?: unknown };
@@ -208,20 +210,22 @@ function makeFieldForecastPath(
   forecast: OIFieldForecastResult | null | undefined,
   lastTime: UTCTimestamp,
   lastClose: number,
-  valueKey: "baseTarget" | "upperBand" | "lowerBand"
+  valueKey: "baseTarget" | "upperBand" | "lowerBand",
+  terminalSessions: number
 ): ChartLinePoint[] {
   if (!forecast?.horizons?.length) return [];
 
   const rows: ChartLinePoint[] = [{ time: lastTime, value: lastClose }];
 
-  const horizons = visibleFieldHorizons(forecast)
+  const horizons = visibleFieldHorizonsForTerminal(forecast, terminalSessions)
     .filter((horizon) => Number.isFinite(Number(horizon.sessions)))
     .sort((a, b) => Number(a.sessions) - Number(b.sessions));
 
   for (const horizon of horizons) {
+    const sessions = Math.max(1, Number(horizon.sessions));
     const value = toNumber(horizon[valueKey]);
     if (value == null) continue;
-    rows.push({ time: addBusinessDays(lastTime, Math.max(1, Number(horizon.sessions))), value });
+    rows.push({ time: addBusinessDays(lastTime, sessions), value });
   }
 
   return uniqueAscending(rows);
@@ -238,6 +242,82 @@ function keyFieldHorizons(forecast: OIFieldForecastResult | null | undefined) {
 function expirationHorizon(forecast: OIFieldForecastResult | null | undefined) {
   if (!forecast?.horizons?.length) return null;
   return forecast.horizons.find((horizon) => String(horizon.key).startsWith("EXP")) ?? null;
+}
+
+function forecastAxisLabel(mode: ForecastAxisMode): string {
+  switch (mode) {
+    case "compact": return "Compact 14D";
+    case "full": return "Full 30D";
+    case "expiration": return "To EXP";
+  }
+}
+
+function fieldTerminalSessionsForAxis(forecast: OIFieldForecastResult | null | undefined, axisMode: ForecastAxisMode): number {
+  const exp = expirationHorizon(forecast);
+  const expSessions = toNumber(exp?.sessions);
+
+  if (axisMode === "compact") {
+    if (expSessions != null && expSessions > 0 && expSessions < 14) return Math.max(1, Math.round(expSessions));
+    return 14;
+  }
+
+  if (axisMode === "expiration") {
+    if (expSessions != null && expSessions > 0) return Math.max(1, Math.min(60, Math.round(expSessions)));
+    return 30;
+  }
+
+  if (expSessions != null && expSessions > 0 && expSessions <= 30) return Math.max(1, Math.round(expSessions));
+  return 30;
+}
+
+function visibleFieldHorizonsForTerminal(forecast: OIFieldForecastResult | null | undefined, terminalSessions: number) {
+  if (!forecast?.horizons?.length) return [];
+
+  const terminal = Math.max(1, Math.round(terminalSessions));
+  const exp = expirationHorizon(forecast);
+  const expSessions = toNumber(exp?.sessions);
+
+  const rows = forecast.horizons
+    .filter((horizon) => {
+      const sessions = toNumber(horizon.sessions);
+      if (sessions == null) return false;
+      if (String(horizon.key).startsWith("EXP")) return expSessions != null && Math.round(expSessions) <= terminal;
+      return sessions <= terminal;
+    })
+    .sort((a, b) => Number(a.sessions) - Number(b.sessions));
+
+  const hasTerminal = rows.some((row) => Math.round(Number(row.sessions)) === terminal);
+  if (hasTerminal) return rows;
+
+  // Make the displayed path terminate at the requested lane boundary when the
+  // forecast model has a matching standard horizon available. This avoids a
+  // misleading 30D label being plotted only a few bars forward.
+  const terminalKey = `${terminal}D`;
+  const terminalRow = forecast.horizons.find((horizon) => String(horizon.key) === terminalKey);
+  return terminalRow ? [...rows, terminalRow].sort((a, b) => Number(a.sessions) - Number(b.sessions)) : rows;
+}
+
+function fieldTerminalHorizonForAxis(forecast: OIFieldForecastResult | null | undefined, axisMode: ForecastAxisMode) {
+  if (!forecast?.horizons?.length) return null;
+  const terminal = fieldTerminalSessionsForAxis(forecast, axisMode);
+  const visible = visibleFieldHorizonsForTerminal(forecast, terminal);
+  return (
+    visible.find((horizon) => Math.round(Number(horizon.sessions)) === terminal) ??
+    visible[visible.length - 1] ??
+    null
+  );
+}
+
+function activeFieldBandForAxis(forecast: OIFieldForecastResult | null | undefined, axisMode: ForecastAxisMode) {
+  const horizon = fieldTerminalHorizonForAxis(forecast, axisMode);
+  if (!horizon) return { lower: null as number | null, upper: null as number | null };
+  return { lower: toNumber(horizon.lowerBand), upper: toNumber(horizon.upperBand) };
+}
+
+function visibleRangeStart(candleData: CandleSeriesData[], lookbackBars: number): UTCTimestamp | null {
+  if (!candleData.length) return null;
+  const index = Math.max(0, candleData.length - Math.max(10, lookbackBars));
+  return candleData[index]?.time ?? candleData[0]?.time ?? null;
 }
 
 function fieldTerminalSessions(forecast: OIFieldForecastResult | null | undefined): number {
@@ -337,9 +417,13 @@ export default function ForecastChartPanel({
   isLoading = false,
   chartHeight = 470,
   headerAction,
-  defaultChartMode
+  defaultChartMode,
+  defaultForecastAxisMode
 }: ForecastChartPanelProps) {
   const [chartMode, setChartMode] = useState<ChartMode>(defaultChartMode ?? "field-v2");
+  const [forecastAxisMode, setForecastAxisMode] = useState<ForecastAxisMode>(
+    defaultForecastAxisMode ?? (chartHeight >= 620 ? "full" : "compact")
+  );
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -578,7 +662,14 @@ export default function ForecastChartPanel({
     clearPriceLines();
 
     const allCandleData = normalizeCandles(candles ?? []);
-    const candleData = structureFocus && fieldForecast ? allCandleData.slice(-90) : allCandleData;
+    const rawFieldForecast = Boolean(fieldForecast?.horizons?.length);
+    const fieldDrivenWindow = rawFieldForecast && chartMode !== "classic" && chartMode !== "candles";
+    const lookbackBars = forecastAxisMode === "compact" ? 45 : forecastAxisMode === "full" ? 60 : 75;
+    const candleData = fieldDrivenWindow
+      ? allCandleData.slice(-lookbackBars)
+      : structureFocus && fieldForecast
+        ? allCandleData.slice(-90)
+        : allCandleData;
 
     candleSeries.setData(candleData);
 
@@ -603,7 +694,6 @@ export default function ForecastChartPanel({
       return;
     }
 
-    const rawFieldForecast = Boolean(fieldForecast?.horizons?.length);
     const effectiveMode: ChartMode = chartMode === "field-v2" && !rawFieldForecast ? "classic" : chartMode;
     const showFieldForecast = rawFieldForecast && (effectiveMode === "field-v2" || effectiveMode === "both");
     const showClassic = effectiveMode === "classic" || effectiveMode === "both";
@@ -626,10 +716,11 @@ export default function ForecastChartPanel({
     bullRef.current?.setData(bullData);
     bearRef.current?.setData(bearData);
 
-    const fieldBaseData = showFieldForecast ? makeFieldForecastPath(fieldForecast, lastTime, lastClose, "baseTarget") : [];
-    const fieldUpperData = showFieldForecast ? makeFieldForecastPath(fieldForecast, lastTime, lastClose, "upperBand") : [];
-    const fieldLowerData = showFieldForecast ? makeFieldForecastPath(fieldForecast, lastTime, lastClose, "lowerBand") : [];
-    const wheel = wheelHorizon(fieldForecast);
+    const terminalSessions = fieldTerminalSessionsForAxis(fieldForecast, forecastAxisMode);
+    const fieldBaseData = showFieldForecast ? makeFieldForecastPath(fieldForecast, lastTime, lastClose, "baseTarget", terminalSessions) : [];
+    const fieldUpperData = showFieldForecast ? makeFieldForecastPath(fieldForecast, lastTime, lastClose, "upperBand", terminalSessions) : [];
+    const fieldLowerData = showFieldForecast ? makeFieldForecastPath(fieldForecast, lastTime, lastClose, "lowerBand", terminalSessions) : [];
+    const wheel = fieldTerminalHorizonForAxis(fieldForecast, forecastAxisMode) ?? wheelHorizon(fieldForecast);
     const wheelFloor = toNumber(wheel?.lowerBand ?? null);
     const fieldTimes = fieldBaseData.length ? fieldBaseData.map((point) => point.time) : [];
 
@@ -699,9 +790,9 @@ export default function ForecastChartPanel({
     }
 
     if (showFieldForecast) {
-      const band = activeFieldBand(fieldForecast);
-      const terminal = wheelHorizon(fieldForecast);
-      const terminalLabel = String(terminal?.label ?? terminal?.key ?? "30D");
+      const band = activeFieldBandForAxis(fieldForecast, forecastAxisMode);
+      const terminal = fieldTerminalHorizonForAxis(fieldForecast, forecastAxisMode) ?? wheelHorizon(fieldForecast);
+      const terminalLabel = String(terminal?.label ?? terminal?.key ?? forecastAxisLabel(forecastAxisMode));
       const terminalTarget = toNumber(terminal?.baseTarget);
 
       addPriceLine({ price: band.upper, color: "#22c55e", title: `Field upper ${fmt(band.upper)}`, dashed: true, width: 2 });
@@ -741,19 +832,32 @@ export default function ForecastChartPanel({
       }
     }
 
-    chart.timeScale().fitContent();
-    chart.timeScale().scrollToPosition(8, false);
-  }, [candles, edge, edgeLabelMode, path, matrix, ivSurface, flowOverlay, fieldForecast, structureFocus, chartMode]);
+    if (showFieldForecast && fieldBaseData.length) {
+      const forecastEnd = addBusinessDays(lastTime, Math.max(terminalSessions + 2, 6));
+      const start = visibleRangeStart(candleData, lookbackBars);
+      try {
+        if (start != null) chart.timeScale().setVisibleRange({ from: start, to: forecastEnd });
+        else chart.timeScale().fitContent();
+      } catch {
+        chart.timeScale().fitContent();
+      }
+    } else {
+      chart.timeScale().fitContent();
+      chart.timeScale().scrollToPosition(8, false);
+    }
+  }, [candles, edge, edgeLabelMode, path, matrix, ivSurface, flowOverlay, fieldForecast, structureFocus, chartMode, forecastAxisMode]);
 
   const lastClose = candles?.length ? toNumber(candles[candles.length - 1]?.close) : null;
   const horizon = Number(ivSurface?.horizonDays ?? path?.horizonDays ?? path?.horizonSessions ?? 14);
   const expectedMove = ivSurface?.expectedMove;
-  const terminal = wheelHorizon(fieldForecast);
+  const terminal = fieldTerminalHorizonForAxis(fieldForecast, forecastAxisMode) ?? wheelHorizon(fieldForecast);
+  const terminalSessions = fieldTerminalSessionsForAxis(fieldForecast, forecastAxisMode);
+  const lookbackBars = forecastAxisMode === "compact" ? 45 : forecastAxisMode === "full" ? 60 : 75;
   const oneDay = horizonByKey(fieldForecast, "1D");
   const fiveDay = horizonByKey(fieldForecast, "5D");
   const fourteenDay = horizonByKey(fieldForecast, "14D");
   const thirtyDay = horizonByKey(fieldForecast, "30D");
-  const fieldBand = activeFieldBand(fieldForecast);
+  const fieldBand = activeFieldBandForAxis(fieldForecast, forecastAxisMode);
   const effectiveModeLabel = modeLabel(chartMode === "field-v2" && !fieldForecast ? "classic" : chartMode);
 
   return (
@@ -771,7 +875,7 @@ export default function ForecastChartPanel({
           ) : null}
           {fieldForecast ? (
             <div style={{ color: colors.amber, fontSize: 12, fontWeight: 900, marginTop: 6 }}>
-              OI Field v2: {fieldForecast.baseBias.toUpperCase()} · confidence {fieldForecast.confidenceScore} · {structureFocus ? "structure-focused zoom" : "full chart view"}
+              OI Field v2: {fieldForecast.baseBias.toUpperCase()} · confidence {fieldForecast.confidenceScore} · {forecastAxisLabel(forecastAxisMode)} lane
             </div>
           ) : null}
         </div>
@@ -821,6 +925,30 @@ export default function ForecastChartPanel({
                 </button>
               ))}
             </div>
+            {fieldForecast ? (
+              <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap", justifyContent: "flex-end" }} aria-label="Forecast time axis">
+                {(["compact", "full", "expiration"] as ForecastAxisMode[]).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setForecastAxisMode(mode)}
+                    style={{
+                      border: forecastAxisMode === mode ? "1px solid rgba(251,191,36,0.68)" : "1px solid rgba(148,163,184,0.22)",
+                      background: forecastAxisMode === mode ? "rgba(251,191,36,0.13)" : "rgba(15,23,42,0.72)",
+                      color: forecastAxisMode === mode ? colors.amber : colors.muted,
+                      borderRadius: 999,
+                      padding: "0.25rem 0.48rem",
+                      fontSize: 10,
+                      fontWeight: 950,
+                      cursor: "pointer",
+                    }}
+                    title="Controls how much forward forecast lane is shown on the time axis."
+                  >
+                    {forecastAxisLabel(mode)}
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
         </div>
       </div>
@@ -858,7 +986,10 @@ export default function ForecastChartPanel({
               </span>
             </div>
             <div style={{ color: colors.text, fontSize: 12, fontWeight: 850 }}>
-              Base {String(terminal?.label ?? terminal?.key ?? "30D")}: <span style={{ color: colors.teal }}>{fmt(toNumber(terminal?.baseTarget))}</span> · Field range <span style={{ color: colors.red }}>{fmt(fieldBand.lower)}</span>–<span style={{ color: colors.green }}>{fmt(fieldBand.upper)}</span>
+              Base {String(terminal?.label ?? terminal?.key ?? forecastAxisLabel(forecastAxisMode))}: <span style={{ color: colors.teal }}>{fmt(toNumber(terminal?.baseTarget))}</span> · Field range <span style={{ color: colors.red }}>{fmt(fieldBand.lower)}</span>–<span style={{ color: colors.green }}>{fmt(fieldBand.upper)}</span>
+            </div>
+            <div style={{ color: colors.amber, fontSize: 11, fontWeight: 900 }}>
+              Forecast lane: {lookbackBars} bars back → +{terminalSessions} trading bars forward
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: "0.45rem", color: colors.muted, fontSize: 11, fontWeight: 850 }}>
               {oneDay ? <span>1D {fmt(toNumber(oneDay.baseTarget))}</span> : null}
@@ -892,6 +1023,7 @@ export default function ForecastChartPanel({
 
       <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", color: colors.muted, fontSize: 11, marginTop: "0.65rem", alignItems: "center" }}>
         <span>Mode: <strong style={{ color: colors.text }}>{effectiveModeLabel}</strong></span>
+        {fieldForecast ? <span>Forecast axis: <strong style={{ color: colors.amber }}>{forecastAxisLabel(forecastAxisMode)}</strong> · {lookbackBars} back / +{terminalSessions} forward</span> : null}
         {fieldForecast && chartMode !== "classic" && chartMode !== "candles" ? <span><strong style={{ color: colors.teal }}>Thick cyan</strong> OI Field v2 base path to {String(terminal?.label ?? terminal?.key ?? "30D")}</span> : null}
         {fieldForecast && chartMode !== "classic" && chartMode !== "candles" ? <span><strong style={{ color: colors.green }}>Green/red dashed</strong> upper/lower field band</span> : null}
         {fieldForecast && chartMode !== "classic" && chartMode !== "candles" ? <span><strong style={{ color: "#10b981" }}>Dotted green</strong> wheel support floor</span> : null}
