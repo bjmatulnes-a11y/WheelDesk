@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import AuthGate from "../../../components/auth/AuthGate";
 import ForecastChartPanel from "../../../components/control-center/ForecastChartPanel";
 import OIFieldHorizonMatrix from "../../../components/control-center/OIFieldHorizonMatrix";
+import OIFieldCaptureCard from "../../../components/control-center/OIFieldCaptureCard";
 import { colors, cardStyle } from "../../../components/control-center/styles";
 import { buildDealerPressureSummary } from "../../../lib/dealer-pressure-engine";
 import { buildFlowIntelligenceView } from "../../../lib/flow-intelligence-view";
@@ -677,7 +678,24 @@ function ChartRoomContent() {
             <MetricPill label="Flow Bias" value={(flowIntelligence?.bias ?? "neutral").toUpperCase()} tone={flowIntelligence?.bias === "bearish" ? colors.red : flowIntelligence?.bias === "bullish" ? colors.green : colors.amber} />
           </section>
 
-          {selectedSurface ? <OIFieldHorizonMatrix forecast={oiFieldForecast} /> : null}
+          {selectedSurface ? (
+            <div style={{ display: "grid", gap: "0.85rem" }}>
+              <OIFieldHorizonMatrix forecast={oiFieldForecast} />
+              <OIFieldCaptureCard
+                ticker={ticker}
+                spot={analysisPrice}
+                snapshotDate={selectedSurfaceDate}
+                expiration={selectedExpiration}
+                dte={selectedExpirationDte}
+                forecast={oiFieldForecast}
+                ivSurface={chainIVSurface}
+                selectedSurface={selectedSurface}
+                selectedChainSurface={selectedChainSurface}
+                source="chart_room"
+                compact
+              />
+            </div>
+          ) : null}
 
           {selectedSurface ? (
             <ForecastChartPanel

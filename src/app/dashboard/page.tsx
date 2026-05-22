@@ -1022,6 +1022,7 @@ export default function DashboardPage() {
 
     setRunning(false);
     setStatus("READY");
+    await refreshCentralCommandHub();
   }
 
   const savedCount = queue.filter((item) => item.status === "saved").length;
@@ -1150,7 +1151,7 @@ export default function DashboardPage() {
                   {centralTop.forecast
                     ? `Bias ${centralTop.forecast.bias ?? "N/A"} · 30D base ${safeMoney(centralTop.forecast.base_30d)} · field ${safeMoney(centralTop.forecast.lower_30d)}–${safeMoney(centralTop.forecast.upper_30d)} · confidence ${formatPercent(centralTop.forecast.confidence)}.`
                     : centralTop.surfaceDate
-                      ? `Surface captured on ${centralTop.surfaceDate}. Run Control Center to generate the latest OI Field forecast receipt.`
+                      ? `Surface captured on ${centralTop.surfaceDate}. Open Control Center and click Capture Forecast to create the OI Field receipt.`
                       : "No surface exists yet. Harvest this ticker before using it in the daily read."}
                 </p>
               </div>
@@ -1181,7 +1182,7 @@ export default function DashboardPage() {
                   <span>{row.surfaceRows ? `${safeInt(row.surfaceRows)} rows` : "no rows"}</span>
                 </div>
                 <div style={styles.centralSlotActions}>
-                  <a href={`/control-center?ticker=${encodeURIComponent(row.symbol)}`} style={styles.inlineAction}>Control</a>
+                  <a href={`/control-center?ticker=${encodeURIComponent(row.symbol)}`} style={styles.inlineAction}>{row.forecast ? "Control" : "Capture"}</a>
                   <a href={`/dashboard/validation?ticker=${encodeURIComponent(row.symbol)}`} style={styles.inlineAction}>Validate</a>
                   <button type="button" onClick={() => removeCentralTicker(row.symbol)} style={styles.textButton} disabled={centralSaving}>Remove</button>
                 </div>

@@ -9,6 +9,7 @@ import ModelReadoutCard from "../../components/control-center/ModelReadoutCard";
 import IVSurfaceCard from "../../components/control-center/IVSurfaceCard";
 import PredictiveMatrixPanel from "../../components/control-center/PredictiveMatrixPanel";
 import OIFieldHorizonMatrix from "../../components/control-center/OIFieldHorizonMatrix";
+import OIFieldCaptureCard from "../../components/control-center/OIFieldCaptureCard";
 import ControlMatrixCard from "../../components/control-center/ControlMatrixCard";
 import ControlCommandDeck from "../../components/control-center/ControlCommandDeck";
 import TradersEdgeCard from "../../components/control-center/TradersEdgeCard";
@@ -1253,6 +1254,18 @@ export default function ControlCenterPage() {
                   <PredictiveMatrixPanel matrix={predictiveMatrix} />
                   <ControlMatrixCard control={adaptiveControl} />
                   <OIFieldHorizonMatrix forecast={oiFieldForecast} />
+                  <OIFieldCaptureCard
+                    ticker={ticker}
+                    spot={analysisPrice}
+                    snapshotDate={selectedSurfaceDate}
+                    expiration={selectedExpiration}
+                    dte={selectedExpirationDte}
+                    forecast={oiFieldForecast}
+                    ivSurface={chainIVSurface}
+                    selectedSurface={selectedSurface}
+                    selectedChainSurface={selectedChainSurface}
+                    source="control_center"
+                  />
                 </div>
 
                 <div
