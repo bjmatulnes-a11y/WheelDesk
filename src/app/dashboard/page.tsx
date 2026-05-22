@@ -1262,130 +1262,26 @@ export default function DashboardPage() {
         </section>
 
         <section style={styles.harvestDetails}>
-          <button
-            type="button"
-            onClick={() => setHarvestOpen((open) => !open)}
-            style={styles.detailsSummaryButton}
-            aria-expanded={harvestOpen}
-          >
+          <div style={styles.detailsSummaryButton}>
             <span style={styles.harvestTitle}>
-              <span style={styles.harvestToggle}>{harvestOpen ? "−" : "+"}</span>
-              Snapshot Harvest
+              <span style={styles.harvestToggle}>✓</span>
+              Central Harvest Only
             </span>
             <span style={{ color: running ? colors.amber : colors.text }}>{status}</span>
-          </button>
+          </div>
 
-          {harvestOpen ? (
-            <section style={styles.harvestBody}>
-            <div style={styles.harvestControls}>
-              <label style={styles.label}>
-                Add tickers
-                <input
-                  value={tickerInput}
-                  onChange={(event) => setTickerInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      addTickersFromInput();
-                    }
-                  }}
-                  placeholder="AAPL, SOFI, MU"
-                  style={styles.input}
-                  list="dashboard-supported-tickers"
-                />
-                <datalist id="dashboard-supported-tickers">
-                  {SUPPORTED_TICKERS.map((ticker) => (
-                    <option key={ticker} value={ticker} />
-                  ))}
-                  <option value="^SPX" />
-                  <option value="SPY" />
-                  <option value="QQQ" />
-                </datalist>
-              </label>
-
-              <label style={styles.label}>
-                Snapshot date
-                <input
-                  type="date"
-                  value={snapshotDate}
-                  onChange={(event) => setSnapshotDate(event.target.value)}
-                  style={styles.input}
-                />
-              </label>
-
-              <button type="button" onClick={addTickersFromInput} disabled={!tickerInput.trim()} style={styles.button}>
-                Add
-              </button>
-
-              <button
-                type="button"
-                onClick={() => runHarvest(normalTickers)}
-                disabled={running || !normalTickers.length}
-                style={styles.primaryButton}
-              >
-                Run 10-Ticker Harvest
-              </button>
-
-              <button
-                type="button"
-                onClick={() => runHarvest(premiumTickers)}
-                disabled={running || !premiumTickers.length}
-                style={styles.button}
-              >
-                Run Premium
-              </button>
-            </div>
-
-            <div style={styles.chipRow}>
-              {tickers.map((ticker) => (
-                <span key={ticker} style={isPremiumTicker(ticker) ? styles.chipPremium : styles.chip}>
-                  {ticker}
-                  <button type="button" onClick={() => removeTicker(ticker)} style={styles.chipX}>
-                    ×
-                  </button>
-                </span>
-              ))}
-            </div>
+          <div style={styles.harvestBody}>
+            <p style={styles.commandSubtitle}>
+              The legacy manual Snapshot Harvest has been removed from the user dashboard. Harvesting now runs from the central ticker slots above so ticker limits, replacement rules, shared surfaces, and future forecast receipts stay aligned with the account universe.
+            </p>
 
             <div style={styles.queueStats}>
-              <span>Saved: <strong>{savedCount}</strong></span>
+              <span>Last run saved: <strong>{savedCount}</strong></span>
               <span>Failed: <strong>{failedCount}</strong></span>
               <span>Rows: <strong>{safeInt(totalRows)}</strong></span>
-              <span>Normal: <strong>{normalTickers.length}/{MAX_NORMAL_TICKERS}</strong></span>
+              <span>Tracked slots: <strong>{centralUsedSlots}/{centralMaxSlots || "?"}</strong></span>
             </div>
-
-            <table style={styles.harvestTable}>
-              <thead>
-                <tr>
-                  <th style={styles.th}>Ticker</th>
-                  <th style={styles.th}>Status</th>
-                  <th style={styles.thRight}>Chains</th>
-                  <th style={styles.thRight}>Rows</th>
-                  <th style={styles.th}>Snapshot</th>
-                  <th style={styles.th}>Message</th>
-                </tr>
-              </thead>
-              <tbody>
-                {queue.length ? (
-                  queue.map((item) => (
-                    <tr key={item.ticker}>
-                      <td style={styles.td}>{item.ticker}</td>
-                      <td style={{ ...styles.td, color: statusColor(item.status), fontWeight: 900 }}>{item.status}</td>
-                      <td style={styles.tdRight}>{safeInt(item.chainCount)}</td>
-                      <td style={styles.tdRight}>{safeInt(item.rowCount)}</td>
-                      <td style={styles.td}>{item.snapshotDate ?? "N/A"}</td>
-                      <td style={styles.td}>{item.message ?? ""}</td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td style={styles.td} colSpan={6}>No harvest run yet.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-            </section>
-          ) : null}
+          </div>
         </section>
 
         <section style={styles.newsPanel}>
