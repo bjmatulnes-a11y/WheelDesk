@@ -37,6 +37,8 @@ async function getWatchlistAuthHeaders(includeJson = false): Promise<Record<stri
 
 type TriageStatus = "action" | "watch" | "avoid" | "stale" | "missing" | "review";
 
+
+
 type Entitlement = {
   plan: "founder" | "core" | "research";
   maxTickers: number;
@@ -118,6 +120,77 @@ const colors = {
   amber: "#f59e0b",
   purple: "#c084fc",
 };
+type LoadProgress = {
+  active: boolean;
+  phase: string;
+  detail: string;
+  completed: number;
+  total: number;
+  percent: number;
+};
+
+const IDLE_PROGRESS: LoadProgress = {
+  active: false,
+  phase: "Idle",
+  detail: "Waiting for refresh.",
+  completed: 0,
+  total: 0,
+  percent: 0,
+};
+
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function progressOf(phase: string, completed: number, total: number, detail = ""): LoadProgress {
+  const safeTotal = Math.max(1, total);
+  return {
+    active: completed < total,
+    phase,
+    detail,
+    completed,
+    total,
+    percent: clampPercent((completed / safeTotal) * 100),
+  };
+}
+
+function EvaluationProgress({ progress }: { progress: LoadProgress }) {
+  if (!progress.active && progress.percent <= 0) return null;
+
+  return (
+    <div
+      style={{
+        border: `1px solid ${colors.borderSoft}`,
+        borderRadius: 14,
+        background: "rgba(2, 11, 20, 0.55)",
+        padding: "0.75rem",
+        display: "grid",
+        gap: 8,
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, color: colors.text, fontWeight: 950 }}>
+        <span>{progress.phase}</span>
+        <span>{progress.percent}%</span>
+      </div>
+      <div style={{ height: 8, borderRadius: 999, overflow: "hidden", background: "rgba(148, 163, 184, 0.16)" }}>
+        <div
+          style={{
+            height: "100%",
+            width: `${progress.percent}%`,
+            borderRadius: 999,
+            background: "linear-gradient(90deg, rgba(34, 211, 238, 0.95), rgba(34, 197, 94, 0.85))",
+            transition: "width 180ms ease",
+          }}
+        />
+      </div>
+      <div style={{ color: colors.muted, fontSize: 12, lineHeight: 1.35 }}>
+        {progress.detail || `${progress.completed}/${progress.total} complete`}
+      </div>
+    </div>
+  );
+}
+
 
 function normalizeTicker(value: unknown): string {
   return String(value ?? "")
@@ -482,6 +555,7 @@ export default function WatchlistCommandPage() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [lastLoadedAt, setLastLoadedAt] = useState<string | null>(null);
+  const [progress, setProgress] = useState<LoadProgress>(IDLE_PROGRESS);
 
   async function loadUniverse(query = "") {
     try {
@@ -592,7 +666,8 @@ export default function WatchlistCommandPage() {
 
   async function loadWatchlist(tickersOverride?: SavedTicker[]) {
     setLoading(true);
-    setStatus("Loading shared OI surfaces, forecasts, and candles...");
+    setStatus("Evaluating central ticker slots...");
+    setProgress(progressOf("Preparing evaluation", 0, 100, "Checking saved tickers and shared forecast coverage."));
 
     try {
       const saved = tickersOverride ?? savedTickers;
@@ -603,13 +678,32 @@ export default function WatchlistCommandPage() {
         setAllSurfaces([]);
         setLastLoadedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
         setStatus("No central watchlist tickers yet. Add tickers from the WheelDesk universe.");
+        setProgress({ ...IDLE_PROGRESS, phase: "No tickers", detail: "Add ticker slots to start evaluation." });
         return;
       }
 
-      const listSnapshots = await fetchSupabaseSurfaceList();
-      const perTicker = await Promise.all(symbols.map((ticker) => fetchSupabaseSurfacesForTicker(ticker)));
-      const snapshots = [...listSnapshots, ...perTicker.flat()];
+      const phaseWeight = {
+        surfaces: 35,
+        candles: 25,
+        forecasts: 20,
+        scoring: 20,
+      };
 
+      const surfacePairs: [string, OptionSurfaceSnapshot[]][] = [];
+      for (let index = 0; index < symbols.length; index += 1) {
+        const ticker = symbols[index];
+        setProgress(
+          progressOf(
+            "Loading OI surfaces",
+            index,
+            symbols.length,
+            `${ticker}: reading shared Supabase surface ${index + 1}/${symbols.length}`,
+          ),
+        );
+        surfacePairs.push([ticker, await fetchSupabaseSurfacesForTicker(ticker)]);
+      }
+
+      const snapshots = surfacePairs.flatMap(([, items]) => items);
       const deduped = Array.from(
         new Map(
           snapshots.map((surface) => [
@@ -620,13 +714,56 @@ export default function WatchlistCommandPage() {
       );
 
       const latest = latestSurfaceByTicker(deduped);
-      const candlePairs = await Promise.all(symbols.map(async (ticker) => [ticker, await fetchCandles(ticker)] as const));
-      const forecastPairs = await Promise.all(symbols.map(async (ticker) => [ticker, await fetchForecastForTicker(ticker)] as const));
-      const candleMap = Object.fromEntries(candlePairs);
-      const forecastMap = Object.fromEntries(forecastPairs);
+      const candlePairs: [string, CandleRecord[]][] = [];
+      for (let index = 0; index < symbols.length; index += 1) {
+        const ticker = symbols[index];
+        const base = phaseWeight.surfaces;
+        const pct = base + ((index / Math.max(1, symbols.length)) * phaseWeight.candles);
+        setProgress({
+          active: true,
+          phase: "Loading candles",
+          detail: `${ticker}: loading price history ${index + 1}/${symbols.length}`,
+          completed: index,
+          total: symbols.length,
+          percent: clampPercent(pct),
+        });
+        candlePairs.push([ticker, await fetchCandles(ticker)]);
+      }
 
-      const nextRows: WatchlistRow[] = saved.map((savedTicker) => {
+      const forecastPairs: [string, ForecastDbRow | null][] = [];
+      for (let index = 0; index < symbols.length; index += 1) {
+        const ticker = symbols[index];
+        const base = phaseWeight.surfaces + phaseWeight.candles;
+        const pct = base + ((index / Math.max(1, symbols.length)) * phaseWeight.forecasts);
+        setProgress({
+          active: true,
+          phase: "Loading forecast receipts",
+          detail: `${ticker}: checking stored OI Field forecast ${index + 1}/${symbols.length}`,
+          completed: index,
+          total: symbols.length,
+          percent: clampPercent(pct),
+        });
+        forecastPairs.push([ticker, await fetchForecastForTicker(ticker)]);
+      }
+
+      const candleMap = Object.fromEntries(candlePairs) as Record<string, CandleRecord[]>;
+      const forecastMap = Object.fromEntries(forecastPairs) as Record<string, ForecastDbRow | null>;
+
+      const nextRows: WatchlistRow[] = [];
+      for (let index = 0; index < saved.length; index += 1) {
+        const savedTicker = saved[index];
         const ticker = normalizeTicker(savedTicker.symbol);
+        const base = phaseWeight.surfaces + phaseWeight.candles + phaseWeight.forecasts;
+        const pct = base + ((index / Math.max(1, saved.length)) * phaseWeight.scoring);
+        setProgress({
+          active: true,
+          phase: "Scoring Watchlist Command",
+          detail: `${ticker}: rebuilding edge, migration, flow, and data-quality read ${index + 1}/${saved.length}`,
+          completed: index,
+          total: saved.length,
+          percent: clampPercent(pct),
+        });
+
         const surface = latest.find((item) => normalizeTicker((item as any).ticker) === ticker) ?? null;
         const priorSurface = surface ? findPriorSurfaceForTicker(deduped, ticker, (surface as any).snapshotDate) : null;
         const forecast = forecastMap[ticker] ?? null;
@@ -683,8 +820,9 @@ export default function WatchlistCommandPage() {
         if ((migration as any)?.dataQualityNotes?.length) dataNotes.push(...(migration as any).dataQualityNotes.slice(0, 2));
 
         const statusInfo = rowStatus({ surface, summary, oiAnomalies, forecast });
+        const changeText = buildChangeText(migration);
 
-        return {
+        nextRows.push({
           ticker,
           savedTicker,
           surface,
@@ -695,16 +833,18 @@ export default function WatchlistCommandPage() {
           oiAnomalies,
           flowBias,
           flowConfidence,
-          changeText: buildChangeText(migration),
-          dataNotes: Array.from(new Set(dataNotes)).slice(0, 5),
+          dataNotes,
+          changeText,
           ...statusInfo,
-        };
-      });
+        });
+      }
 
       const sortedRows = nextRows.sort((a, b) => {
-        const slotA = Number(a.savedTicker.slot_index ?? 999);
-        const slotB = Number(b.savedTicker.slot_index ?? 999);
-        return b.priority - a.priority || (b.summary?.edgeScore ?? 0) - (a.summary?.edgeScore ?? 0) || slotA - slotB;
+        const rank: Record<TriageStatus, number> = { action: 0, watch: 1, review: 2, avoid: 3, stale: 4, missing: 5 };
+        const bucketA = rank[a.status] ?? 9;
+        const bucketB = rank[b.status] ?? 9;
+        if (bucketA !== bucketB) return bucketA - bucketB;
+        return b.priority - a.priority;
       });
 
       setAllSurfaces(deduped);
@@ -715,9 +855,25 @@ export default function WatchlistCommandPage() {
           ? `Loaded ${deduped.length} shared surface(s), ${forecastPairs.filter(([, forecast]) => forecast).length} forecast receipt(s), and ${symbols.length} central ticker slot(s).`
           : `Loaded ${symbols.length} central ticker slot(s), but no Supabase OI surfaces returned yet.`,
       );
+      setProgress({
+        active: false,
+        phase: "Evaluation complete",
+        detail: `Scored ${sortedRows.length} ticker slot(s). ${deduped.length} shared surface(s), ${forecastPairs.filter(([, forecast]) => forecast).length} forecast receipt(s).`,
+        completed: 100,
+        total: 100,
+        percent: 100,
+      });
     } catch (error: any) {
       setStatus(error?.message ?? "Failed to load central watchlist data.");
       setRows([]);
+      setProgress({
+        active: false,
+        phase: "Evaluation stopped",
+        detail: error?.message ?? "Failed to load central watchlist data.",
+        completed: 0,
+        total: 100,
+        percent: 0,
+      });
     } finally {
       setLoading(false);
     }
@@ -854,6 +1010,10 @@ export default function WatchlistCommandPage() {
                 <br />
                 Replacements left today: <strong>{replacementsLeft}</strong>
               </div>
+            </div>
+
+            <div style={{ marginTop: "0.85rem" }}>
+              <EvaluationProgress progress={progress} />
             </div>
 
             {savedTickers.length ? (

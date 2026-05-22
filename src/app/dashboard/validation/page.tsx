@@ -14,6 +14,7 @@ import {
   findPriorSurfaceForTicker,
   type WallMigrationSummary,
 } from "../../../lib/oi-wall-migration-engine";
+import AuthGate from "../../../components/auth/AuthGate";
 
 const DEFAULT_TICKERS = ["SOFI", "AAPL", "AMD", "NVDA", "MSFT", "MU", "PLTR", "SPY", "QQQ"];
 const HORIZONS = [1, 3, 5, 10, 20] as const;
@@ -69,6 +70,79 @@ const colors = {
   amber: "#f59e0b",
   purple: "#c084fc",
 };
+
+
+type LoadProgress = {
+  active: boolean;
+  phase: string;
+  detail: string;
+  completed: number;
+  total: number;
+  percent: number;
+};
+
+const IDLE_PROGRESS: LoadProgress = {
+  active: false,
+  phase: "Idle",
+  detail: "Waiting for validation run.",
+  completed: 0,
+  total: 0,
+  percent: 0,
+};
+
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function progressOf(phase: string, completed: number, total: number, detail = ""): LoadProgress {
+  const safeTotal = Math.max(1, total);
+  return {
+    active: completed < total,
+    phase,
+    detail,
+    completed,
+    total,
+    percent: clampPercent((completed / safeTotal) * 100),
+  };
+}
+
+function EvaluationProgress({ progress }: { progress: LoadProgress }) {
+  if (!progress.active && progress.percent <= 0) return null;
+
+  return (
+    <div
+      style={{
+        border: `1px solid ${colors.border}`,
+        borderRadius: 14,
+        background: "rgba(2, 11, 20, 0.55)",
+        padding: "0.75rem",
+        display: "grid",
+        gap: 8,
+        minWidth: 260,
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, color: colors.text, fontWeight: 950 }}>
+        <span>{progress.phase}</span>
+        <span>{progress.percent}%</span>
+      </div>
+      <div style={{ height: 8, borderRadius: 999, overflow: "hidden", background: "rgba(148, 163, 184, 0.16)" }}>
+        <div
+          style={{
+            height: "100%",
+            width: `${progress.percent}%`,
+            borderRadius: 999,
+            background: "linear-gradient(90deg, rgba(34, 211, 238, 0.95), rgba(34, 197, 94, 0.85))",
+            transition: "width 180ms ease",
+          }}
+        />
+      </div>
+      <div style={{ color: colors.muted, fontSize: 12, lineHeight: 1.35 }}>
+        {progress.detail || `${progress.completed}/${progress.total} complete`}
+      </div>
+    </div>
+  );
+}
 
 function normalizeTicker(value: unknown): string {
   return String(value ?? "")
@@ -513,49 +587,105 @@ export default function ValidationPage() {
   const [filter, setFilter] = useState("all");
   const [status, setStatus] = useState("Loading Supabase validation data...");
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState<LoadProgress>(IDLE_PROGRESS);
 
   const requestedTickers = useMemo(() => parseTickers(tickerInput), [tickerInput]);
 
   async function loadValidationData() {
     setLoading(true);
-    setStatus("Loading Supabase surfaces and validation candles...");
+    setStatus("Preparing validation run...");
+    setProgress(progressOf("Preparing validation", 0, 100, "Building ticker scope and avoiding full-database reads when possible."));
 
     try {
-      const list = await fetchSupabaseSurfaceList();
-      const tickers = requestedTickers.length
-        ? requestedTickers
-        : list.tickerHints.length
-          ? list.tickerHints
-          : DEFAULT_TICKERS;
+      let tickers = requestedTickers;
+      let listSnapshots: OptionSurfaceSnapshot[] = [];
 
-      const perTicker = await Promise.all(
-        tickers.map(async (ticker) => {
-          try {
-            return await fetchSupabaseSurfacesForTicker(ticker);
-          } catch {
-            return [];
-          }
-        }),
-      );
+      if (!tickers.length) {
+        setProgress(progressOf("Discovering tickers", 0, 1, "No ticker filter was provided. Reading the surface index."));
+        const list = await fetchSupabaseSurfaceList();
+        listSnapshots = list.snapshots;
+        tickers = list.tickerHints.length ? list.tickerHints : DEFAULT_TICKERS;
+      }
 
-      const surfaces = [...list.snapshots, ...perTicker.flat()];
+      const symbols = Array.from(new Set(tickers.map(normalizeTicker).filter(Boolean))).slice(0, 80) as string[];
+      const phaseWeight = {
+        surfaces: 45,
+        candles: 35,
+        scoring: 20,
+      };
+
+      const perTickerSurfaces: OptionSurfaceSnapshot[] = [];
+      for (let index = 0; index < symbols.length; index += 1) {
+        const ticker = symbols[index];
+        setProgress({
+          active: true,
+          phase: "Loading OI surfaces",
+          detail: `${ticker}: reading Supabase surfaces ${index + 1}/${symbols.length}`,
+          completed: index,
+          total: symbols.length,
+          percent: clampPercent((index / Math.max(1, symbols.length)) * phaseWeight.surfaces),
+        });
+        try {
+          perTickerSurfaces.push(...(await fetchSupabaseSurfacesForTicker(ticker)));
+        } catch {
+          // One missing ticker should not stop the proof run.
+        }
+      }
+
+      const surfaces = [...listSnapshots, ...perTickerSurfaces];
       const deduped = Array.from(
-        new Map(surfaces.map((surface) => [`${surface.ticker}_${surface.snapshotDate}`, surface])).values(),
+        new Map(surfaces.map((surface) => [`${surface.ticker}_${surface.snapshotDate}_${String((surface as any).surfaceKey ?? "")}`, surface])).values(),
       ).sort((a, b) => String(b.snapshotDate).localeCompare(String(a.snapshotDate)));
 
-      const surfaceTickers = Array.from(new Set([...tickers, ...deduped.map((surface) => normalizeTicker((surface as any).ticker))])).filter(Boolean);
+      const surfaceTickers = Array.from(new Set([...symbols, ...deduped.map((surface) => normalizeTicker((surface as any).ticker))])).filter(Boolean) as string[];
 
-      const candlePairs = await Promise.all(
-        surfaceTickers.map(async (ticker) => [ticker, await fetchDailyCandles(ticker)] as const),
-      );
+      const candlePairs: [string, CandleRecord[]][] = [];
+      for (let index = 0; index < surfaceTickers.length; index += 1) {
+        const ticker = surfaceTickers[index];
+        const pct = phaseWeight.surfaces + ((index / Math.max(1, surfaceTickers.length)) * phaseWeight.candles);
+        setProgress({
+          active: true,
+          phase: "Loading validation candles",
+          detail: `${ticker}: loading price history ${index + 1}/${surfaceTickers.length}`,
+          completed: index,
+          total: surfaceTickers.length,
+          percent: clampPercent(pct),
+        });
+        candlePairs.push([ticker, await fetchDailyCandles(ticker)]);
+      }
+
+      setProgress({
+        active: true,
+        phase: "Building proof records",
+        detail: `Scoring ${deduped.length} surface snapshot(s) across ${surfaceTickers.length} ticker(s).`,
+        completed: 0,
+        total: 1,
+        percent: phaseWeight.surfaces + phaseWeight.candles,
+      });
 
       setSurfaceSnapshots(deduped);
       setCandlesByTicker(Object.fromEntries(candlePairs));
       setStatus(`Loaded ${deduped.length} Supabase surface(s) across ${surfaceTickers.length} ticker(s).`);
+      setProgress({
+        active: false,
+        phase: "Validation load complete",
+        detail: `Ready to score ${deduped.length} surface snapshot(s). Use the horizon selector to recalculate proof records locally.`,
+        completed: 100,
+        total: 100,
+        percent: 100,
+      });
     } catch (error: any) {
       setStatus(error?.message ?? "Failed to load validation data.");
       setSurfaceSnapshots([]);
       setCandlesByTicker({});
+      setProgress({
+        active: false,
+        phase: "Validation stopped",
+        detail: error?.message ?? "Failed to load validation data.",
+        completed: 0,
+        total: 100,
+        percent: 0,
+      });
     } finally {
       setLoading(false);
     }
@@ -648,6 +778,7 @@ export default function ValidationPage() {
   if (!mounted) return null;
 
   return (
+    <AuthGate>
     <main
       className="wheeldesk-shell"
       style={{
@@ -702,6 +833,7 @@ export default function ValidationPage() {
           </button>
 
           <div style={styles.status}>{status}</div>
+          <EvaluationProgress progress={progress} />
         </section>
 
         <section style={styles.heroGrid}>
@@ -933,6 +1065,7 @@ export default function ValidationPage() {
         </Card>
       </div>
     </main>
+    </AuthGate>
   );
 }
 
