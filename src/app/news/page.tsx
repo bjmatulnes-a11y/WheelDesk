@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import AuthGate from "../../components/auth/AuthGate";
 import { NewsEventList } from "../../components/news/NewsEventList";
 import { NewsPulseCard } from "../../components/news/NewsPulseCard";
+import { getSupabaseAuthClient } from "../../lib/auth/supabase-auth-client";
 import type { NewsPulse, NormalizedNewsEvent } from "../../lib/news/news-types";
 
 type TickerNewsResponse = {
@@ -25,6 +27,20 @@ function normalizeSymbols(value: string): string[] {
     .map((symbol) => symbol.trim().toUpperCase().replace(/[^A-Z0-9.\-]/g, "").slice(0, 12))
     .filter(Boolean)
     .slice(0, 10);
+}
+
+async function getNewsAuthHeaders(includeJson = false): Promise<Record<string, string>> {
+  const headers: Record<string, string> = includeJson ? { "Content-Type": "application/json" } : {};
+
+  const { data } = await getSupabaseAuthClient().auth.getSession();
+  const token = data.session?.access_token;
+
+  if (!token) {
+    throw new Error("Login session is not ready yet. Refresh News Pulse or sign in again.");
+  }
+
+  headers.Authorization = `Bearer ${token}`;
+  return headers;
 }
 
 export default function NewsPulsePage() {
@@ -91,7 +107,7 @@ export default function NewsPulsePage() {
     try {
       const response = await fetch("/api/news/harvest", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: await getNewsAuthHeaders(true),
         body: JSON.stringify({ symbols, hours: 72 }),
       });
       const payload = (await response.json()) as { ok: boolean; totalInserted?: number; totalFailed?: number; error?: string };
@@ -113,7 +129,8 @@ export default function NewsPulsePage() {
   }, []);
 
   return (
-    <main
+    <AuthGate>
+      <main
       style={{
         minHeight: "100vh",
         background: "#020a12",
@@ -240,6 +257,7 @@ export default function NewsPulsePage() {
           {loading ? <div style={{ color: "#94a3b8" }}>Loading ticker news...</div> : <NewsEventList events={events} />}
         </section>
       </div>
-    </main>
+      </main>
+    </AuthGate>
   );
 }
