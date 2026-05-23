@@ -37,6 +37,9 @@ type ForecastChartPanelProps = {
   defaultChartMode?: ChartMode;
   defaultForecastAxisMode?: ForecastAxisMode;
   defaultForecastDivergence?: boolean;
+  surfaceDate?: string | null;
+  expiration?: string | null;
+  captureSession?: string | null;
 };
 
 type LinePoint = { time?: unknown; date?: unknown; value?: unknown; price?: unknown; adjustedCenter?: unknown; expiration?: unknown };
@@ -262,16 +265,16 @@ function capturedHorizonRows(row: CapturedForecastRow | null | undefined, side: 
     [30, `${side}_30d`],
   ] as const;
 
- return keys
-  .map(([sessions, key]) => ({
-    sessions: Number(sessions),
-    value: toNumber((row as any)[key]),
-  }))
-  .filter(
-    (item): item is { sessions: number; value: number } =>
-      item.value !== null
-  )
-  .sort((a, b) => a.sessions - b.sessions);
+  const rows: Array<{ sessions: number; value: number }> = [];
+
+  for (const [sessions, key] of keys) {
+    const value = toNumber((row as any)[key]);
+    if (value !== null) {
+      rows.push({ sessions: Number(sessions), value });
+    }
+  }
+
+  return rows.sort((a, b) => a.sessions - b.sessions);
 }
 
 function capturedForecastAt(row: CapturedForecastRow | null | undefined, sessions: number, side: "base" | "upper" | "lower"): number | null {
@@ -625,7 +628,10 @@ export default function ForecastChartPanel({
   headerAction,
   defaultChartMode,
   defaultForecastAxisMode,
-  defaultForecastDivergence
+  defaultForecastDivergence,
+  surfaceDate,
+  expiration,
+  captureSession
 }: ForecastChartPanelProps) {
   const [chartMode, setChartMode] = useState<ChartMode>(defaultChartMode ?? "field-v2");
   const [forecastAxisMode, setForecastAxisMode] = useState<ForecastAxisMode>(
@@ -667,12 +673,32 @@ export default function ForecastChartPanel({
     async function loadCapturedForecast() {
       try {
         setCapturedForecastStatus("Loading captured forecast…");
-        const response = await fetch(`/api/forecasts/oi-field/latest?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" });
+        const params = new URLSearchParams({ symbol });
+        if (surfaceDate) params.set("snapshotDate", String(surfaceDate).slice(0, 10));
+        if (expiration) params.set("expiration", String(expiration).slice(0, 10));
+        if (captureSession) params.set("captureSession", String(captureSession));
+
+        const response = await fetch(`/api/forecasts/oi-field/latest?${params.toString()}`, { cache: "no-store" });
         const payload = await response.json().catch(() => null);
         if (cancelled) return;
         if (!response.ok || !payload?.ok) throw new Error(payload?.error ?? `Latest forecast request failed: ${response.status}`);
+
         setCapturedForecast(payload.forecast ?? null);
-        setCapturedForecastStatus(payload.forecast ? "Captured forecast loaded" : "No captured forecast yet");
+
+        if (!payload.forecast) {
+          setCapturedForecastStatus(
+            payload.matchStatus === "missing_exact"
+              ? "No captured forecast for selected surface/expiration"
+              : "No captured forecast yet"
+          );
+        } else if (payload.matchStatus === "fallback_latest") {
+          const fallback = payload.fallback;
+          setCapturedForecastStatus(
+            `Forecast mismatch: showing latest ${fallback?.snapshotDate ?? "surface"}${fallback?.expiration ? ` / ${fallback.expiration}` : ""}`
+          );
+        } else {
+          setCapturedForecastStatus("Captured forecast matched to selected context");
+        }
       } catch (error) {
         if (!cancelled) {
           setCapturedForecast(null);
@@ -686,7 +712,7 @@ export default function ForecastChartPanel({
     return () => {
       cancelled = true;
     };
-  }, [ticker, forecastDivergenceEnabled]);
+  }, [ticker, surfaceDate, expiration, captureSession, forecastDivergenceEnabled]);
 
   const clearPriceLines = () => {
     const series = candleRef.current;
@@ -1353,6 +1379,7 @@ export default function ForecastChartPanel({
         {ivSurface && (chartMode === "classic" || chartMode === "both") ? <span><strong style={{ color: colors.teal }}>Cyan</strong> matched IV band</span> : null}
         {forecastDivergenceEnabled ? <span>Forecast divergence: <strong style={{ color: divergenceReadout?.tone ?? colors.text }}>{divergenceReadout?.label ?? (capturedForecastStatus || "No captured forecast")}</strong></span> : null}
         {forecastDivergenceEnabled && capturedForecast?.generated_at ? <span>Captured: <strong style={{ color: colors.text }}>{new Date(capturedForecast.generated_at).toLocaleString()}</strong></span> : null}
+        {forecastDivergenceEnabled && (surfaceDate || expiration) ? <span>Requested context: <strong style={{ color: colors.text }}>{surfaceDate || "any surface"}</strong> / <strong style={{ color: colors.text }}>{expiration || "any expiration"}</strong></span> : null}
         {edge || path || matrix ? <span>Regime: <strong style={{ color: colors.text }}>{path ? pathRegime(path) : fieldForecast?.regime ?? "mixed"}</strong></span> : null}
       </div>
     </section>

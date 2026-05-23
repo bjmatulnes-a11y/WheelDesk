@@ -165,6 +165,40 @@ async function fetchSupabaseSurfaces(ticker: string): Promise<OptionSurfaceSnaps
   return extractSnapshots(payload).sort((a, b) => b.snapshotDate.localeCompare(a.snapshotDate));
 }
 
+function firstExpirationFromSurface(surface: OptionSurfaceSnapshot | null): string {
+  const first = (surface?.chains ?? [])
+    .map((chain: any) => expirationOf(chain))
+    .find(Boolean);
+  return first ?? "";
+}
+
+function filterSurfaceToExpiration(
+  surface: OptionSurfaceSnapshot | null,
+  expiration: string
+): OptionSurfaceSnapshot | null {
+  if (!surface) return null;
+  const normalizedExpiration = dateOnly(expiration);
+  if (!normalizedExpiration) return surface;
+
+  const chains = (surface.chains ?? []).filter(
+    (chain: any) => expirationOf(chain) === normalizedExpiration
+  );
+
+  if (!chains.length) return surface;
+
+  return {
+    ...surface,
+    chains,
+    selectedExpiration: normalizedExpiration,
+    contextAlignment: {
+      ...(surface as any).contextAlignment,
+      mode: "selected_expiration",
+      selectedExpiration: normalizedExpiration,
+      source: "wheel_workspace",
+    },
+  } as OptionSurfaceSnapshot;
+}
+
 function getSurfaceStructure(surface: OptionSurfaceSnapshot | null): WheelDailyStructureSnapshot | null {
   if (!surface?.dailyStructure) return null;
 
@@ -650,6 +684,8 @@ export default function WheelWorkspacePage() {
   const [selectedProfileId, setSelectedProfileId] = useState("");
   const [surfaceSnapshot, setSurfaceSnapshot] = useState<OptionSurfaceSnapshot | null>(null);
   const [allSurfaceSnapshots, setAllSurfaceSnapshots] = useState<OptionSurfaceSnapshot[]>([]);
+  const [selectedSurfaceDate, setSelectedSurfaceDate] = useState("");
+  const [selectedExpiration, setSelectedExpiration] = useState("");
   const [surfaceStatus, setSurfaceStatus] = useState("");
   const [surfaceLoading, setSurfaceLoading] = useState(false);
   const [manualGroups, setManualGroups] = useState<UserPositionGroup[]>([]);
@@ -682,11 +718,16 @@ async function loadSupabaseSurface(nextTicker = ticker) {
 
   try {
     const snapshots = await fetchSupabaseSurfaces(normalized);
+    const latestSurface = snapshots[0] ?? null;
+    const nextExpiration = firstExpirationFromSurface(latestSurface);
+
     setAllSurfaceSnapshots(snapshots);
-    setSurfaceSnapshot(snapshots[0] ?? null);
+    setSelectedSurfaceDate(latestSurface?.snapshotDate ?? "");
+    setSelectedExpiration(nextExpiration);
+    setSurfaceSnapshot(filterSurfaceToExpiration(latestSurface, nextExpiration));
     setSurfaceStatus(
-      snapshots[0]
-        ? `Loaded ${snapshots.length} Supabase surface(s) for ${normalized}. Latest: ${snapshots[0].snapshotDate}.`
+      latestSurface
+        ? `Loaded ${snapshots.length} Supabase surface(s) for ${normalized}. Selected: ${latestSurface.snapshotDate}${nextExpiration ? ` / ${nextExpiration}` : ""}.`
         : `No Supabase OI surface found for ${normalized}. Run Dashboard Harvest first.`
     );
   } catch (error: any) {
@@ -731,6 +772,20 @@ async function loadSupabaseSurface(nextTicker = ticker) {
   }, [ticker, mounted]);
 
   useEffect(() => {
+    if (!mounted || !allSurfaceSnapshots.length) return;
+
+    const selectedSurface =
+      allSurfaceSnapshots.find((surface) => surface.snapshotDate === selectedSurfaceDate) ??
+      allSurfaceSnapshots[0] ??
+      null;
+
+    const nextExpiration = selectedExpiration || firstExpirationFromSurface(selectedSurface);
+    if (!selectedExpiration && nextExpiration) setSelectedExpiration(nextExpiration);
+
+    setSurfaceSnapshot(filterSurfaceToExpiration(selectedSurface, nextExpiration));
+  }, [mounted, allSurfaceSnapshots, selectedSurfaceDate, selectedExpiration]);
+
+  useEffect(() => {
     if (!mounted || !selectedProfileId) return;
     window.localStorage.setItem(SELECTED_PROFILE_STORAGE_KEY, selectedProfileId);
   }, [selectedProfileId, mounted]);
@@ -739,6 +794,30 @@ async function loadSupabaseSurface(nextTicker = ticker) {
     () => profiles.find((p) => p.id === selectedProfileId) ?? null,
     [profiles, selectedProfileId]
   );
+
+  const surfaceDateOptions = useMemo(
+    () => allSurfaceSnapshots.map((surface) => surface.snapshotDate).filter(Boolean),
+    [allSurfaceSnapshots]
+  );
+
+  const selectedFullSurface = useMemo(() => {
+    if (!allSurfaceSnapshots.length) return null;
+    return (
+      allSurfaceSnapshots.find((surface) => surface.snapshotDate === selectedSurfaceDate) ??
+      allSurfaceSnapshots[0] ??
+      null
+    );
+  }, [allSurfaceSnapshots, selectedSurfaceDate]);
+
+  const expirationOptions = useMemo(() => {
+    return (selectedFullSurface?.chains ?? [])
+      .map((chain: any) => ({
+        expiration: expirationOf(chain),
+        dte: chain?.dteAtCapture ?? chain?.dte ?? dteFromExpiration(expirationOf(chain), selectedFullSurface?.snapshotDate ?? ""),
+        rows: Array.isArray(chain?.rows) ? chain.rows.length : 0,
+      }))
+      .filter((item) => item.expiration);
+  }, [selectedFullSurface]);
 
  useEffect(() => {
      if (!selectedProfile?.id || !ticker) {
@@ -933,9 +1012,10 @@ Math.random().toString(36).slice(2)
 
   const wallMigration = useMemo(() => {
     if (!surfaceSnapshot) return null;
-    const priorSurface = findPriorSurfaceForTicker(allSurfaceSnapshots, ticker, surfaceSnapshot.snapshotDate);
+    const priorSurfaceRaw = findPriorSurfaceForTicker(allSurfaceSnapshots, ticker, surfaceSnapshot.snapshotDate);
+    const priorSurface = filterSurfaceToExpiration(priorSurfaceRaw, selectedExpiration) ?? priorSurfaceRaw;
     return buildWallMigrationSummary({ currentSurface: surfaceSnapshot, priorSurface });
-  }, [ticker, surfaceSnapshot, allSurfaceSnapshots]);
+  }, [ticker, surfaceSnapshot, allSurfaceSnapshots, selectedExpiration]);
   
   const dealerPressure = useMemo(() => {
   return buildDealerPressureSummary({
@@ -1065,14 +1145,56 @@ Math.random().toString(36).slice(2)
             </select>
           </label>
 
+          <label style={wheelStyles.fieldLabel}>
+            Surface date
+            <select
+              value={selectedSurfaceDate}
+              onChange={(e) => setSelectedSurfaceDate(e.target.value)}
+              style={wheelStyles.input}
+              disabled={!surfaceDateOptions.length}
+            >
+              {!surfaceDateOptions.length ? <option value="">No surfaces</option> : null}
+              {surfaceDateOptions.map((date) => (
+                <option key={date} value={date}>{date}</option>
+              ))}
+            </select>
+          </label>
+
+          <label style={wheelStyles.fieldLabel}>
+            Expiration chain
+            <select
+              value={selectedExpiration}
+              onChange={(e) => setSelectedExpiration(e.target.value)}
+              style={wheelStyles.input}
+              disabled={!expirationOptions.length}
+            >
+              {!expirationOptions.length ? <option value="">No chains</option> : null}
+              {expirationOptions.map((item) => (
+                <option key={item.expiration} value={item.expiration}>
+                  {item.expiration}{item.dte != null ? ` | ${item.dte}D` : ""}{item.rows ? ` | ${item.rows} rows` : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+
           <div style={{ color: wheelColors.muted }}>
-           <strong style={{ color: wheelColors.text }}>Supabase Surface:</strong>{" "}
+           <strong style={{ color: wheelColors.text }}>Aligned Context:</strong>{" "}
 {surfaceSnapshot
-? `${surfaceSnapshot.snapshotDate} · ${surfaceSnapshot.chains?.length ?? 0} chains`
+? `${surfaceSnapshot.snapshotDate} / ${selectedExpiration || "all chains"} · active chains ${surfaceSnapshot.chains?.length ?? 0}`
 : "No OI surface snapshot saved"}
            
           </div>
         </div>
+        {surfaceStatus ? (
+          <p style={{ color: surfaceStatus.toLowerCase().includes("failed") ? wheelColors.red : wheelColors.muted, margin: "0.75rem 0 0" }}>
+            {surfaceStatus}
+          </p>
+        ) : null}
+
+        <p style={{ color: wheelColors.teal, margin: "0.5rem 0 0", fontSize: 12, fontWeight: 800 }}>
+          Wheel Trader Edge is now locked to the selected Supabase surface date and selected expiration chain. If this differs from Control Center, compare the Surface / Chain context first.
+        </p>
+
         {selectedProfile && !hasTickerPosition && (
           <p style={{ color: wheelColors.amber }}>
             Selected portfolio has no {ticker} position. Wheel decision is structure-only.

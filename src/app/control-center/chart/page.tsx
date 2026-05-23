@@ -709,6 +709,8 @@ function ChartRoomContent() {
               ivSurface={chartIvSurface}
               flowOverlay={chartFlowOverlay}
               fieldForecast={overlays.selectedChainPath ? oiFieldForecast : null}
+              surfaceDate={selectedSurfaceDate}
+              expiration={selectedExpiration}
               structureFocus
               isLoading={candleLoading || surfaceLoading}
               chartHeight={760}

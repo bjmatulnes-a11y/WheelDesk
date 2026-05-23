@@ -1233,6 +1233,8 @@ export default function ControlCenterPage() {
                                 ivSurface={chartIvSurface}
                                 flowOverlay={chartFlowOverlay}
                                 fieldForecast={overlays.selectedChainPath ? oiFieldForecast : null}
+                                surfaceDate={selectedSurfaceDate}
+                                expiration={selectedExpiration}
                                 structureFocus
                                 isLoading={candleLoading || surfaceLoading}
                                 headerAction={
@@ -1400,6 +1402,8 @@ export default function ControlCenterPage() {
             ivSurface={chartIvSurface}
             flowOverlay={chartFlowOverlay}
             fieldForecast={overlays.selectedChainPath ? oiFieldForecast : null}
+            surfaceDate={selectedSurfaceDate}
+            expiration={selectedExpiration}
             structureFocus
             isLoading={candleLoading || surfaceLoading}
             chartHeight={720}
