@@ -166,14 +166,6 @@ export default function LandingPage() {
   );
 }
 
-function ConsoleCard({ label, value, tone }: { label: string; value: string; tone: "cyan" | "green" | "violet" | "amber" }) {
-  return (
-    <div className={`wd-console-card wd-tone-${tone}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
 
 function FeatureCard({ number, title, detail }: { number: string; title: string; detail: string }) {
   return (
