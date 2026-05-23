@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { WHEELDESK_PLANS } from "../lib/billing/plans";
+import HeroProductFrame from "../components/marketing/HeroProductFrame";
 
 export default function LandingPage() {
   return (
@@ -50,38 +51,7 @@ export default function LandingPage() {
           </div>
         </div>
 
-        <aside className="wd-terminal" aria-label="WheelDesk operator console preview">
-          <div className="wd-terminal-bar">
-            <span />
-            <span />
-            <span />
-            <strong>WheelDesk Operator Console</strong>
-          </div>
-
-          <div className="wd-console-grid">
-            <ConsoleCard label="Control State" value="Pin / Repair Watch" tone="cyan" />
-            <ConsoleCard label="Dealer Pressure" value="Positive Gamma Drift" tone="green" />
-            <ConsoleCard label="Bullish Unlock" value="Above call wall" tone="violet" />
-            <ConsoleCard label="Risk Mode" value="Manage, don't chase" tone="amber" />
-          </div>
-
-          <div className="wd-chart-preview">
-            <div className="wd-line wd-line-red">Call Wall</div>
-            <div className="wd-line wd-line-cyan">IV Upper</div>
-            <div className="wd-line wd-line-purple">OI Magnet</div>
-            {Array.from({ length: 34 }).map((_, index) => (
-              <span
-                key={index}
-                className={index % 4 === 0 ? "wd-candle wd-candle-red" : "wd-candle wd-candle-green"}
-                style={{
-                  height: `${24 + ((index * 13) % 54)}px`,
-                  left: `${5 + index * 2.6}%`,
-                  bottom: `${17 + ((index * 9) % 42)}%`,
-                }}
-              />
-            ))}
-          </div>
-        </aside>
+        <HeroProductFrame />
       </section>
 
       <section className="wd-feature-band" aria-label="WheelDesk product pillars">
