@@ -1,226 +1,153 @@
-import Link from "next/link";
-import { WHEELDESK_PLANS } from "../lib/billing/plans";
+import ProductTourScreenshots from "../components/marketing/ProductTourScreenshots";
+
+const pricingPlans = [
+  {
+    name: "Founder",
+    price: "$49",
+    note: "limited early access",
+    bullets: ["10 tracked tickers", "OI Field v2", "Chart Room", "Validation beta", "Mobile/PWA access"],
+  },
+  {
+    name: "Core",
+    price: "$79",
+    note: "daily options control room",
+    bullets: ["15 tracked tickers", "Watchlist Command", "Forecast capture", "Wheel Workspace", "Portfolio risk console"],
+  },
+  {
+    name: "Research",
+    price: "$129",
+    note: "advanced validation and NN path",
+    bullets: ["30 tracked tickers", "Forecast divergence", "Multi-horizon receipts", "NN-ready capture", "Priority research features"],
+  },
+];
 
 export default function LandingPage() {
   return (
-    <main className="wd-landing">
-      <div className="wd-landing-glow wd-landing-glow-one" />
-      <div className="wd-landing-glow wd-landing-glow-two" />
-
-      <header className="wd-landing-nav">
-        <Link href="/" className="wd-landing-brand" aria-label="WheelDesk home">
-          <span className="wd-landing-logo">W</span>
-          <span>
-            <span className="wd-landing-brand-name">WheelDesk</span>
-            <span className="wd-landing-brand-sub">OPTIONS CONTROL SYSTEM</span>
-          </span>
-        </Link>
-
-        <nav className="wd-landing-links" aria-label="Primary landing navigation">
-          <a href="#product">Product</a>
-          <a href="#validation">Validation</a>
-          <a href="#daily-loop">Daily Loop</a>
-          <Link href="/demo">Demo</Link>
-          <Link href="/pricing">Pricing</Link>
-          <Link href="/faq">FAQ</Link>
-          <Link href="/about">About</Link>
-          <Link href="/contact">Contact</Link>
-          <Link href="/login">Login</Link>
-          <Link href="/signup">Create Account</Link>
+    <main className="min-h-screen bg-[#020b12] text-white">
+      <section className="relative overflow-hidden border-b border-cyan-400/10 bg-[radial-gradient(circle_at_top_left,rgba(20,184,166,0.20),transparent_32%),radial-gradient(circle_at_top_right,rgba(99,102,241,0.18),transparent_38%)]">
+        <nav className="mx-auto flex max-w-7xl items-center justify-between px-4 py-6 sm:px-6 lg:px-8">
+          <a href="/" className="flex items-center gap-3 font-black tracking-tight">
+            <span className="grid h-10 w-10 place-items-center rounded-full border border-cyan-300/60 bg-cyan-500/10 text-cyan-200">W</span>
+            <span className="text-xl">WheelDesk</span>
+          </a>
+          <div className="hidden items-center gap-6 text-sm font-bold text-slate-300 md:flex">
+            <a href="#product-tour" className="hover:text-cyan-200">Product</a>
+            <a href="#validation" className="hover:text-cyan-200">Validation</a>
+            <a href="#pricing" className="hover:text-cyan-200">Pricing</a>
+            <a href="/faq" className="hover:text-cyan-200">FAQ</a>
+            <a href="/about" className="hover:text-cyan-200">About</a>
+            <a href="/contact" className="hover:text-cyan-200">Contact</a>
+          </div>
+          <div className="flex items-center gap-3">
+            <a href="/login" className="rounded-xl border border-cyan-300/25 px-4 py-2 text-sm font-black text-slate-100 hover:border-cyan-300/60">
+              Log in
+            </a>
+            <a href="/pricing" className="rounded-xl bg-cyan-300 px-4 py-2 text-sm font-black text-slate-950 hover:bg-cyan-200">
+              View plans
+            </a>
+          </div>
         </nav>
-      </header>
 
-      <section className="wd-hero" id="product">
-        <div className="wd-hero-copy">
-          <div className="wd-eyebrow">Built for premium sellers and OI-driven operators</div>
-          <h1>Turn option-chain chaos into a daily trading control center.</h1>
-          <p>
-            WheelDesk combines portfolio exposure, OI surface snapshots, IV bands, dealer pressure,
-            wall migration, and validation into one cockpit for disciplined wheel and covered-call management.
-          </p>
-
-          <div className="wd-hero-actions">
-            <Link href="/pricing" className="wd-primary-cta">View Plans</Link>
-            <Link href="/login" className="wd-secondary-cta">Log In</Link>
+        <div className="mx-auto grid max-w-7xl items-center gap-12 px-4 pb-20 pt-8 sm:px-6 lg:grid-cols-[0.9fr_1.1fr] lg:px-8 lg:pb-28">
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.32em] text-emerald-300">
+              Built for premium sellers and OI-driven operators
+            </p>
+            <h1 className="mt-5 max-w-3xl text-5xl font-black leading-[0.96] tracking-tight sm:text-7xl">
+              Turn the options chain into a forecastable market-structure map.
+            </h1>
+            <p className="mt-6 max-w-2xl text-lg leading-8 text-slate-300">
+              WheelDesk combines tracked ticker slots, OI surface snapshots, OI Field forecasts, forecast divergence,
+              validation receipts, and wheel/portfolio context into one daily trading control room.
+            </p>
+            <div className="mt-8 flex flex-wrap gap-3">
+              <a href="/pricing" className="rounded-2xl bg-cyan-300 px-6 py-3 text-sm font-black text-slate-950 shadow-xl shadow-cyan-950/30 hover:bg-cyan-200">
+                View plans
+              </a>
+              <a href="/login" className="rounded-2xl border border-slate-500/60 px-6 py-3 text-sm font-black text-slate-100 hover:border-cyan-300/60">
+                Log in
+              </a>
+            </div>
+            <div className="mt-8 grid gap-3 sm:grid-cols-3">
+              {["Supabase-first", "OI Field v2", "Forecast receipts"].map((item) => (
+                <div key={item} className="rounded-2xl border border-cyan-400/15 bg-slate-950/60 p-4">
+                  <p className="text-xs text-slate-400">Signal layer</p>
+                  <p className="mt-1 font-black text-white">{item}</p>
+                </div>
+              ))}
+            </div>
           </div>
 
-          <div className="wd-proof-grid" aria-label="WheelDesk product highlights">
-            <div><span>Database</span><strong>Supabase-first</strong></div>
-            <div><span>Signal layer</span><strong>OI + IV + flow</strong></div>
-            <div><span>Phone access</span><strong>PWA install ready</strong></div>
+          <div className="rounded-[2rem] border border-cyan-300/20 bg-slate-950/75 p-3 shadow-2xl shadow-cyan-950/30">
+            <div className="flex items-center gap-2 border-b border-cyan-400/10 px-4 py-3 text-xs font-black uppercase tracking-[0.22em] text-slate-400">
+              <span className="h-3 w-3 rounded-full bg-cyan-300" />
+              <span className="h-3 w-3 rounded-full bg-emerald-300" />
+              <span className="h-3 w-3 rounded-full bg-rose-300" />
+              <span className="ml-3">WheelDesk Chart Room</span>
+            </div>
+            <img
+              src="/marketing/wheeldesk/chart-room.webp"
+              alt="WheelDesk Chart Room with OI Field v2 forecast cone and forecast divergence overlay"
+              className="w-full rounded-b-[1.5rem] border-x border-b border-slate-700/50"
+              loading="eager"
+            />
           </div>
-        </div>
-
-        <aside className="wd-terminal" aria-label="WheelDesk operator console preview">
-          <div className="wd-terminal-bar">
-            <span />
-            <span />
-            <span />
-            <strong>WheelDesk Operator Console</strong>
-          </div>
-
-          <div className="wd-console-grid">
-            <ConsoleCard label="Control State" value="Pin / Repair Watch" tone="cyan" />
-            <ConsoleCard label="Dealer Pressure" value="Positive Gamma Drift" tone="green" />
-            <ConsoleCard label="Bullish Unlock" value="Above call wall" tone="violet" />
-            <ConsoleCard label="Risk Mode" value="Manage, don't chase" tone="amber" />
-          </div>
-
-          <div className="wd-chart-preview">
-            <div className="wd-line wd-line-red">Call Wall</div>
-            <div className="wd-line wd-line-cyan">IV Upper</div>
-            <div className="wd-line wd-line-purple">OI Magnet</div>
-            {Array.from({ length: 34 }).map((_, index) => (
-              <span
-                key={index}
-                className={index % 4 === 0 ? "wd-candle wd-candle-red" : "wd-candle wd-candle-green"}
-                style={{
-                  height: `${24 + ((index * 13) % 54)}px`,
-                  left: `${5 + index * 2.6}%`,
-                  bottom: `${17 + ((index * 9) % 42)}%`,
-                }}
-              />
-            ))}
-          </div>
-        </aside>
-      </section>
-
-      <section className="wd-feature-band" aria-label="WheelDesk product pillars">
-        <FeatureCard number="01" title="Harvest" detail="Capture option-chain surfaces and candles into Supabase so the app is not trapped in browser storage." />
-        <FeatureCard number="02" title="Control" detail="Translate OI walls, IV bands, dealer pressure, and price context into a daily action state." />
-        <FeatureCard number="03" title="Validate" detail="Measure the projected OI path against actual candles so the edge earns trust with receipts." />
-      </section>
-
-      <section className="wd-section wd-split-section" id="validation">
-        <div>
-          <div className="wd-eyebrow">Why traders care</div>
-          <h2>WheelDesk is not another watchlist. It is a decision layer.</h2>
-          <p>
-            The product is being shaped around one question: should the trader sell, repair, roll, wait,
-            or stand down? The Control Center is the front end; the Validation page is where the product proves it.
-          </p>
-        </div>
-
-        <div className="wd-signal-stack">
-          <SignalRow label="OI Surface" value="Walls, magnets, path, and chain context" />
-          <SignalRow label="Dealer Pressure" value="Pin risk, unlock zones, and neutralization pressure" />
-          <SignalRow label="Portfolio" value="Theo value, mark value, delta/theta, cash capacity" />
-          <SignalRow label="Validation" value="Projected path versus realized price behavior" />
         </div>
       </section>
 
+      <ProductTourScreenshots />
 
-      <section className="wd-section wd-split-section" id="daily-loop">
-        <div>
-          <div className="wd-eyebrow">Sticky by design</div>
-          <h2>The daily edge loop gives traders a reason to come back.</h2>
-          <p>
-            WheelDesk is built around a repeatable trading routine: check what changed, read the current structure,
-            compare the signal to validation receipts, then decide whether to sell premium, repair, roll, or wait.
-          </p>
-        </div>
-
-        <div className="wd-signal-stack">
-          <SignalRow label="Morning read" value="Saved tickers surface today’s bias, walls, pressure, and risk state" />
-          <SignalRow label="What changed" value="Call walls, put supports, IV bands, and dealer pressure versus yesterday" />
-          <SignalRow label="Signal receipts" value="Validation tracks whether prior projected paths actually worked" />
-          <SignalRow label="Portfolio fit" value="Position risk and wheel basis keep the action map grounded" />
-        </div>
-      </section>
-
-      <section className="wd-section wd-mobile-section" id="mobile">
-        <div>
-          <div className="wd-eyebrow">Mobile-first access</div>
-          <h2>Install WheelDesk from Safari while the native app roadmap develops.</h2>
-          <p>
-            The current product is a PWA: deploy it, open it on iPhone, tap Share, then Add to Home Screen.
-            That gives users an app icon and standalone launch while the native iPhone app and billing layer are finalized.
-          </p>
-        </div>
-        <div className="wd-phone-card">
-          <span className="wd-phone-notch" />
-          <strong>WheelDesk</strong>
-          <p>Control Center, Portfolio, Scanner, Wheel, and Validation in a phone-ready shell.</p>
-          <Link href="/pricing">View plans</Link>
+      <section id="validation" className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
+        <div className="grid gap-8 rounded-3xl border border-emerald-400/20 bg-emerald-400/5 p-6 lg:grid-cols-[0.9fr_1.1fr] lg:p-8">
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.28em] text-emerald-300">Validation receipts</p>
+            <h2 className="mt-3 text-3xl font-black tracking-tight text-white sm:text-5xl">Most tools show signals. WheelDesk stores receipts.</h2>
+            <p className="mt-4 text-base leading-7 text-slate-300">
+              Forecast capture is designed for a neural-ready dataset: baseline OI Field forecast, feature vector, capture session,
+              actual outcomes, divergence, and model status. The goal is to evolve from deterministic OI structure to NN-adjusted forecasts.
+            </p>
+          </div>
+          <img
+            src="/marketing/wheeldesk/validation.webp"
+            alt="WheelDesk validation proof records showing adjusted proof and no-lookahead checks"
+            className="h-auto w-full rounded-2xl border border-slate-700/60"
+            loading="lazy"
+          />
         </div>
       </section>
 
-      <section className="wd-section" id="pricing">
-        <div className="wd-pricing-heading">
-          <div className="wd-eyebrow">Pricing</div>
-          <h2>Choose the control level that matches your trading workflow.</h2>
-          <p>
-            Account creation is free, but the trading console is gated by subscription once billing is enabled.
-            This keeps users from bypassing checkout and makes Stripe the source of truth for plan access.
+      <section id="pricing" className="mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8">
+        <div className="mb-10 max-w-3xl">
+          <p className="text-xs font-black uppercase tracking-[0.3em] text-cyan-300">Founder pricing</p>
+          <h2 className="mt-3 text-3xl font-black tracking-tight text-white sm:text-5xl">Tracked ticker slots, not unlimited noise.</h2>
+          <p className="mt-4 text-slate-300">
+            WheelDesk monitors a finite ticker universe so forecasts, receipts, and future neural training stay clean and scalable.
           </p>
         </div>
-
-        <div className="wd-pricing-grid">
-          {WHEELDESK_PLANS.map((plan) => (
-            <article key={plan.id} className={plan.highlight ? "wd-price-card wd-price-card-highlight" : "wd-price-card"}>
-              <div>
-                <h3>{plan.name}</h3>
-                <p>{plan.description}</p>
+        <div className="grid gap-5 lg:grid-cols-3">
+          {pricingPlans.map((plan) => (
+            <article key={plan.name} className="rounded-3xl border border-cyan-400/20 bg-slate-950/70 p-6">
+              <p className="text-xs font-black uppercase tracking-[0.28em] text-cyan-300">{plan.name}</p>
+              <div className="mt-4 flex items-end gap-2">
+                <span className="text-5xl font-black">{plan.price}</span>
+                <span className="pb-2 text-slate-400">/ month</span>
               </div>
-              <div className="wd-price">
-                <strong>{plan.priceLabel}</strong>
-                <span>{plan.note}</span>
-              </div>
-              <ul>
-                {plan.features.slice(0, 5).map((feature) => (
-                  <li key={feature}>{feature}</li>
+              <p className="mt-2 text-sm font-bold text-slate-300">{plan.note}</p>
+              <ul className="mt-6 space-y-3 text-sm text-slate-300">
+                {plan.bullets.map((bullet) => (
+                  <li key={bullet} className="flex gap-3">
+                    <span className="text-cyan-300">✓</span>
+                    <span>{bullet}</span>
+                  </li>
                 ))}
               </ul>
-              <Link href={`/pricing?plan=${plan.id}`}>Choose {plan.name}</Link>
+              <a href="/pricing" className="mt-8 block rounded-2xl border border-cyan-400/30 px-5 py-3 text-center text-sm font-black text-cyan-100 hover:bg-cyan-400/10">
+                Choose {plan.name}
+              </a>
             </article>
           ))}
         </div>
       </section>
-
-      <section className="wd-final-cta">
-        <div>
-          <div className="wd-eyebrow">Next milestone</div>
-          <h2>Start with a plan. Unlock the console after Stripe confirms access.</h2>
-          <p>
-            Pricing is back on the landing page, while the app itself remains protected by login plus active subscription status.
-            Users can create accounts, but they cannot bypass the paid access gate once billing is enabled.
-          </p>
-        </div>
-        <Link href="/pricing" className="wd-primary-cta">View Plans</Link>
-      </section>
-
-      <footer className="wd-landing-footer">
-        <span>WheelDesk · thewheeldesk.com</span>
-        <span>Control Center · Validation · Portfolio · Pricing · Mobile · FAQ · About · Contact</span>
-      </footer>
     </main>
-  );
-}
-
-function ConsoleCard({ label, value, tone }: { label: string; value: string; tone: "cyan" | "green" | "violet" | "amber" }) {
-  return (
-    <div className={`wd-console-card wd-tone-${tone}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
-function FeatureCard({ number, title, detail }: { number: string; title: string; detail: string }) {
-  return (
-    <article className="wd-feature-card">
-      <span>{number}</span>
-      <h3>{title}</h3>
-      <p>{detail}</p>
-    </article>
-  );
-}
-
-function SignalRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="wd-signal-row">
-      <strong>{label}</strong>
-      <span>{value}</span>
-    </div>
   );
 }
