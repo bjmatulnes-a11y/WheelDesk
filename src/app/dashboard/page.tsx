@@ -88,6 +88,18 @@ type NewsItem = {
   impact?: string;
 };
 
+type DashboardNewsPulse = {
+  symbol: string;
+  status: "quiet" | "active" | "elevated" | "shock" | string;
+  count24h: number;
+  countWindow?: number;
+  materiality: number;
+  sentiment: number | null;
+  latestHeadline: string | null;
+  latestPublishedAt: string | null;
+  forecastImpact: "none" | "watch" | "confidence_down" | "shock_risk" | string;
+};
+
 type CalendarItem = {
   date: string;
   title: string;
@@ -533,42 +545,107 @@ async function saveSurfaceToSupabase(surfaceSnapshot: any) {
   return result;
 }
 
-async function tryFetchNews(tickers: string[]): Promise<NewsItem[]> {
-  if (!tickers.length) return [];
+async function fetchDashboardNewsPulse(symbols: string[]): Promise<DashboardNewsPulse[]> {
+  const normalized = uniqueTickers(symbols).slice(0, 50);
+  if (!normalized.length) return [];
 
   try {
-    const response = await fetch(`/api/news?tickers=${encodeURIComponent(tickers.join(","))}`, {
+    const response = await fetch(`/api/news/pulse?symbols=${encodeURIComponent(normalized.join(","))}&hours=24`, {
       cache: "no-store",
     });
 
-    if (!response.ok) return [];
+    const payload = await response.json().catch(() => null);
 
-    const data = await response.json();
-    if (Array.isArray(data?.items)) return data.items;
-    if (Array.isArray(data?.news)) return data.news;
+    if (!response.ok || !payload?.ok || !Array.isArray(payload.pulses)) {
+      return normalized.map((symbol) => quietNewsPulse(symbol));
+    }
 
-    return [];
+    const rows = payload.pulses.map(normalizeNewsPulse).filter(Boolean) as DashboardNewsPulse[];
+    const seen = new Set(rows.map((row) => row.symbol));
+    const missing = normalized.filter((symbol) => !seen.has(symbol)).map((symbol) => quietNewsPulse(symbol));
+
+    return [...rows, ...missing].sort((a, b) => newsPulseRank(b) - newsPulseRank(a) || a.symbol.localeCompare(b.symbol));
   } catch {
-    return [];
+    return normalized.map((symbol) => quietNewsPulse(symbol));
   }
 }
 
-async function tryFetchMarketCalendar(): Promise<CalendarItem[]> {
-  try {
-    const response = await fetch("/api/market-calendar", {
-      cache: "no-store",
-    });
+function normalizeNewsPulse(value: any): DashboardNewsPulse | null {
+  const symbol = normalizeTickerInput(value?.symbol);
+  if (!symbol) return null;
 
-    if (!response.ok) return [];
+  const rawStatus = String(value?.status ?? "quiet").toLowerCase();
+  const status = ["shock", "elevated", "active", "quiet"].includes(rawStatus) ? rawStatus : "quiet";
 
-    const data = await response.json();
-    if (Array.isArray(data?.items)) return data.items;
-    if (Array.isArray(data?.events)) return data.events;
+  const rawImpact = String(value?.forecastImpact ?? value?.forecast_impact ?? "none").toLowerCase();
+  const forecastImpact = ["shock_risk", "confidence_down", "watch", "none"].includes(rawImpact) ? rawImpact : "none";
 
-    return [];
-  } catch {
-    return [];
-  }
+  return {
+    symbol,
+    status,
+    count24h: safeNum(value?.count24h ?? value?.count_24h, 0),
+    countWindow: safeNum(value?.countWindow ?? value?.count_window, 0),
+    materiality: safeNum(value?.materiality, 0),
+    sentiment: value?.sentiment === null || value?.sentiment === undefined ? null : safeNum(value.sentiment, 0),
+    latestHeadline: value?.latestHeadline ?? value?.latest_headline ?? null,
+    latestPublishedAt: value?.latestPublishedAt ?? value?.latest_published_at ?? null,
+    forecastImpact,
+  };
+}
+
+function quietNewsPulse(symbol: string): DashboardNewsPulse {
+  return {
+    symbol,
+    status: "quiet",
+    count24h: 0,
+    countWindow: 0,
+    materiality: 0,
+    sentiment: null,
+    latestHeadline: null,
+    latestPublishedAt: null,
+    forecastImpact: "none",
+  };
+}
+
+function newsPulseRank(pulse: DashboardNewsPulse): number {
+  if (pulse.status === "shock") return 4;
+  if (pulse.status === "elevated") return 3;
+  if (pulse.status === "active") return 2;
+  return 1;
+}
+
+function newsPulseLabel(status: string): string {
+  if (status === "shock") return "Shock risk";
+  if (status === "elevated") return "Elevated";
+  if (status === "active") return "Active";
+  return "Quiet";
+}
+
+function newsImpactLabel(impact: string): string {
+  if (impact === "shock_risk") return "Shock risk";
+  if (impact === "confidence_down") return "Confidence down";
+  if (impact === "watch") return "Watch divergence";
+  return "None";
+}
+
+function newsPulseColor(status: string): string {
+  if (status === "shock") return colors.red;
+  if (status === "elevated") return colors.amber;
+  if (status === "active") return colors.cyan;
+  return colors.muted;
+}
+
+function formatNewsAge(value?: string | null): string {
+  if (!value) return "—";
+  const time = new Date(value).getTime();
+  if (!Number.isFinite(time)) return "—";
+
+  const deltaMinutes = Math.max(0, Math.round((Date.now() - time) / 60000));
+  if (deltaMinutes < 60) return `${deltaMinutes}m ago`;
+  const deltaHours = Math.round(deltaMinutes / 60);
+  if (deltaHours < 48) return `${deltaHours}h ago`;
+  const deltaDays = Math.round(deltaHours / 24);
+  return `${deltaDays}d ago`;
 }
 
 function dateOnly(value: unknown): string {
@@ -673,9 +750,9 @@ export default function DashboardPage() {
   const [harvestOpen, setHarvestOpen] = useState(false);
   const [profiles, setProfiles] = useState<any[]>([]);
   const [expandedTickers, setExpandedTickers] = useState<Record<string, boolean>>({});
-  const [news, setNews] = useState<NewsItem[]>([]);
-  const [calendar, setCalendar] = useState<CalendarItem[]>([]);
-  const [newsStatus, setNewsStatus] = useState("provider integration pending");
+  const [newsPulses, setNewsPulses] = useState<DashboardNewsPulse[]>([]);
+  const [newsLoading, setNewsLoading] = useState(false);
+  const [newsStatus, setNewsStatus] = useState("News Pulse idle.");
   const [centralTickers, setCentralTickers] = useState<SavedTicker[]>([]);
   const [centralEntitlement, setCentralEntitlement] = useState<Entitlement | null>(null);
   const [centralUniverse, setCentralUniverse] = useState<UniverseTicker[]>([]);
@@ -718,30 +795,6 @@ export default function DashboardPage() {
   }, [mounted, tickers]);
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function loadNews() {
-      const activeTickers = tickers.slice(0, 10);
-      const [newsItems, calendarItems] = await Promise.all([
-        tryFetchNews(activeTickers),
-        tryFetchMarketCalendar(),
-      ]);
-
-      if (cancelled) return;
-
-      setNews(newsItems);
-      setCalendar(calendarItems);
-      setNewsStatus(newsItems.length || calendarItems.length ? "LIVE" : "provider integration pending");
-    }
-
-    loadNews();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [tickers]);
-
-  useEffect(() => {
     refreshCentralCommandHub();
     loadCentralUniverse();
     loadNNReadiness();
@@ -755,6 +808,35 @@ export default function DashboardPage() {
       if (response.ok && Array.isArray(payload?.tickers)) setCentralUniverse(payload.tickers);
     } catch {
       // Helpful, but not required for the dashboard to render.
+    }
+  }
+
+  async function loadDashboardNewsPulse(symbolsOverride?: string[]) {
+    const symbols = uniqueTickers(symbolsOverride ?? centralTickers.map((slot) => slot.symbol));
+
+    if (!symbols.length) {
+      setNewsPulses([]);
+      setNewsStatus("No locked ticker slots yet. News Pulse will activate after tickers are added.");
+      return;
+    }
+
+    setNewsLoading(true);
+    setNewsStatus(`Loading News Pulse for ${symbols.length} locked ticker(s)...`);
+
+    try {
+      const pulses = await fetchDashboardNewsPulse(symbols);
+      setNewsPulses(pulses);
+
+      const activeCount = pulses.filter((pulse) => pulse.status !== "quiet").length;
+      const materialCount = pulses.filter((pulse) => safeNum(pulse.materiality) > 0 || pulse.count24h > 0).length;
+      setNewsStatus(activeCount || materialCount
+        ? `${activeCount} active ticker(s), ${materialCount} with material news context.`
+        : "No material ticker news found for locked tickers.");
+    } catch (error: any) {
+      setNewsStatus(error?.message ?? "Could not load News Pulse.");
+      setNewsPulses(symbols.map((symbol) => quietNewsPulse(symbol)));
+    } finally {
+      setNewsLoading(false);
     }
   }
 
@@ -788,6 +870,7 @@ export default function DashboardPage() {
         setCentralRows([]);
         setCentralStatus("No central ticker slots yet. Seed founder defaults or add tickers from the universe.");
         setCentralLoadedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+        await loadDashboardNewsPulse([]);
         return;
       }
 
@@ -811,6 +894,7 @@ export default function DashboardPage() {
       setCentralRows(sorted);
       setCentralLoadedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
       setCentralStatus(`Loaded ${symbols.length} central ticker slot(s): ${sorted.filter((row) => row.status === "ready").length} forecast-ready, ${sorted.filter((row) => row.status === "surface-only").length} surface-only.`);
+      await loadDashboardNewsPulse(symbols);
     } catch (error: any) {
       setCentralStatus(error?.message ?? "Could not load central ticker command hub.");
       setCentralRows([]);
@@ -1112,6 +1196,11 @@ export default function DashboardPage() {
   const centralNeedsHarvest = centralRows.filter((row) => row.status === "needs-harvest").length;
   const centralTop = centralRows.find((row) => row.forecast) ?? centralRows[0] ?? null;
   const centralSymbols = centralTickers.map((slot) => normalizeTickerInput(slot.symbol)).filter(Boolean);
+  const newsQuiet = newsPulses.filter((pulse) => pulse.status === "quiet").length;
+  const newsActive = newsPulses.filter((pulse) => pulse.status === "active").length;
+  const newsElevated = newsPulses.filter((pulse) => pulse.status === "elevated").length;
+  const newsShock = newsPulses.filter((pulse) => pulse.status === "shock").length;
+  const newsRows = newsPulses.length ? newsPulses : centralSymbols.map((symbol) => quietNewsPulse(symbol));
 
   return (
     <AuthGate>
@@ -1388,59 +1477,71 @@ export default function DashboardPage() {
 
         <section style={styles.newsPanel}>
           <div style={styles.newsHeader}>
-            <strong>News</strong>
-            <span>{newsStatus}</span>
-            <strong>Market Calendar</strong>
-            <span>macro / earnings / OPEX</span>
-          </div>
-
-          <div style={styles.newsGrid}>
             <div>
-              {news.length ? (
-                news.map((item, index) => (
-                  <a key={`${item.title}-${index}`} href={item.url ?? "#"} style={styles.newsRow}>
-                    <strong>{item.ticker ?? "MARKET"}</strong>
-                    <span>{item.title}</span>
-                    <small>{item.source ?? "source"} {item.publishedAt ? `• ${item.publishedAt}` : ""}</small>
-                  </a>
-                ))
-              ) : (
-                tickers.slice(0, 6).map((ticker) => (
-                  <div key={ticker} style={styles.newsRow}>
-                    <strong>{ticker}</strong>
-                    <span>News feed pending provider integration for {ticker}</span>
-                    <small>WheelDesk • {TODAY}</small>
-                  </div>
-                ))
-              )}
+              <strong>News Pulse</strong>
+              <span>Ticker-scoped headlines that may affect forecast confidence or explain divergence.</span>
             </div>
-
-            <div>
-              {calendar.length ? (
-                calendar.map((event, index) => (
-                  <div key={`${event.date}-${event.title}-${index}`} style={styles.newsRow}>
-                    <strong style={{ color: event.impact === "high" ? colors.red : colors.amber }}>{event.date}</strong>
-                    <span>{event.title}</span>
-                    <small>{event.type ?? "calendar"} {event.impact ? `• ${event.impact} impact` : ""}</small>
-                  </div>
-                ))
-              ) : (
-                <>
-                  <div style={styles.newsRow}>
-                    <strong style={{ color: colors.amber }}>{TODAY}</strong>
-                    <span>Market calendar integration pending</span>
-                    <small>medium impact</small>
-                  </div>
-                  <div style={styles.newsRow}>
-                    <strong style={{ color: colors.red }}>Weekly</strong>
-                    <span>OPEX / earnings / macro events will populate here</span>
-                    <small>high impact</small>
-                  </div>
-                </>
-              )}
+            <div style={styles.newsHeaderActions}>
+              <span>{newsLoading ? "Refreshing..." : newsStatus}</span>
+              <button
+                type="button"
+                onClick={() => loadDashboardNewsPulse(centralSymbols)}
+                disabled={newsLoading || !centralSymbols.length}
+                style={styles.newsButton}
+              >
+                Refresh News Pulse
+              </button>
+              <a href="/news" style={styles.newsButton}>Open News</a>
             </div>
           </div>
+
+          <div style={styles.newsSummaryGrid}>
+            <div style={styles.newsStatCard}><span>Quiet</span><strong>{newsQuiet}</strong></div>
+            <div style={styles.newsStatCard}><span>Active</span><strong style={{ color: colors.cyan }}>{newsActive}</strong></div>
+            <div style={styles.newsStatCard}><span>Elevated</span><strong style={{ color: colors.amber }}>{newsElevated}</strong></div>
+            <div style={styles.newsStatCard}><span>Shock Risk</span><strong style={{ color: colors.red }}>{newsShock}</strong></div>
+          </div>
+
+          {centralSymbols.length ? (
+            <div style={styles.newsTableWrap}>
+              <div style={styles.newsTableHeader}>
+                <span>Ticker</span>
+                <span>Pulse</span>
+                <span>24h</span>
+                <span>Materiality</span>
+                <span>Sentiment</span>
+                <span>Forecast impact</span>
+                <span>Latest headline</span>
+                <span>Age</span>
+                <span>Open</span>
+              </div>
+
+              {newsRows.map((pulse) => (
+                <div key={pulse.symbol} style={styles.newsPulseRow}>
+                  <strong style={styles.newsTicker}>{pulse.symbol}</strong>
+                  <span style={{ ...styles.newsStatusPill, color: newsPulseColor(pulse.status), borderColor: newsPulseColor(pulse.status) }}>
+                    {newsPulseLabel(pulse.status)}
+                  </span>
+                  <span>{safeInt(pulse.count24h, "0")}</span>
+                  <span>{safeInt(pulse.materiality, "0")}</span>
+                  <span>{pulse.sentiment === null ? "—" : pulse.sentiment > 0 ? `+${pulse.sentiment}` : pulse.sentiment}</span>
+                  <span>{newsImpactLabel(pulse.forecastImpact)}</span>
+                  <span style={styles.newsHeadline}>{pulse.latestHeadline ?? "No material ticker news detected."}</span>
+                  <span>{formatNewsAge(pulse.latestPublishedAt)}</span>
+                  <span style={styles.newsActions}>
+                    <a href={`/news?symbol=${encodeURIComponent(pulse.symbol)}`} style={styles.inlineAction}>News</a>
+                    <a href={`/control-center/chart?ticker=${encodeURIComponent(pulse.symbol)}`} style={styles.inlineAction}>Chart</a>
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={styles.emptyNewsState}>
+              No locked ticker slots yet. Add tickers in the Dashboard Command Hub to activate ticker-scoped News Pulse.
+            </div>
+          )}
         </section>
+
       </main>
     </div>
   
@@ -1989,28 +2090,112 @@ const styles: Record<string, React.CSSProperties> = {
   newsPanel: {
     marginTop: "0.8rem",
     background: colors.row,
-    borderTop: `1px solid ${colors.border}`,
+    border: `1px solid ${colors.border}`,
+    borderRadius: 10,
+    overflow: "hidden",
   },
   newsHeader: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
     gap: "1rem",
     background: "#0f2433",
     color: "#fff",
-    padding: "0.35rem 0.5rem",
-  },
-  newsGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))",
-    gap: 0,
-  },
-  newsRow: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))",
-    color: "#fff",
-    textDecoration: "none",
+    padding: "0.55rem 0.65rem",
     borderBottom: `1px solid ${colors.borderSoft}`,
-    padding: "0.45rem 0.35rem",
+  },
+  newsHeaderActions: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    flexWrap: "wrap",
+    gap: 8,
+    color: colors.muted,
     fontSize: 12,
+  },
+  newsButton: {
+    border: `1px solid ${colors.cyan}`,
+    background: "#0b3442",
+    color: colors.cyan,
+    padding: "0.42rem 0.6rem",
+    borderRadius: 7,
+    fontWeight: 900,
+    cursor: "pointer",
+    textDecoration: "none",
+  },
+  newsSummaryGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 160px), 1fr))",
+    gap: 8,
+    padding: "0.65rem",
+    borderBottom: `1px solid ${colors.borderSoft}`,
+  },
+  newsStatCard: {
+    display: "grid",
+    gap: 4,
+    background: "#07111b",
+    border: `1px solid ${colors.borderSoft}`,
+    borderRadius: 8,
+    padding: "0.55rem 0.65rem",
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: 800,
+  },
+  newsTableWrap: {
+    padding: "0.4rem 0.65rem 0.65rem",
+    overflowX: "auto",
+  },
+  newsTableHeader: {
+    minWidth: 1180,
+    display: "grid",
+    gridTemplateColumns: "0.6fr 0.9fr 0.45fr 0.75fr 0.75fr 1fr 2.4fr 0.7fr 0.7fr",
+    gap: 8,
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: 900,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    borderBottom: `1px solid ${colors.borderSoft}`,
+    padding: "0.45rem 0.25rem",
+  },
+  newsPulseRow: {
+    minWidth: 1180,
+    display: "grid",
+    gridTemplateColumns: "0.6fr 0.9fr 0.45fr 0.75fr 0.75fr 1fr 2.4fr 0.7fr 0.7fr",
+    gap: 8,
+    alignItems: "center",
+    color: colors.text,
+    borderBottom: `1px solid ${colors.borderSoft}`,
+    padding: "0.5rem 0.25rem",
+    fontSize: 12,
+  },
+  newsTicker: {
+    color: colors.text,
+    fontWeight: 950,
+  },
+  newsStatusPill: {
+    display: "inline-flex",
+    width: "fit-content",
+    border: `1px solid ${colors.border}`,
+    borderRadius: 999,
+    padding: "0.16rem 0.45rem",
+    fontSize: 11,
+    fontWeight: 900,
+  },
+  newsHeadline: {
+    color: colors.muted,
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
+  newsActions: {
+    display: "inline-flex",
+    gap: 8,
+    alignItems: "center",
+  },
+  emptyNewsState: {
+    padding: "0.85rem",
+    color: colors.muted,
+    fontSize: 13,
   },
 }; 
