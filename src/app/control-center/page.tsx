@@ -560,6 +560,7 @@ export default function ControlCenterPage() {
   const [profiles, setProfiles] = useState<PortfolioProfile[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState("");
   const [status, setStatus] = useState("");
+  const [canonicalChainTraderEdge, setCanonicalChainTraderEdge] = useState<ReturnType<typeof buildTraderEdgeSummary> | null>(null);
   const [chartExpanded, setChartExpanded] = useState(false);
   const [overlays, setOverlays] = useState<OverlayFlags>(defaultOverlayFlags);
 
@@ -793,7 +794,38 @@ export default function ControlCenterPage() {
     });
   }, [ticker, fullSurfaceForAnalysis, candles, analysisPrice]);
 
-  const chainTraderEdge = useMemo(() => {
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadCanonicalTraderEdge() {
+      if (!ticker || !selectedExpiration) {
+        setCanonicalChainTraderEdge(null);
+        return;
+      }
+
+      try {
+        const response = await fetch(
+          `/api/engine/trader-edge?ticker=${encodeURIComponent(ticker)}&expiration=${encodeURIComponent(selectedExpiration)}&timeframe=daily`,
+          { cache: "no-store" }
+        );
+        const payload = await response.json().catch(() => null);
+        if (!cancelled && response.ok && payload?.summary) {
+          setCanonicalChainTraderEdge(payload.summary);
+        } else if (!cancelled) {
+          setCanonicalChainTraderEdge(null);
+        }
+      } catch {
+        if (!cancelled) setCanonicalChainTraderEdge(null);
+      }
+    }
+
+    loadCanonicalTraderEdge();
+    return () => {
+      cancelled = true;
+    };
+  }, [ticker, selectedExpiration, selectedSurface?.snapshotDate]);
+
+  const fallbackChainTraderEdge = useMemo(() => {
     if (!selectedChainSurface) return null;
 
     return buildTraderEdgeSummary({
@@ -803,6 +835,8 @@ export default function ControlCenterPage() {
       livePrice: analysisPrice,
     });
   }, [ticker, selectedChainSurface, candles, analysisPrice]);
+
+  const chainTraderEdge = canonicalChainTraderEdge ?? fallbackChainTraderEdge;
 
   const surfaceWallMigration = useMemo(() => {
     if (!fullSurfaceForAnalysis) return null;

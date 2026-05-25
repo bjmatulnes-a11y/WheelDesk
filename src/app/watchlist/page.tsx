@@ -332,6 +332,23 @@ async function fetchForecastForTicker(ticker: string): Promise<ForecastDbRow | n
   }
 }
 
+
+async function fetchCanonicalTraderEdge(ticker: string, expiration: string): Promise<TraderEdgeSummary | null> {
+  if (!ticker || !expiration) return null;
+
+  try {
+    const response = await fetch(
+      `/api/engine/trader-edge?ticker=${encodeURIComponent(ticker)}&expiration=${encodeURIComponent(expiration)}&timeframe=daily`,
+      { cache: "no-store" }
+    );
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.summary) return null;
+    return payload.summary as TraderEdgeSummary;
+  } catch {
+    return null;
+  }
+}
+
 async function fetchCandles(ticker: string): Promise<CandleRecord[]> {
   try {
     const rows = await getPriceSeries(ticker as any, "daily" as any);
@@ -784,7 +801,11 @@ export default function WatchlistCommandPage() {
 
         if (surface) {
           try {
-            summary = buildTraderEdgeSummary({ ticker, surface: edgeSurface ?? surface, candles });
+            summary = await fetchCanonicalTraderEdge(ticker, selectedExpiration);
+            if (!summary) {
+              summary = buildTraderEdgeSummary({ ticker, surface: edgeSurface ?? surface, candles });
+              dataNotes.push("Trader Edge used local fallback because canonical engine was unavailable.");
+            }
           } catch (error) {
             dataNotes.push(error instanceof Error ? error.message : "Trader Edge calculation failed.");
           }

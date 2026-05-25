@@ -666,6 +666,7 @@ export default function WheelWorkspacePage() {
   const [selectedExpiration, setSelectedExpiration] = useState("");
   const [surfaceStatus, setSurfaceStatus] = useState("");
   const [surfaceLoading, setSurfaceLoading] = useState(false);
+  const [canonicalTraderEdge, setCanonicalTraderEdge] = useState<TraderEdgeSummary | null>(null);
   const [manualGroups, setManualGroups] = useState<UserPositionGroup[]>([]);
   const [showGroupEditor, setShowGroupEditor] = useState(false);
     
@@ -970,7 +971,38 @@ Math.random().toString(36).slice(2)
     return readCandles(ticker);
   }, [ticker, surfaceSnapshot?.snapshotDate]);
 
-  const edgeSummary = useMemo(() => {
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadCanonicalTraderEdge() {
+      if (!ticker || !selectedExpiration) {
+        setCanonicalTraderEdge(null);
+        return;
+      }
+
+      try {
+        const response = await fetch(
+          `/api/engine/trader-edge?ticker=${encodeURIComponent(ticker)}&expiration=${encodeURIComponent(selectedExpiration)}&timeframe=daily`,
+          { cache: "no-store" }
+        );
+        const payload = await response.json().catch(() => null);
+        if (!cancelled && response.ok && payload?.summary) {
+          setCanonicalTraderEdge(payload.summary as TraderEdgeSummary);
+        } else if (!cancelled) {
+          setCanonicalTraderEdge(null);
+        }
+      } catch {
+        if (!cancelled) setCanonicalTraderEdge(null);
+      }
+    }
+
+    loadCanonicalTraderEdge();
+    return () => {
+      cancelled = true;
+    };
+  }, [ticker, selectedExpiration, surfaceSnapshot?.snapshotDate]);
+
+  const fallbackEdgeSummary = useMemo(() => {
     if (!surfaceSnapshot) return null;
     return buildTraderEdgeSummary({
       ticker,
@@ -979,6 +1011,8 @@ Math.random().toString(36).slice(2)
       livePrice: spot || null
     });
   }, [ticker, surfaceSnapshot, edgeCandles, spot]);
+
+  const edgeSummary = canonicalTraderEdge ?? fallbackEdgeSummary;
 
   const wallMigration = useMemo(() => {
     if (!surfaceSnapshot) return null;
