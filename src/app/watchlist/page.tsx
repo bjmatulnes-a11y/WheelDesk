@@ -9,6 +9,7 @@ import {
   latestSurfaceByTicker,
   type TraderEdgeSummary,
 } from "../../lib/trader-edge-engine";
+import { getDefaultExpirationContext, makeSingleExpirationSurface } from "../../lib/trader-edge-context";
 import {
   buildWallMigrationSummary,
   findPriorSurfaceForTicker,
@@ -89,6 +90,8 @@ type WatchlistRow = {
   ticker: string;
   savedTicker: SavedTicker;
   surface: OptionSurfaceSnapshot | null;
+  edgeSurface: OptionSurfaceSnapshot | null;
+  selectedExpiration: string;
   forecast: ForecastDbRow | null;
   summary: TraderEdgeSummary | null;
   migration: WallMigrationSummary | null;
@@ -765,7 +768,10 @@ export default function WatchlistCommandPage() {
         });
 
         const surface = latest.find((item) => normalizeTicker((item as any).ticker) === ticker) ?? null;
-        const priorSurface = surface ? findPriorSurfaceForTicker(deduped, ticker, (surface as any).snapshotDate) : null;
+        const selectedExpiration = getDefaultExpirationContext(surface);
+        const edgeSurface = makeSingleExpirationSurface(surface, selectedExpiration);
+        const priorSurfaceRaw = surface ? findPriorSurfaceForTicker(deduped, ticker, (surface as any).snapshotDate) : null;
+        const priorSurface = makeSingleExpirationSurface(priorSurfaceRaw, selectedExpiration) ?? priorSurfaceRaw;
         const forecast = forecastMap[ticker] ?? null;
         const candles = candleMap[ticker] ?? [];
         let summary: TraderEdgeSummary | null = null;
@@ -778,20 +784,20 @@ export default function WatchlistCommandPage() {
 
         if (surface) {
           try {
-            summary = buildTraderEdgeSummary({ ticker, surface, candles });
+            summary = buildTraderEdgeSummary({ ticker, surface: edgeSurface ?? surface, candles });
           } catch (error) {
             dataNotes.push(error instanceof Error ? error.message : "Trader Edge calculation failed.");
           }
 
           try {
-            migration = buildWallMigrationSummary({ currentSurface: surface, priorSurface });
+            migration = buildWallMigrationSummary({ currentSurface: edgeSurface ?? surface, priorSurface });
           } catch (error) {
             dataNotes.push(error instanceof Error ? error.message : "Wall migration calculation failed.");
           }
 
           try {
             const currentPrice = Number((surface as any)?.price?.close ?? (surface as any)?.spot ?? 0);
-            const oi = buildOIIntelligenceView({ surface, currentPrice });
+            const oi = buildOIIntelligenceView({ surface: edgeSurface ?? surface, currentPrice });
             oiRows = oi?.rows?.length ?? 0;
             oiAnomalies = oi?.report?.anomalies?.length ?? 0;
           } catch (error) {
@@ -800,7 +806,7 @@ export default function WatchlistCommandPage() {
 
           try {
             const currentPrice = Number((surface as any)?.price?.close ?? (surface as any)?.spot ?? 0);
-            const flow = buildFlowIntelligenceView({ surface, currentPrice });
+            const flow = buildFlowIntelligenceView({ surface: edgeSurface ?? surface, currentPrice });
             flowBias = String((flow as any)?.bias ?? "N/A").toUpperCase();
             flowConfidence = Number((flow as any)?.confidence ?? 0);
           } catch (error) {
@@ -826,6 +832,8 @@ export default function WatchlistCommandPage() {
           ticker,
           savedTicker,
           surface,
+          edgeSurface,
+          selectedExpiration,
           forecast,
           summary,
           migration,
@@ -1099,7 +1107,7 @@ export default function WatchlistCommandPage() {
               <div>
                 <h3 style={{ margin: 0, color: colors.white }}>Central Ticker Triage</h3>
                 <p style={{ margin: "0.35rem 0 0", color: colors.muted, fontSize: 13 }}>
-                  Ranked by action priority, Trader Edge, OI Field forecast coverage, trap risk, freshness, wall migration, and flow pressure.
+                  Ranked by action priority and canonical selected-chain Trader Edge. The displayed chain is the same default expiration context used by Control Center and Wheel unless manually changed there.
                 </p>
               </div>
             </div>

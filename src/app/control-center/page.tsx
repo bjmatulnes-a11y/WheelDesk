@@ -25,6 +25,7 @@ import { buildIVSurfaceSummary } from "../../lib/iv-surface-engine";
 import { listPortfolioProfiles } from "../../lib/portfolio-store";
 import { type PortfolioProfile } from "../../lib/portfolio-types";
 import { buildTraderEdgeSummary } from "../../lib/trader-edge-engine";
+import { getExpirationContextOptions, makeSingleExpirationSurface, findMatchingExpirationSurface as findSharedMatchingExpirationSurface } from "../../lib/trader-edge-context";
 import { type ChainSnapshot, SUPPORTED_TICKERS, type SupportedTicker, type Timeframe } from "../../lib/types";
 import { buildWallMigrationSummary, findPriorSurfaceForTicker } from "../../lib/oi-wall-migration-engine";
 import { getPriceSeries } from "../../lib/data-provider";
@@ -716,26 +717,7 @@ export default function ControlCenterPage() {
     return surfaceSnapshots.find((surface) => surface.snapshotDate === selectedSurfaceDate) ?? null;
   }, [surfaceSnapshots, selectedSurfaceDate]);
 
-  const expirationOptions = useMemo(() => {
-    const chains = (selectedSurface?.chains ?? []) as any[];
-    const maxOi = Math.max(0, ...chains.map((chain) => totalChainOi(chain)));
-
-    return chains
-      .map((chain: any) => {
-        const expiration = expirationOf(chain);
-        const chainOi = totalChainOi(chain);
-
-        return {
-          expiration,
-          dte: chain?.dteAtCapture ?? dteFromExpiration(expiration, selectedSurface?.snapshotDate ?? ""),
-          score: chainScore(chain),
-          dominanceScore: maxOi > 0 ? (chainOi / maxOi) * 100 : null,
-          totalOi: chainOi,
-        };
-      })
-      .filter((item) => item.expiration)
-      .sort((a, b) => String(a.expiration).localeCompare(String(b.expiration)));
-  }, [selectedSurface]);
+  const expirationOptions = useMemo(() => getExpirationContextOptions(selectedSurface), [selectedSurface]);
 
   useEffect(() => {
     if (!selectedSurface) {
@@ -765,8 +747,8 @@ export default function ControlCenterPage() {
   const fullSurfaceForAnalysis = selectedSurface;
 
   const selectedChainSurface = useMemo(
-    () => makeSingleChainSurface(selectedSurface, selectedChain),
-    [selectedSurface, selectedChain]
+    () => makeSingleExpirationSurface(selectedSurface, selectedExpiration),
+    [selectedSurface, selectedExpiration]
   );
 
   const priorFullSurface = useMemo(() => {
@@ -780,7 +762,7 @@ export default function ControlCenterPage() {
   }, [fullSurfaceForAnalysis, surfaceSnapshots]);
 
   const priorSelectedChainSurface = useMemo(() => {
-    return findMatchingExpirationSurface(priorFullSurface, selectedExpiration);
+    return findSharedMatchingExpirationSurface(priorFullSurface, selectedExpiration);
   }, [priorFullSurface, selectedExpiration]);
 
   const selectedProfile = useMemo(
