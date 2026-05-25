@@ -550,8 +550,9 @@ async function fetchDashboardNewsPulse(symbols: string[]): Promise<DashboardNews
   if (!normalized.length) return [];
 
   try {
-    const response = await fetch(`/api/news/pulse?symbols=${encodeURIComponent(normalized.join(","))}&hours=168`, {
+    const response = await fetch(`/api/news/pulse?symbols=${encodeURIComponent(normalized.join(","))}&hours=24`, {
       cache: "no-store",
+      headers: await getDashboardAuthHeaders(false),
     });
 
     const payload = await response.json().catch(() => null);

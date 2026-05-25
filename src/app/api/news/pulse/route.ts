@@ -110,7 +110,7 @@ export async function GET(request: Request) {
       if (event) grouped.get(row.symbol)?.push(event);
     }
 
-    const pulses = symbols.map((symbol) => buildNewsPulse(symbol, grouped.get(symbol) ?? [], hours));
+    const pulses = symbols.map((symbol) => buildNewsPulse(symbol, grouped.get(symbol) ?? [], Math.min(hours, 24)));
 
     return NextResponse.json({ ok: true, hours, pulses, symbols });
   } catch (error) {
