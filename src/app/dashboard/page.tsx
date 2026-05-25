@@ -550,7 +550,7 @@ async function fetchDashboardNewsPulse(symbols: string[]): Promise<DashboardNews
   if (!normalized.length) return [];
 
   try {
-    const response = await fetch(`/api/news/pulse?symbols=${encodeURIComponent(normalized.join(","))}&hours=24`, {
+    const response = await fetch(`/api/news/pulse?symbols=${encodeURIComponent(normalized.join(","))}&hours=168`, {
       cache: "no-store",
     });
 
@@ -752,6 +752,7 @@ export default function DashboardPage() {
   const [expandedTickers, setExpandedTickers] = useState<Record<string, boolean>>({});
   const [newsPulses, setNewsPulses] = useState<DashboardNewsPulse[]>([]);
   const [newsLoading, setNewsLoading] = useState(false);
+  const [newsHarvesting, setNewsHarvesting] = useState(false);
   const [newsStatus, setNewsStatus] = useState("News Pulse idle.");
   const [centralTickers, setCentralTickers] = useState<SavedTicker[]>([]);
   const [centralEntitlement, setCentralEntitlement] = useState<Entitlement | null>(null);
@@ -839,6 +840,47 @@ export default function DashboardPage() {
       setNewsLoading(false);
     }
   }
+
+  async function runDashboardNewsHarvest() {
+    const symbols = uniqueTickers(centralTickers.map((slot) => slot.symbol));
+
+    if (!symbols.length) {
+      setNewsStatus("No locked ticker slots yet. News harvest will activate after tickers are added.");
+      return;
+    }
+
+    setNewsHarvesting(true);
+    setNewsStatus(`Running live news harvest for ${symbols.length} locked ticker(s)...`);
+
+    try {
+      const response = await fetch("/api/news/harvest", {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          ...(await getDashboardAuthHeaders()),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          symbols,
+          hours: 168,
+        }),
+      });
+
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok || !payload?.ok) {
+        throw new Error(payload?.error ?? `News harvest failed: ${response.status}`);
+      }
+
+      setNewsStatus(`News harvest complete: inserted ${safeInt(payload.totalInserted, "0")} headline link(s), failed ${safeInt(payload.totalFailed, "0")}.`);
+      await loadDashboardNewsPulse(symbols);
+    } catch (error: any) {
+      setNewsStatus(error?.message ?? "Could not run News Harvest.");
+    } finally {
+      setNewsHarvesting(false);
+    }
+  }
+
 
   async function loadCentralWatchlist(): Promise<SavedTicker[]> {
     const response = await fetch("/api/user-watchlist", {
@@ -1479,17 +1521,25 @@ export default function DashboardPage() {
           <div style={styles.newsHeader}>
             <div>
               <strong>News Pulse</strong>
-              <span>Ticker-scoped headlines that may affect forecast confidence or explain divergence.</span>
+              <span>Ticker-scoped headlines from the locked universe. 24h pulse + latest cached headlines help explain forecast divergence.</span>
             </div>
             <div style={styles.newsHeaderActions}>
-              <span>{newsLoading ? "Refreshing..." : newsStatus}</span>
+              <span>{newsHarvesting ? "Harvesting live news..." : newsLoading ? "Refreshing cache..." : newsStatus}</span>
               <button
                 type="button"
                 onClick={() => loadDashboardNewsPulse(centralSymbols)}
-                disabled={newsLoading || !centralSymbols.length}
+                disabled={newsLoading || newsHarvesting || !centralSymbols.length}
                 style={styles.newsButton}
               >
-                Refresh News Pulse
+                Refresh Cache
+              </button>
+              <button
+                type="button"
+                onClick={runDashboardNewsHarvest}
+                disabled={newsLoading || newsHarvesting || !centralSymbols.length}
+                style={{ ...styles.newsButton, borderColor: colors.green, color: colors.green }}
+              >
+                Run News Harvest
               </button>
               <a href="/news" style={styles.newsButton}>Open News</a>
             </div>
@@ -1526,7 +1576,7 @@ export default function DashboardPage() {
                   <span>{safeInt(pulse.materiality, "0")}</span>
                   <span>{pulse.sentiment === null ? "—" : pulse.sentiment > 0 ? `+${pulse.sentiment}` : pulse.sentiment}</span>
                   <span>{newsImpactLabel(pulse.forecastImpact)}</span>
-                  <span style={styles.newsHeadline}>{pulse.latestHeadline ?? "No material ticker news detected."}</span>
+                  <span style={styles.newsHeadline}>{pulse.latestHeadline ?? "No recent material ticker news detected."}</span>
                   <span>{formatNewsAge(pulse.latestPublishedAt)}</span>
                   <span style={styles.newsActions}>
                     <a href={`/news?symbol=${encodeURIComponent(pulse.symbol)}`} style={styles.inlineAction}>News</a>
