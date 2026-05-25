@@ -693,7 +693,12 @@ export default function WheelWorkspacePage() {
     
 
   const structure = useMemo(() => getSurfaceStructure(surfaceSnapshot),[surfaceSnapshot]);
-  const spot = useMemo(() => getSurfaceSpot(surfaceSnapshot),[surfaceSnapshot]);  
+  const spot = useMemo(() => getSurfaceSpot(surfaceSnapshot),[surfaceSnapshot]);
+
+  // Score-context rule:
+  // - officialTraderEdgeSummary = full saved surface for ticker/date. This is the canonical Trader Edge score used for ranking/watchlist/control-center context.
+  // - edgeSummary = selected expiration chain. This is the wheel execution score used for CSP/covered-call strike handling.
+  // Keeping both visible prevents the Wheel page from looking like it disagrees with Trader Edge when it is simply scoped to one expiration.
 
  const acceptSuggestedGrouping = () => {
 if (!selectedProfile?.id || !ticker) return;
@@ -1000,6 +1005,16 @@ Math.random().toString(36).slice(2)
     return readCandles(ticker);
   }, [ticker, surfaceSnapshot?.snapshotDate]);
 
+  const officialTraderEdgeSummary = useMemo(() => {
+    if (!selectedFullSurface) return null;
+    return buildTraderEdgeSummary({
+      ticker,
+      surface: selectedFullSurface,
+      candles: edgeCandles,
+      livePrice: spot || null
+    });
+  }, [ticker, selectedFullSurface, edgeCandles, spot]);
+
   const edgeSummary = useMemo(() => {
     if (!surfaceSnapshot) return null;
     return buildTraderEdgeSummary({
@@ -1009,6 +1024,12 @@ Math.random().toString(36).slice(2)
       livePrice: spot || null
     });
   }, [ticker, surfaceSnapshot, edgeCandles, spot]);
+
+  const traderEdgeScoreDelta = useMemo(() => {
+    if (!officialTraderEdgeSummary || !edgeSummary) return null;
+    const delta = edgeSummary.edgeScore - officialTraderEdgeSummary.edgeScore;
+    return Number.isFinite(delta) ? delta : null;
+  }, [officialTraderEdgeSummary, edgeSummary]);
 
   const wallMigration = useMemo(() => {
     if (!surfaceSnapshot) return null;
@@ -1192,7 +1213,7 @@ Math.random().toString(36).slice(2)
         ) : null}
 
         <p style={{ color: wheelColors.teal, margin: "0.5rem 0 0", fontSize: 12, fontWeight: 800 }}>
-          Wheel Trader Edge is now locked to the selected Supabase surface date and selected expiration chain. If this differs from Control Center, compare the Surface / Chain context first.
+          Trader Edge score is canonicalized to the full saved Supabase surface/date. Wheel execution still uses the selected expiration chain for CSP/covered-call strikes.
         </p>
 
         {selectedProfile && !hasTickerPosition && (
@@ -1250,7 +1271,7 @@ Math.random().toString(36).slice(2)
               </div>
               <h3 style={{ ...wheelStyles.sectionTitle, marginBottom: 4 }}>Trade posture from OI + portfolio context</h3>
               <p style={{ ...wheelStyles.muted, margin: 0, fontSize: 13 }}>
-                Saved Supabase surface, Trader Edge, snapped wheel strikes, wall migration, dealer pressure proxy, and current position exposure.
+                Official Trader Edge uses the full saved surface. Wheel strike execution uses the selected expiration chain.
               </p>
             </div>
 
@@ -1264,11 +1285,15 @@ Math.random().toString(36).slice(2)
                 textAlign: "right",
               }}
             >
-              <div style={{ color: scoreColor(edgeSummary.edgeScore), fontSize: 28, fontWeight: 950, lineHeight: 1 }}>
-                {edgeSummary.edgeScore.toFixed(1)}
+              <div style={{ color: scoreColor(officialTraderEdgeSummary?.edgeScore ?? edgeSummary.edgeScore), fontSize: 28, fontWeight: 950, lineHeight: 1 }}>
+                {(officialTraderEdgeSummary?.edgeScore ?? edgeSummary.edgeScore).toFixed(1)}
               </div>
               <div style={{ color: wheelColors.muted, fontSize: 11, marginTop: 4, fontWeight: 900, textTransform: "uppercase" }}>
-                Dominant Edge / 100
+                Official Trader Edge / 100
+              </div>
+              <div style={{ color: wheelColors.muted, fontSize: 11, marginTop: 6 }}>
+                Chain edge: <strong style={{ color: scoreColor(edgeSummary.edgeScore) }}>{edgeSummary.edgeScore.toFixed(1)}</strong>
+                {traderEdgeScoreDelta != null ? ` · Δ ${traderEdgeScoreDelta >= 0 ? "+" : ""}${traderEdgeScoreDelta.toFixed(1)}` : ""}
               </div>
             </div>
           </div>
@@ -1317,6 +1342,16 @@ Math.random().toString(36).slice(2)
               gap: "0.6rem",
             }}
           >
+            <div style={wheelStyles.signalTile}>
+              <span>Official Edge</span>
+              <strong style={{ color: scoreColor(officialTraderEdgeSummary?.edgeScore ?? edgeSummary.edgeScore) }}>
+                {(officialTraderEdgeSummary?.edgeScore ?? edgeSummary.edgeScore).toFixed(0)}
+              </strong>
+            </div>
+            <div style={wheelStyles.signalTile}>
+              <span>Chain Edge</span>
+              <strong style={{ color: scoreColor(edgeSummary.edgeScore) }}>{edgeSummary.edgeScore.toFixed(0)}</strong>
+            </div>
             <div style={wheelStyles.signalTile}>
               <span>Regime</span>
               <strong>{edgeSummary.regime}</strong>
