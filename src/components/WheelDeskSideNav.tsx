@@ -3,7 +3,7 @@
 import Link from "next/link";
 import AuthStatusPill from "./auth/AuthStatusPill";
 
-type NavKey = "dashboard" | "watchlist" | "scanner" | "positions" | "wheel" | "control-center" | "validation";
+type NavKey = "dashboard" | "watchlist" | "scanner" | "positions" | "wheel" | "control-center" | "validation" | "News";
 
 type NavItem = {
   href: string;
@@ -22,6 +22,7 @@ const navItems: NavItem[] = [
   { key: "wheel", href: "/dashboard/wheel", label: "Wheel" },
   { key: "validation", href: "/dashboard/validation", label: "Validation" },
   { key: "positions", href: "/portfolio", label: "Portfolio" },
+  { key: "news", href: "/news", label: "News" },
 ];
 
 export function WheelDeskSideNav({ active }: WheelDeskSideNavProps) {
