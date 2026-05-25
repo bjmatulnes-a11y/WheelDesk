@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseServer } from "../../../../lib/supabase-server";
+import { getAuthenticatedUserFromRequest } from "../../../../lib/billing/auth-request";
 import { buildNewsPulse } from "../../../../lib/news/news-provider";
 import type { NormalizedNewsEvent } from "../../../../lib/news/news-types";
 
@@ -22,12 +23,31 @@ type LinkedNewsRow = {
   } | null;
 };
 
+function normalizeSymbol(value: string | null | undefined): string {
+  return (value ?? "").trim().toUpperCase().replace(/[^A-Z0-9.\-]/g, "").slice(0, 12);
+}
+
 function normalizeSymbols(value: string | null): string[] {
   return (value ?? "")
     .split(",")
-    .map((symbol) => symbol.trim().toUpperCase().replace(/[^A-Z0-9.\-]/g, "").slice(0, 12))
+    .map((symbol) => normalizeSymbol(symbol))
     .filter(Boolean)
     .slice(0, 50);
+}
+
+async function userLockedSymbols(userId: string): Promise<string[]> {
+  const { data, error } = await supabaseServer
+    .from("user_watchlist_tickers")
+    .select("symbol")
+    .eq("user_id", userId)
+    .order("slot_index", { ascending: true, nullsFirst: false })
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return (data ?? []).map((row) => normalizeSymbol(String(row.symbol ?? ""))).filter(Boolean);
 }
 
 function toEvent(row: LinkedNewsRow): NormalizedNewsEvent | null {
@@ -50,15 +70,24 @@ function toEvent(row: LinkedNewsRow): NormalizedNewsEvent | null {
 }
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const symbols = normalizeSymbols(searchParams.get("symbols"));
-  const hours = Math.min(Math.max(Number(searchParams.get("hours") ?? 24), 1), 24 * 14);
-
-  if (!symbols.length) {
-    return NextResponse.json({ ok: false, error: "At least one symbol is required." }, { status: 400 });
-  }
-
   try {
+    const user = await getAuthenticatedUserFromRequest(request);
+    const { searchParams } = new URL(request.url);
+    const requestedSymbols = normalizeSymbols(searchParams.get("symbols"));
+    const lockedSymbols = await userLockedSymbols(user.id);
+    const lockedSet = new Set(lockedSymbols);
+    const symbols = (requestedSymbols.length ? requestedSymbols : lockedSymbols)
+      .filter((symbol) => lockedSet.has(symbol))
+      .slice(0, 50);
+    const hours = Math.min(Math.max(Number(searchParams.get("hours") ?? 24), 1), 24 * 14);
+
+    if (!symbols.length) {
+      return NextResponse.json(
+        { ok: false, error: "News Pulse is limited to your locked ticker slots. Add tracked tickers from Dashboard first." },
+        { status: 403 },
+      );
+    }
+
     const cutoff = new Date(Date.now() - Math.max(1, hours) * 36e5).toISOString();
     const { data, error } = await supabaseServer
       .from("news_ticker_links")
@@ -83,9 +112,10 @@ export async function GET(request: Request) {
 
     const pulses = symbols.map((symbol) => buildNewsPulse(symbol, grouped.get(symbol) ?? [], Math.min(hours, 24)));
 
-    return NextResponse.json({ ok: true, hours, pulses });
+    return NextResponse.json({ ok: true, hours, pulses, symbols });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not load news pulse.";
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    const status = /bearer|session|auth|login/i.test(message) ? 401 : 500;
+    return NextResponse.json({ ok: false, error: message }, { status });
   }
 }

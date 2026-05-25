@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseServer } from "../../../../lib/supabase-server";
+import { getAuthenticatedUserFromRequest } from "../../../../lib/billing/auth-request";
 import { buildNewsPulse, configuredNewsProvider, fetchTickerNews, hasNewsProviderCredentials } from "../../../../lib/news/news-provider";
 import type { NormalizedNewsEvent } from "../../../../lib/news/news-types";
 
@@ -29,6 +30,19 @@ function normalizeSymbol(value: string | null): string {
 
 function asBool(value: string | null): boolean {
   return value === "1" || value === "true" || value === "yes";
+}
+
+async function userLockedSymbols(userId: string): Promise<Set<string>> {
+  const { data, error } = await supabaseServer
+    .from("user_watchlist_tickers")
+    .select("symbol")
+    .eq("user_id", userId);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return new Set((data ?? []).map((row) => normalizeSymbol(String(row.symbol ?? ""))).filter(Boolean));
 }
 
 function linkedRowToEvent(row: LinkedNewsRow): NormalizedNewsEvent | null {
@@ -115,18 +129,32 @@ async function readCachedNews(symbol: string, hours: number, limit: number): Pro
 }
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const symbol = normalizeSymbol(searchParams.get("symbol"));
-  const hours = Math.min(Math.max(Number(searchParams.get("hours") ?? 72), 1), 24 * 14);
-  const limit = Math.min(Math.max(Number(searchParams.get("limit") ?? 25), 1), 100);
-  const refresh = asBool(searchParams.get("refresh")) || process.env.NEWS_AUTOFETCH_ON_READ === "true";
   const provider = configuredNewsProvider();
 
-  if (!symbol) {
-    return NextResponse.json({ ok: false, error: "Ticker symbol is required." }, { status: 400 });
-  }
-
   try {
+    const user = await getAuthenticatedUserFromRequest(request);
+    const { searchParams } = new URL(request.url);
+    const symbol = normalizeSymbol(searchParams.get("symbol"));
+    const hours = Math.min(Math.max(Number(searchParams.get("hours") ?? 72), 1), 24 * 14);
+    const limit = Math.min(Math.max(Number(searchParams.get("limit") ?? 25), 1), 100);
+    const refresh = asBool(searchParams.get("refresh")) || process.env.NEWS_AUTOFETCH_ON_READ === "true";
+
+    if (!symbol) {
+      return NextResponse.json({ ok: false, error: "Ticker symbol is required." }, { status: 400 });
+    }
+
+    const locked = await userLockedSymbols(user.id);
+    if (!locked.has(symbol)) {
+      return NextResponse.json(
+        {
+          ok: false,
+          symbol,
+          error: "News access is limited to your locked WheelDesk ticker slots.",
+        },
+        { status: 403 },
+      );
+    }
+
     let source: "cache" | "cache+refresh" | "cache_only" = "cache";
     let inserted = 0;
 
@@ -154,6 +182,7 @@ export async function GET(request: Request) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not load ticker news.";
-    return NextResponse.json({ ok: false, symbol, provider, error: message }, { status: 500 });
+    const status = /bearer|session|auth|login/i.test(message) ? 401 : 500;
+    return NextResponse.json({ ok: false, provider, error: message }, { status });
   }
 }

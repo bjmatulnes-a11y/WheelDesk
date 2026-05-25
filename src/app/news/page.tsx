@@ -113,7 +113,10 @@ export default function NewsPulsePage() {
 
   async function loadProviderStatus() {
     try {
-      const response = await fetch("/api/news/provider-status", { cache: "no-store" });
+      const response = await fetch("/api/news/provider-status", {
+        cache: "no-store",
+        headers: await getNewsAuthHeaders(false),
+      });
       const payload = (await response.json()) as ProviderStatusResponse;
       if (payload.ok) {
         setProviderStatus(payload);
@@ -174,6 +177,7 @@ export default function NewsPulsePage() {
     try {
       const response = await fetch(
         `/api/news/pulse?symbols=${encodeURIComponent(scopedSymbols.join(","))}&hours=24`,
+        { headers: await getNewsAuthHeaders(false) },
       );
       const payload = (await response.json()) as { ok: boolean; pulses?: NewsPulse[]; error?: string };
       if (!payload.ok) throw new Error(payload.error ?? "Could not load news pulses.");
@@ -195,6 +199,7 @@ export default function NewsPulsePage() {
     try {
       const response = await fetch(
         `/api/news/ticker?symbol=${encodeURIComponent(clean)}&hours=72&limit=30${refresh ? "&refresh=1" : ""}`,
+        { headers: await getNewsAuthHeaders(false) },
       );
       const payload = (await response.json()) as TickerNewsResponse;
       if (!payload.ok) throw new Error(payload.error ?? "Could not load ticker news.");
