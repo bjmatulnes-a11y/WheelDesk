@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import AuthGate from "../../components/auth/AuthGate";
 import { NewsEventList } from "../../components/news/NewsEventList";
 import { NewsPulseCard } from "../../components/news/NewsPulseCard";
+import { WheelDeskSideNav } from "../../components/WheelDeskSideNav";
 import { getSupabaseAuthClient } from "../../lib/auth/supabase-auth-client";
 import type { NewsPulse, NormalizedNewsEvent } from "../../lib/news/news-types";
 
@@ -265,15 +266,23 @@ export default function NewsPulsePage() {
 
   return (
     <AuthGate>
-      <main
+      <div
         style={{
           minHeight: "100vh",
           background: "#020a12",
           color: "#e0f2fe",
-          padding: "32px min(5vw, 56px)",
+          display: "flex",
         }}
       >
-        <div style={{ maxWidth: 1320, margin: "0 auto" }}>
+        <WheelDeskSideNav active="dashboard" />
+        <main
+          style={{
+            flex: 1,
+            minWidth: 0,
+            padding: "32px min(5vw, 56px)",
+          }}
+        >
+          <div style={{ maxWidth: 1320, margin: "0 auto" }}>
           <header style={{ marginBottom: 24 }}>
             <div style={{ color: "#22d3ee", letterSpacing: 3, fontSize: 12, fontWeight: 900 }}>WHEELDESK NEWS PULSE</div>
             <h1 style={{ color: "#f8fafc", fontSize: 42, margin: "8px 0" }}>Ticker news as forecast context.</h1>
@@ -483,8 +492,9 @@ export default function NewsPulsePage() {
             {pulse && <div style={{ marginBottom: 16 }}><NewsPulseCard pulse={pulse} /></div>}
             {loading ? <div style={{ color: "#94a3b8" }}>Loading ticker news...</div> : <NewsEventList events={events} />}
           </section>
-        </div>
-      </main>
+          </div>
+        </main>
+      </div>
     </AuthGate>
   );
 }
