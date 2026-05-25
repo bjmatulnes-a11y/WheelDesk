@@ -3,7 +3,7 @@
 import Link from "next/link";
 import AuthStatusPill from "./auth/AuthStatusPill";
 
-type NavKey = "dashboard" | "watchlist" | "scanner" | "positions" | "wheel" | "control-center" | "validation";
+type NavKey = "dashboard" | "watchlist" | "scanner" | "positions" | "wheel" | "control-center" | "validation" | "news";
 
 type NavItem = {
   href: string;
@@ -21,6 +21,7 @@ const navItems: NavItem[] = [
   { key: "control-center", href: "/control-center", label: "Control Center" },
   { key: "wheel", href: "/dashboard/wheel", label: "Wheel" },
   { key: "validation", href: "/dashboard/validation", label: "Validation" },
+  { key: "news", href: "/news", label: "News Pulse" },
   { key: "positions", href: "/portfolio", label: "Portfolio" },
 
 ];

@@ -113,7 +113,7 @@ async function readCachedNews(symbol: string, hours: number, limit: number): Pro
   const { data, error } = await supabaseServer
     .from("news_ticker_links")
     .select(
-      "symbol,relevance_score,news_events(provider,provider_event_id,headline,summary,source_name,url,image_url,published_at,sentiment_score,materiality_score,raw)",
+      "symbol,relevance_score,news_events!inner(provider,provider_event_id,headline,summary,source_name,url,image_url,published_at,sentiment_score,materiality_score,raw)",
     )
     .eq("symbol", symbol)
     .gte("news_events.published_at", cutoff)
@@ -168,7 +168,7 @@ export async function GET(request: Request) {
     }
 
     const events = await readCachedNews(symbol, hours, limit);
-    const pulse = buildNewsPulse(symbol, events, Math.min(hours, 24));
+    const pulse = buildNewsPulse(symbol, events, hours);
 
     return NextResponse.json({
       ok: true,

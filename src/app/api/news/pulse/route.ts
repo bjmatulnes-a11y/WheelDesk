@@ -92,7 +92,7 @@ export async function GET(request: Request) {
     const { data, error } = await supabaseServer
       .from("news_ticker_links")
       .select(
-        "symbol,news_events(provider,provider_event_id,headline,summary,source_name,url,image_url,published_at,sentiment_score,materiality_score,raw)",
+        "symbol,news_events!inner(provider,provider_event_id,headline,summary,source_name,url,image_url,published_at,sentiment_score,materiality_score,raw)",
       )
       .in("symbol", symbols)
       .gte("news_events.published_at", cutoff)
@@ -110,7 +110,7 @@ export async function GET(request: Request) {
       if (event) grouped.get(row.symbol)?.push(event);
     }
 
-    const pulses = symbols.map((symbol) => buildNewsPulse(symbol, grouped.get(symbol) ?? [], Math.min(hours, 24)));
+    const pulses = symbols.map((symbol) => buildNewsPulse(symbol, grouped.get(symbol) ?? [], hours));
 
     return NextResponse.json({ ok: true, hours, pulses, symbols });
   } catch (error) {

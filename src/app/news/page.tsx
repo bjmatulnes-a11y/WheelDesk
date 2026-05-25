@@ -279,7 +279,7 @@ export default function NewsPulsePage() {
           display: "flex",
         }}
       >
-        <WheelDeskSideNav active="dashboard" />
+        <WheelDeskSideNav active="news" />
         <main
           style={{
             flex: 1,
