@@ -2,6 +2,14 @@ import { NextResponse } from "next/server";
 import { supabaseServer } from "../../../../lib/supabase-server";
 import { getAuthenticatedUserFromRequest } from "../../../../lib/billing/auth-request";
 import { normalizeSymbol } from "../../../../lib/ticker-entitlements";
+import { readLatestSurfaceSnapshotFromSupabase, readSurfaceSnapshotsFromSupabase } from "../../../../lib/supabase-surface-repository";
+import { getDefaultExpirationContext, makeSingleExpirationSurface, edgeDteFromExpiration } from "../../../../lib/trader-edge-context";
+import { buildTraderEdgeSummary } from "../../../../lib/trader-edge-engine";
+import { buildOIProjectionReport } from "../../../../lib/oi-projection-engine";
+import { buildWallMigrationSummary } from "../../../../lib/oi-wall-migration-engine";
+import { buildOIImpliedPath } from "../../../../lib/oi-implied-path-engine";
+import { buildOIFieldForecast } from "../../../../lib/oi-field-engine-v2";
+import { buildOIFieldForecastCapturePayload } from "../../../../lib/oi-forecast-capture-payload";
 
 export const runtime = "nodejs";
 
@@ -134,6 +142,94 @@ async function loadSymbols(userId: string | null, requested: string[], limit: nu
   return uniqueSymbols((data ?? []).map((row: { symbol?: unknown }) => row.symbol));
 }
 
+
+function finite(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function surfaceSpot(surface: any): number | null {
+  return finite(surface?.price?.close) ?? finite(surface?.dailyStructure?.spot) ?? finite(surface?.spot) ?? finite(surface?.underlyingPrice) ?? null;
+}
+
+async function loadLatestHumanForecast(symbol: string) {
+  // Do not harvest from a previous harvest clone. Prefer the real baseline captures created by Control Center / Chart Room.
+  const { data, error } = await supabaseServer
+    .from("oi_field_forecasts")
+    .select("*")
+    .eq("symbol", symbol)
+    .not("source", "like", "forecast_harvest_%")
+    .order("generated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  return data as Record<string, unknown> | null;
+}
+
+async function buildForecastCloneFromSurface(symbol: string, captureSession: HarvestSession, captureKind: CaptureKind, runId: string | null, startedAt: string) {
+  const surface = await readLatestSurfaceSnapshotFromSupabase(symbol);
+  if (!surface) {
+    return { clone: null as Record<string, unknown> | null, message: "No OI Field forecast or Supabase surface snapshot exists yet." };
+  }
+
+  const expiration = getDefaultExpirationContext(surface);
+  const selectedChainSurface = makeSingleExpirationSurface(surface, expiration) ?? surface;
+  const spot = surfaceSpot(surface);
+  if (!spot) {
+    return { clone: null as Record<string, unknown> | null, message: "Latest Supabase surface is missing a usable spot/close price." };
+  }
+
+  const priorSnapshots = await readSurfaceSnapshotsFromSupabase(symbol, 2).catch(() => [] as any[]);
+  const priorSurface = (priorSnapshots ?? []).find((row: any) => row?.surfaceKey !== surface.surfaceKey && row?.snapshotDate !== surface.snapshotDate) ?? null;
+
+  const edgeSummary = buildTraderEdgeSummary({ ticker: symbol, surface: selectedChainSurface as any, candles: [], livePrice: spot });
+  const projectionReport = buildOIProjectionReport({ snapshot: selectedChainSurface as any, currentPrice: spot });
+  const wallMigration = buildWallMigrationSummary({ currentSurface: selectedChainSurface as any, priorSurface: priorSurface ? (makeSingleExpirationSurface(priorSurface, expiration) ?? priorSurface) as any : null });
+  const path = buildOIImpliedPath({ projectionReport, edgeSummary, wallMigration, currentPrice: spot });
+  const dte = edgeDteFromExpiration(expiration, surface.snapshotDate);
+  const forecast = buildOIFieldForecast({ path, projectionReport, edgeSummary, wallMigration, currentPrice: spot, selectedExpirationDte: dte });
+
+  const payload = buildOIFieldForecastCapturePayload({
+    ticker: symbol,
+    spot,
+    snapshotDate: surface.snapshotDate,
+    expiration,
+    dte,
+    surfaceSnapshotId: (surface as any).id ?? surface.surfaceKey ?? null,
+    forecast,
+    selectedSurface: surface,
+    selectedChainSurface,
+    source: "forecast_harvest_baseline",
+    provider: "supabase_surface",
+    inputs: {
+      captureSession,
+      captureKind,
+      generatedBy: "forecast_harvest_surface_fallback",
+      surfaceKey: surface.surfaceKey,
+    },
+  });
+
+  if (!payload) {
+    return { clone: null as Record<string, unknown> | null, message: "Could not build OI Field forecast payload from latest surface." };
+  }
+
+  return {
+    clone: {
+      ...payload,
+      source: `forecast_harvest_${captureSession}`,
+      capture_session: captureSession,
+      capture_kind: captureKind,
+      capture_run_id: runId,
+      forecast_anchor_at: startedAt,
+      outcome_status: payload.outcomeStatus ?? "waiting",
+      model_status: payload.modelStatus ?? "collecting",
+      training_eligible: payload.trainingEligible ?? true,
+    } as Record<string, unknown>,
+    message: null as string | null,
+  };
+}
+
 async function upsertHarvestForecast(clone: Record<string, unknown>): Promise<{
   saved: ForecastReturnRow | null;
   schemaMode: "nn-ready" | "legacy";
@@ -227,45 +323,45 @@ export async function POST(request: Request) {
     const itemStartedAt = new Date().toISOString();
 
     try {
-      const { data: latest, error: latestError } = await supabaseServer
-        .from("oi_field_forecasts")
-        .select("*")
-        .eq("symbol", symbol)
-        .order("generated_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
+      const latest = await loadLatestHumanForecast(symbol);
 
-      if (latestError) throw new Error(latestError.message);
+      let clone: Record<string, unknown> | null = null;
+      let captureMessage = "Forecast captured from latest baseline row.";
 
-      if (!latest) {
-        failed += 1;
-        const message =
-          "No OI Field forecast exists yet. Open Control Center or Chart Room and capture once, then forecast harvest can reuse the baseline.";
-        items.push({ symbol, status: "missing_forecast", message });
-        if (run.id) {
-          await optionalRunItemInsert({
-            run_id: run.id,
-            symbol,
-            status: "missing_forecast",
-            message,
-            started_at: itemStartedAt,
-            completed_at: new Date().toISOString(),
-          });
+      if (latest) {
+        clone = {
+          ...stripIdentity(latest as Record<string, unknown>),
+          source: `forecast_harvest_${captureSession}`,
+          capture_session: captureSession,
+          capture_kind: captureKind,
+          capture_run_id: run.id,
+          forecast_anchor_at: startedAt,
+          outcome_status: (latest as Record<string, unknown>).outcome_status ?? "waiting",
+          model_status: (latest as Record<string, unknown>).model_status ?? "collecting",
+          training_eligible: (latest as Record<string, unknown>).training_eligible ?? true,
+        };
+      } else {
+        const surfaceBuilt = await buildForecastCloneFromSurface(symbol, captureSession, captureKind, run.id, startedAt);
+        clone = surfaceBuilt.clone;
+        captureMessage = "Forecast generated from latest Supabase surface snapshot.";
+
+        if (!clone) {
+          failed += 1;
+          const message = surfaceBuilt.message ?? "No OI Field forecast or usable Supabase surface snapshot exists yet.";
+          items.push({ symbol, status: "missing_forecast", message });
+          if (run.id) {
+            await optionalRunItemInsert({
+              run_id: run.id,
+              symbol,
+              status: "missing_forecast",
+              message,
+              started_at: itemStartedAt,
+              completed_at: new Date().toISOString(),
+            });
+          }
+          continue;
         }
-        continue;
       }
-
-      const clone = {
-        ...stripIdentity(latest as Record<string, unknown>),
-        source: `forecast_harvest_${captureSession}`,
-        capture_session: captureSession,
-        capture_kind: captureKind,
-        capture_run_id: run.id,
-        forecast_anchor_at: startedAt,
-        outcome_status: (latest as Record<string, unknown>).outcome_status ?? "waiting",
-        model_status: (latest as Record<string, unknown>).model_status ?? "collecting",
-        training_eligible: (latest as Record<string, unknown>).training_eligible ?? true,
-      };
 
       const save = await upsertHarvestForecast(clone);
       if (save.error) throw new Error(save.error);
@@ -281,7 +377,7 @@ export async function POST(request: Request) {
           symbol,
           status: "captured",
           forecast_id: forecastId,
-          message: save.schemaMode === "legacy" ? "Forecast captured using legacy forecast schema fallback." : "Forecast captured from latest baseline row.",
+          message: save.schemaMode === "legacy" ? "Forecast captured using legacy forecast schema fallback." : captureMessage,
           started_at: itemStartedAt,
           completed_at: new Date().toISOString(),
         });
