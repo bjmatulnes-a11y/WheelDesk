@@ -454,18 +454,31 @@ function stripIdentity(row: Record<string, unknown>) {
   return clone;
 }
 
-function stripHarvestFields(row: Record<string, unknown>) {
+function stripLegacyOnlyFields(row: Record<string, unknown>) {
   const clone = { ...row };
+
+  // Deployment-safe fallback for older Supabase schemas.
+  // If these columns do not exist yet, PostgREST rejects the entire insert/upsert.
   delete clone.capture_session;
   delete clone.capture_kind;
   delete clone.capture_run_id;
   delete clone.forecast_anchor_at;
+  delete clone.engine_version;
+  delete clone.model_status;
+  delete clone.nn_model_version;
+  delete clone.baseline_forecast;
+  delete clone.feature_vector;
+  delete clone.nn_adjustment;
+  delete clone.final_forecast;
+  delete clone.training_eligible;
+  delete clone.outcome_status;
+
   return clone;
 }
 
 function isMissingHarvestColumn(error: unknown) {
   const message = dbErrorMessage(error);
-  return /capture_session|capture_kind|capture_run_id|forecast_anchor_at|model_status|engine_version|training_eligible|outcome_status|schema cache|column/i.test(
+  return /capture_session|capture_kind|capture_run_id|forecast_anchor_at|model_status|engine_version|nn_model_version|baseline_forecast|feature_vector|nn_adjustment|final_forecast|training_eligible|outcome_status|schema cache|column/i.test(
     message,
   );
 }
@@ -531,7 +544,7 @@ async function upsertHarvestForecast(clone: Record<string, unknown>): Promise<{
 
   const legacy = await supabaseServer
     .from("oi_field_forecasts")
-    .upsert(stripHarvestFields(clone), {
+    .upsert(stripLegacyOnlyFields(clone), {
       onConflict: "symbol,snapshot_date,expiration,source",
     })
     .select(LEGACY_RETURN_SELECT)
