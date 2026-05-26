@@ -2,7 +2,10 @@ import Link from "next/link";
 import { WHEELDESK_PLANS } from "../lib/billing/plans";
 import HeroProductFrame from "../components/marketing/HeroProductFrame";
 
-export default function LandingPage() {
+export default function LandingPage({ searchParams }: { searchParams?: { joined?: string; error?: string; email?: string } }) {
+  const joined = searchParams?.joined;
+  const error = searchParams?.error;
+
   return (
     <main className="wd-landing">
       <div className="wd-landing-glow wd-landing-glow-one" />
@@ -38,6 +41,19 @@ export default function LandingPage() {
             WheelDesk combines portfolio exposure, OI surface snapshots, IV bands, dealer pressure,
             wall migration, and validation into one cockpit for disciplined wheel and covered-call management.
           </p>
+
+          <form action="/api/waitlist" method="post" className="wd-email-capture" aria-label="Join the WheelDesk early access list">
+            <input type="hidden" name="source" value="landing-hero" />
+            <label htmlFor="waitlist-email">Get build updates and early access notes while WheelDesk is being finalized.</label>
+            <div>
+              <input id="waitlist-email" name="email" type="email" placeholder="you@example.com" required />
+              <button type="submit">Join Early Access</button>
+            </div>
+            {joined ? (
+              <p className="wd-capture-success">{joined === "already" ? "You are already on the list." : "You are on the list. Check your inbox for the WheelDesk note."}</p>
+            ) : null}
+            {error ? <p className="wd-capture-error">Please enter a valid email and try again.</p> : null}
+          </form>
 
           <div className="wd-hero-actions">
             <Link href="/pricing" className="wd-primary-cta">View Plans</Link>
@@ -148,14 +164,18 @@ export default function LandingPage() {
 
       <section className="wd-final-cta">
         <div>
-          <div className="wd-eyebrow">Next milestone</div>
-          <h2>Start with a plan. Unlock the console after Stripe confirms access.</h2>
+          <div className="wd-eyebrow">Early access</div>
+          <h2>Join the WheelDesk build list while the validation engine matures.</h2>
           <p>
-            Pricing is back on the landing page, while the app itself remains protected by login plus active subscription status.
-            Users can create accounts, but they cannot bypass the paid access gate once billing is enabled.
+            Get build updates, feature releases, and early access notes as WheelDesk continues hardening the OI path,
+            Trader Edge, News Pulse, and validation workflow.
           </p>
         </div>
-        <Link href="/pricing" className="wd-primary-cta">View Plans</Link>
+        <form action="/api/waitlist" method="post" className="wd-footer-capture" aria-label="Join the WheelDesk waitlist">
+          <input type="hidden" name="source" value="landing-final-cta" />
+          <input name="email" type="email" placeholder="you@example.com" required />
+          <button type="submit">Join the List</button>
+        </form>
       </section>
 
       <footer className="wd-landing-footer">
