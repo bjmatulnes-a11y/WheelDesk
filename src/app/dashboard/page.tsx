@@ -15,6 +15,18 @@ const HARVEST_TICKERS_KEY = "wheelDesk.dashboardHarvestTickers";
 const MAX_NORMAL_TICKERS = 10;
 const FOUNDER_SEED = ["SOFI", "AMD", "NVDA", "SPY", "QQQ", "AAPL", "MSFT", "PLTR"];
 
+function inferForecastSession(date = new Date()): "premarket" | "midday" | "close" {
+  const minutes = date.getHours() * 60 + date.getMinutes();
+  if (minutes < 9 * 60 + 30) return "premarket";
+  if (minutes < 15 * 60 + 30) return "midday";
+  return "close";
+}
+
+function displayForecastSession(value: string): string {
+  const resolved = value === "auto" ? inferForecastSession() : value;
+  return `${resolved}${value === "auto" ? " (auto)" : ""}`;
+}
+
 async function getDashboardAuthHeaders(includeJson = false): Promise<Record<string, string>> {
   const headers: Record<string, string> = includeJson ? { "Content-Type": "application/json" } : {};
 
@@ -741,7 +753,7 @@ function stageColor(value: unknown) {
   const raw = String(value ?? "").toLowerCase();
   if (["loaded", "generated", "saved", "captured", "ready"].includes(raw)) return colors.green;
   if (["missing", "failed"].includes(raw)) return colors.red;
-  if (["skipped", "surface-only", "needs-harvest"].includes(raw)) return colors.amber;
+  if (["fetching", "saving", "pending", "skipped", "surface-only", "needs-harvest"].includes(raw)) return colors.amber;
   return colors.muted;
 }
 
@@ -802,7 +814,7 @@ export default function DashboardPage() {
   const [forecastHarvestRunning, setForecastHarvestRunning] = useState(false);
   const [forecastHarvestResult, setForecastHarvestResult] = useState<ForecastHarvestRunResult | null>(null);
   const [forecastHarvestStatus, setForecastHarvestStatus] = useState("Forecast harvest idle.");
-  const [captureSession, setCaptureSession] = useState("premarket");
+  const [captureSession, setCaptureSession] = useState("auto");
   const [nnReadiness, setNnReadiness] = useState<NNReadiness | null>(null);
 
   useEffect(() => {
@@ -984,28 +996,31 @@ export default function DashboardPage() {
     if (readiness) setNnReadiness(readiness);
   }
 
-  async function runForecastHarvest() {
-    const symbols = centralSymbols.length ? centralSymbols : centralTickers.map((slot) => normalizeTickerInput(slot.symbol)).filter(Boolean);
-    if (!symbols.length || forecastHarvestRunning) return;
+  async function runForecastHarvest(symbolsOverride?: string[]) {
+    const symbols = symbolsOverride?.length ? symbolsOverride : centralSymbols.length ? centralSymbols : centralTickers.map((slot) => normalizeTickerInput(slot.symbol)).filter(Boolean);
+    if (!symbols.length || forecastHarvestRunning) return null;
 
+    const resolvedSession = captureSession === "auto" ? inferForecastSession() : captureSession;
     setForecastHarvestRunning(true);
-    setForecastHarvestStatus(`Running forecast harvest for ${symbols.length} ticker(s)...`);
+    setForecastHarvestStatus(`Running forecast harvest for ${symbols.length} ticker(s) · session ${displayForecastSession(captureSession)}...`);
 
     try {
       const response = await fetch("/api/forecast-harvest/run", {
         method: "POST",
         headers: await getDashboardAuthHeaders(true),
-        body: JSON.stringify({ symbols, captureSession, notes: { source: "dashboard_command_hub" } }),
+        body: JSON.stringify({ symbols, captureSession: resolvedSession, notes: { source: "dashboard_command_hub", requestedSession: captureSession } }),
       });
       const payload = (await response.json().catch(() => null)) as ForecastHarvestRunResult | null;
 
       if (!response.ok || !payload?.ok) throw new Error(payload?.error ?? `Forecast harvest failed: ${response.status}`);
 
       setForecastHarvestResult(payload);
-      setForecastHarvestStatus(`Forecast harvest complete: ${payload.captured ?? 0}/${payload.requested ?? symbols.length} captured · ${payload.failed ?? 0} failed · session ${payload.captureSession ?? captureSession}. ${payload.message ?? "Baseline OI forecast remains active until NN is activated."}`);
+      setForecastHarvestStatus(`Forecast harvest complete: ${payload.captured ?? 0}/${payload.requested ?? symbols.length} captured · ${payload.failed ?? 0} failed · session ${payload.captureSession ?? resolvedSession}. ${payload.message ?? "Baseline OI forecast remains active until NN is activated."}`);
       await Promise.all([refreshCentralCommandHub(), loadNNReadiness()]);
+      return payload;
     } catch (error: any) {
       setForecastHarvestStatus(error?.message ?? "Forecast harvest failed.");
+      return null;
     } finally {
       setForecastHarvestRunning(false);
     }
@@ -1172,7 +1187,7 @@ export default function DashboardPage() {
         message: "No chains or rows returned",
         completedAt: new Date().toISOString(),
       });
-      return;
+      throw new Error("No chains or rows returned");
     }
 
     updateQueueItem(normalizedTicker, {
@@ -1228,24 +1243,30 @@ export default function DashboardPage() {
     return saveResult;
   }
 
-  async function runHarvest(targets: string[]) {
-    if (running) return;
+  async function runHarvest(targets: string[], options?: { runForecastAfter?: boolean }) {
+    if (running) return { saved: 0, failed: 0, targets: [] as string[] };
 
     const uniqueTargets = uniqueTickers(targets);
 
     if (!uniqueTargets.length) {
       setStatus("NO TICKERS SELECTED");
-      return;
+      return { saved: 0, failed: 0, targets: [] as string[] };
     }
 
     setRunning(true);
-    setStatus(`HARVEST RUNNING: ${uniqueTargets.length} TICKER(S)`);
+    setStatus(`SURFACE HARVEST RUNNING: ${uniqueTargets.length} TICKER(S)`);
+    setForecastHarvestResult(null);
     buildQueue(uniqueTargets);
+
+    let saved = 0;
+    let failed = 0;
 
     for (const ticker of uniqueTargets) {
       try {
         await harvestTicker(ticker);
+        saved += 1;
       } catch (error) {
+        failed += 1;
         console.error("[WheelDesk] Harvest failed:", ticker, error);
 
         updateQueueItem(ticker, {
@@ -1257,8 +1278,15 @@ export default function DashboardPage() {
     }
 
     setRunning(false);
-    setStatus("READY");
+    setStatus(options?.runForecastAfter ? `SURFACE HARVEST COMPLETE: ${saved} SAVED · STARTING FORECAST HARVEST` : "READY");
     await refreshCentralCommandHub();
+
+    if (options?.runForecastAfter && saved > 0) {
+      await runForecastHarvest(uniqueTargets);
+      setStatus("READY");
+    }
+
+    return { saved, failed, targets: uniqueTargets };
   }
 
   const savedCount = queue.filter((item) => item.status === "saved").length;
@@ -1381,6 +1409,7 @@ export default function DashboardPage() {
             <label style={styles.label}>
               Forecast session
               <select value={captureSession} onChange={(event) => setCaptureSession(event.target.value)} style={styles.input}>
+                <option value="auto">Auto session ({inferForecastSession()})</option>
                 <option value="premarket">Premarket</option>
                 <option value="midday">Midday</option>
                 <option value="close">Close</option>
@@ -1388,12 +1417,16 @@ export default function DashboardPage() {
               </select>
             </label>
 
-            <button type="button" onClick={() => runHarvest(centralSymbols)} disabled={running || !centralSymbols.length} style={styles.button}>
-              Harvest Central Slots
+            <button type="button" onClick={() => runHarvest(centralSymbols)} disabled={running || forecastHarvestRunning || !centralSymbols.length} style={styles.button}>
+              {running ? "Harvesting Surfaces..." : "Harvest Surfaces"}
             </button>
 
-            <button type="button" onClick={runForecastHarvest} disabled={forecastHarvestRunning || !centralSymbols.length} style={styles.primaryButton}>
-              {forecastHarvestRunning ? "Capturing..." : "Run Forecast Harvest"}
+            <button type="button" onClick={() => runForecastHarvest()} disabled={running || forecastHarvestRunning || !centralSymbols.length} style={styles.button}>
+              {forecastHarvestRunning ? "Generating Forecasts..." : "Run Forecast Harvest"}
+            </button>
+
+            <button type="button" onClick={() => runHarvest(centralSymbols, { runForecastAfter: true })} disabled={running || forecastHarvestRunning || !centralSymbols.length} style={styles.primaryButton}>
+              {running || forecastHarvestRunning ? "Running Full OI Harvest..." : "Run Full OI Harvest"}
             </button>
           </div>
 
@@ -1594,6 +1627,40 @@ export default function DashboardPage() {
               <span>Failed: <strong>{failedCount}</strong></span>
               <span>Rows: <strong>{safeInt(totalRows)}</strong></span>
               <span>Tracked slots: <strong>{centralUsedSlots}/{centralMaxSlots || "?"}</strong></span>
+              <span>Forecast session: <strong>{displayForecastSession(captureSession)}</strong></span>
+            </div>
+
+            <div style={styles.centralProcessTableWrap}>
+              <table style={styles.harvestTable}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Ticker</th>
+                    <th style={styles.th}>Surface Capture</th>
+                    <th style={styles.th}>Yahoo/API Step</th>
+                    <th style={styles.th}>Chains</th>
+                    <th style={styles.th}>Rows</th>
+                    <th style={styles.th}>Snapshot</th>
+                    <th style={styles.th}>Saved Surface</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {queue.length ? queue.map((item) => (
+                    <tr key={item.ticker}>
+                      <td style={styles.td}><strong>{item.ticker}</strong></td>
+                      <td style={styles.td}><strong style={{ color: stageColor(item.status) }}>{stageLabel(item.status, "Waiting")}</strong></td>
+                      <td style={styles.td}>{item.message ?? "Waiting"}</td>
+                      <td style={styles.td}>{safeInt(item.chainCount, "—")}</td>
+                      <td style={styles.td}>{safeInt(item.rowCount, "—")}</td>
+                      <td style={styles.td}>{item.snapshotDate ?? "—"}</td>
+                      <td style={styles.td}>{item.surfaceKey ? <span style={{ color: colors.green }}>Saved</span> : item.status === "failed" ? <span style={{ color: colors.red }}>Failed</span> : "—"}</td>
+                    </tr>
+                  )) : (
+                    <tr>
+                      <td style={styles.td} colSpan={7}>No surface harvest run in this browser session. Click Harvest Surfaces or Run Full OI Harvest to see each ticker fetch, save, and complete.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
         </section>
