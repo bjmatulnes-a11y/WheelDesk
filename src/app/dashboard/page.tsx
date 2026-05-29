@@ -13,35 +13,45 @@ import { getSupabaseAuthClient } from "../../lib/auth/supabase-auth-client";
 const TODAY = new Date().toISOString().slice(0, 10);
 const HARVEST_TICKERS_KEY = "wheelDesk.dashboardHarvestTickers";
 const MAX_NORMAL_TICKERS = 10;
-const FOUNDER_SEED = ["SOFI", "AMD", "NVDA", "SPY", "QQQ", "AAPL", "MSFT", "PLTR"];
+const FOUNDER_SEED = [
+  "SOFI",
+  "AMD",
+  "NVDA",
+  "SPY",
+  "QQQ",
+  "AAPL",
+  "MSFT",
+  "PLTR",
+];
 
-function inferForecastSession(date = new Date()): "premarket" | "midday" | "close" {
-  const minutes = date.getHours() * 60 + date.getMinutes();
-  if (minutes < 9 * 60 + 30) return "premarket";
-  if (minutes < 15 * 60 + 30) return "midday";
-  return "close";
-}
-
-function displayForecastSession(value: string): string {
-  const resolved = value === "auto" ? inferForecastSession() : value;
-  return `${resolved}${value === "auto" ? " (auto)" : ""}`;
-}
-
-async function getDashboardAuthHeaders(includeJson = false): Promise<Record<string, string>> {
-  const headers: Record<string, string> = includeJson ? { "Content-Type": "application/json" } : {};
+async function getDashboardAuthHeaders(
+  includeJson = false,
+): Promise<Record<string, string>> {
+  const headers: Record<string, string> = includeJson
+    ? { "Content-Type": "application/json" }
+    : {};
 
   const { data } = await getSupabaseAuthClient().auth.getSession();
   const token = data.session?.access_token;
 
   if (!token) {
-    throw new Error("Login session is not ready yet. Refresh the dashboard or sign in again.");
+    throw new Error(
+      "Login session is not ready yet. Refresh the dashboard or sign in again.",
+    );
   }
 
   headers.Authorization = `Bearer ${token}`;
   return headers;
 }
 
-type HarvestStatus = "idle" | "pending" | "fetching" | "saving" | "saved" | "failed" | "skipped";
+type HarvestStatus =
+  | "idle"
+  | "pending"
+  | "fetching"
+  | "saving"
+  | "saved"
+  | "failed"
+  | "skipped";
 
 type HarvestItem = {
   ticker: string;
@@ -172,20 +182,17 @@ type ForecastHarvestRunResult = {
   requested?: number;
   captured?: number;
   failed?: number;
-  legacySchemaCount?: number;
-  neuralMode?: string;
-  message?: string;
   items?: Array<{
     symbol: string;
     status: string;
     surfaceStatus?: string;
     forecastStatus?: string;
     saveStatus?: string;
-    forecastId?: string | null;
-    snapshotDate?: string | null;
+    surfaceDate?: string | null;
     expiration?: string | null;
-    surfaceRows?: number | null;
-    surfaceChains?: number | null;
+    rows?: number | null;
+    chains?: number | null;
+    forecastId?: string | null;
     message?: string;
   }>;
   error?: string;
@@ -244,7 +251,9 @@ const navItems = [
 ];
 
 function normalizeTickerInput(value: unknown): string {
-  return String(value ?? "").trim().toUpperCase();
+  return String(value ?? "")
+    .trim()
+    .toUpperCase();
 }
 
 function parseTickerList(value: string): string[] {
@@ -333,30 +342,58 @@ function pickFirst(obj: any, keys: string[], fallback?: unknown): unknown {
 
 function getTickerFromPosition(position: any): string {
   return normalizeTickerInput(
-    pickFirst(position, ["ticker", "symbol", "underlying", "underlyingSymbol", "instrument"], "UNKNOWN")
+    pickFirst(
+      position,
+      ["ticker", "symbol", "underlying", "underlyingSymbol", "instrument"],
+      "UNKNOWN",
+    ),
   );
 }
 
 function getInstrumentType(position: any): string {
   return String(
-    pickFirst(position, ["instrumentType", "type", "assetType", "kind"], "stock")
+    pickFirst(
+      position,
+      ["instrumentType", "type", "assetType", "kind"],
+      "stock",
+    ),
   ).toLowerCase();
 }
 
 function getSide(position: any): string {
-  return String(pickFirst(position, ["side", "direction"], "long")).toLowerCase();
+  return String(
+    pickFirst(position, ["side", "direction"], "long"),
+  ).toLowerCase();
 }
 
 function getQty(position: any): number {
-  return safeNum(pickFirst(position, ["qty", "quantity", "contracts", "shares"], 0));
+  return safeNum(
+    pickFirst(position, ["qty", "quantity", "contracts", "shares"], 0),
+  );
 }
 
 function getMark(position: any): number | undefined {
-  return nullableNum(pickFirst(position, ["mark", "markPrice", "last", "lastPrice", "currentPrice"]));
+  return nullableNum(
+    pickFirst(position, [
+      "mark",
+      "markPrice",
+      "last",
+      "lastPrice",
+      "currentPrice",
+    ]),
+  );
 }
 
 function getTradePrice(position: any): number | undefined {
-  return nullableNum(pickFirst(position, ["tradePrice", "entryPrice", "avgPrice", "costBasisPerShare", "price"]));
+  return nullableNum(
+    pickFirst(position, [
+      "tradePrice",
+      "entryPrice",
+      "avgPrice",
+      "costBasisPerShare",
+      "price",
+    ]),
+  );
 }
 
 function getStrike(position: any): number | undefined {
@@ -364,7 +401,12 @@ function getStrike(position: any): number | undefined {
 }
 
 function getExpiration(position: any): string | undefined {
-  const value = pickFirst(position, ["expiration", "expirationDate", "expiry", "exp"]);
+  const value = pickFirst(position, [
+    "expiration",
+    "expirationDate",
+    "expiry",
+    "exp",
+  ]);
   if (!value) return undefined;
   return String(value).slice(0, 10);
 }
@@ -377,7 +419,10 @@ function computeDte(expiration?: string): number | null {
 
   if (Number.isNaN(exp.getTime())) return null;
 
-  return Math.max(0, Math.ceil((exp.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
+  return Math.max(
+    0,
+    Math.ceil((exp.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)),
+  );
 }
 
 function isOptionType(type: string): boolean {
@@ -387,13 +432,17 @@ function isOptionType(type: string): boolean {
 
 function isCall(position: FlatPosition): boolean {
   const t = position.instrumentType.toLowerCase();
-  const rawType = String(pickFirst(position.raw, ["optionType", "putCall", "right"], "")).toLowerCase();
+  const rawType = String(
+    pickFirst(position.raw, ["optionType", "putCall", "right"], ""),
+  ).toLowerCase();
   return t.includes("call") || rawType === "call" || rawType === "c";
 }
 
 function isPut(position: FlatPosition): boolean {
   const t = position.instrumentType.toLowerCase();
-  const rawType = String(pickFirst(position.raw, ["optionType", "putCall", "right"], "")).toLowerCase();
+  const rawType = String(
+    pickFirst(position.raw, ["optionType", "putCall", "right"], ""),
+  ).toLowerCase();
   return t.includes("put") || rawType === "put" || rawType === "p";
 }
 
@@ -436,14 +485,28 @@ function flattenPortfolioPositions(profiles: any[]): FlatPosition[] {
       const dte = isOptionType(instrumentType) ? computeDte(expiration) : null;
       const delta = nullableNum(pickFirst(position, ["delta"]));
       const theta = nullableNum(pickFirst(position, ["theta"]));
-      const openPnL = nullableNum(pickFirst(position, ["openPnL", "pnlOpen", "pnl", "plOpen"]));
-      const dayPnL = nullableNum(pickFirst(position, ["dayPnL", "pnlDay", "plDay"]));
+      const openPnL = nullableNum(
+        pickFirst(position, ["openPnL", "pnlOpen", "pnl", "plOpen"]),
+      );
+      const dayPnL = nullableNum(
+        pickFirst(position, ["dayPnL", "pnlDay", "plDay"]),
+      );
 
       const row: FlatPosition = {
-        id: String(position?.id ?? `${profile?.id ?? profile?.name ?? "profile"}-${ticker}-${index}`),
+        id: String(
+          position?.id ??
+            `${profile?.id ?? profile?.name ?? "profile"}-${ticker}-${index}`,
+        ),
         profileName: String(profile?.name ?? "Portfolio"),
         ticker,
-        instrument: buildInstrumentLabel({ ticker, instrumentType, side, expiration, strike, raw: position }),
+        instrument: buildInstrumentLabel({
+          ticker,
+          instrumentType,
+          side,
+          expiration,
+          strike,
+          raw: position,
+        }),
         instrumentType,
         side,
         qty,
@@ -460,7 +523,9 @@ function flattenPortfolioPositions(profiles: any[]): FlatPosition[] {
         bpEffect: 0,
       };
 
-      row.bpEffect = nullableNum(pickFirst(position, ["bpEffect", "buyingPowerEffect"])) ?? estimateBpEffect(row);
+      row.bpEffect =
+        nullableNum(pickFirst(position, ["bpEffect", "buyingPowerEffect"])) ??
+        estimateBpEffect(row);
       rows.push(row);
     });
   }
@@ -476,12 +541,20 @@ function buildInstrumentLabel(args: {
   strike?: number;
   raw: any;
 }): string {
-  const rawInstrument = pickFirst(args.raw, ["instrument", "description", "name"]);
+  const rawInstrument = pickFirst(args.raw, [
+    "instrument",
+    "description",
+    "name",
+  ]);
   if (rawInstrument) return String(rawInstrument);
 
   if (!isOptionType(args.instrumentType)) return args.ticker;
 
-  const right = args.instrumentType.includes("put") ? "PUT" : args.instrumentType.includes("call") ? "CALL" : "OPT";
+  const right = args.instrumentType.includes("put")
+    ? "PUT"
+    : args.instrumentType.includes("call")
+      ? "CALL"
+      : "OPT";
   const strike = args.strike != null ? safeFixed(args.strike, 2) : "";
   const exp = args.expiration ?? "NO EXP";
 
@@ -516,14 +589,19 @@ function groupPositionsByTicker(positions: FlatPosition[]): TickerGroup[] {
     existing.dayPnL += safeNum(position.dayPnL);
     existing.bpEffect += safeNum(position.bpEffect);
 
-    if (!isOptionType(position.instrumentType)) existing.stockShares += position.qty;
-    if (position.side === "short" && isCall(position)) existing.shortCalls += Math.abs(position.qty);
-    if (position.side === "short" && isPut(position)) existing.shortPuts += Math.abs(position.qty);
+    if (!isOptionType(position.instrumentType))
+      existing.stockShares += position.qty;
+    if (position.side === "short" && isCall(position))
+      existing.shortCalls += Math.abs(position.qty);
+    if (position.side === "short" && isPut(position))
+      existing.shortPuts += Math.abs(position.qty);
 
     map.set(position.ticker, existing);
   }
 
-  return Array.from(map.values()).sort((a, b) => a.ticker.localeCompare(b.ticker));
+  return Array.from(map.values()).sort((a, b) =>
+    a.ticker.localeCompare(b.ticker),
+  );
 }
 
 function aggregateTotals(groups: TickerGroup[]) {
@@ -550,7 +628,7 @@ function aggregateTotals(groups: TickerGroup[]) {
       openPnL: 0,
       dayPnL: 0,
       bpEffect: 0,
-    }
+    },
   );
 }
 
@@ -566,21 +644,28 @@ async function saveSurfaceToSupabase(surfaceSnapshot: any) {
   const result = await response.json().catch(() => null);
 
   if (!response.ok || !result?.ok) {
-    throw new Error(result?.error ?? `Supabase save failed: ${response.status}`);
+    throw new Error(
+      result?.error ?? `Supabase save failed: ${response.status}`,
+    );
   }
 
   return result;
 }
 
-async function fetchDashboardNewsPulse(symbols: string[]): Promise<DashboardNewsPulse[]> {
+async function fetchDashboardNewsPulse(
+  symbols: string[],
+): Promise<DashboardNewsPulse[]> {
   const normalized = uniqueTickers(symbols).slice(0, 50);
   if (!normalized.length) return [];
 
   try {
-    const response = await fetch(`/api/news/pulse?symbols=${encodeURIComponent(normalized.join(","))}&hours=24`, {
-      cache: "no-store",
-      headers: await getDashboardAuthHeaders(false),
-    });
+    const response = await fetch(
+      `/api/news/pulse?symbols=${encodeURIComponent(normalized.join(","))}&hours=24`,
+      {
+        cache: "no-store",
+        headers: await getDashboardAuthHeaders(false),
+      },
+    );
 
     const payload = await response.json().catch(() => null);
 
@@ -588,11 +673,18 @@ async function fetchDashboardNewsPulse(symbols: string[]): Promise<DashboardNews
       return normalized.map((symbol) => quietNewsPulse(symbol));
     }
 
-    const rows = payload.pulses.map(normalizeNewsPulse).filter(Boolean) as DashboardNewsPulse[];
+    const rows = payload.pulses
+      .map(normalizeNewsPulse)
+      .filter(Boolean) as DashboardNewsPulse[];
     const seen = new Set(rows.map((row) => row.symbol));
-    const missing = normalized.filter((symbol) => !seen.has(symbol)).map((symbol) => quietNewsPulse(symbol));
+    const missing = normalized
+      .filter((symbol) => !seen.has(symbol))
+      .map((symbol) => quietNewsPulse(symbol));
 
-    return [...rows, ...missing].sort((a, b) => newsPulseRank(b) - newsPulseRank(a) || a.symbol.localeCompare(b.symbol));
+    return [...rows, ...missing].sort(
+      (a, b) =>
+        newsPulseRank(b) - newsPulseRank(a) || a.symbol.localeCompare(b.symbol),
+    );
   } catch {
     return normalized.map((symbol) => quietNewsPulse(symbol));
   }
@@ -603,10 +695,21 @@ function normalizeNewsPulse(value: any): DashboardNewsPulse | null {
   if (!symbol) return null;
 
   const rawStatus = String(value?.status ?? "quiet").toLowerCase();
-  const status = ["shock", "elevated", "active", "quiet"].includes(rawStatus) ? rawStatus : "quiet";
+  const status = ["shock", "elevated", "active", "quiet"].includes(rawStatus)
+    ? rawStatus
+    : "quiet";
 
-  const rawImpact = String(value?.forecastImpact ?? value?.forecast_impact ?? "none").toLowerCase();
-  const forecastImpact = ["shock_risk", "confidence_down", "watch", "none"].includes(rawImpact) ? rawImpact : "none";
+  const rawImpact = String(
+    value?.forecastImpact ?? value?.forecast_impact ?? "none",
+  ).toLowerCase();
+  const forecastImpact = [
+    "shock_risk",
+    "confidence_down",
+    "watch",
+    "none",
+  ].includes(rawImpact)
+    ? rawImpact
+    : "none";
 
   return {
     symbol,
@@ -614,9 +717,13 @@ function normalizeNewsPulse(value: any): DashboardNewsPulse | null {
     count24h: safeNum(value?.count24h ?? value?.count_24h, 0),
     countWindow: safeNum(value?.countWindow ?? value?.count_window, 0),
     materiality: safeNum(value?.materiality, 0),
-    sentiment: value?.sentiment === null || value?.sentiment === undefined ? null : safeNum(value.sentiment, 0),
+    sentiment:
+      value?.sentiment === null || value?.sentiment === undefined
+        ? null
+        : safeNum(value.sentiment, 0),
     latestHeadline: value?.latestHeadline ?? value?.latest_headline ?? null,
-    latestPublishedAt: value?.latestPublishedAt ?? value?.latest_published_at ?? null,
+    latestPublishedAt:
+      value?.latestPublishedAt ?? value?.latest_published_at ?? null,
     forecastImpact,
   };
 }
@@ -692,74 +799,102 @@ function formatPercent(value: unknown): string {
 }
 
 function extractSurfaceArray(payload: any): any[] {
-  const candidates = [payload?.snapshots, payload?.surfaces, payload?.data, payload?.items, payload?.surfaceSnapshots];
+  const candidates = [
+    payload?.snapshots,
+    payload?.surfaces,
+    payload?.data,
+    payload?.items,
+    payload?.surfaceSnapshots,
+  ];
   for (const candidate of candidates) {
     if (Array.isArray(candidate)) return candidate;
   }
-  return payload?.snapshot || payload?.surface ? [payload.snapshot ?? payload.surface] : [];
+  return payload?.snapshot || payload?.surface
+    ? [payload.snapshot ?? payload.surface]
+    : [];
 }
 
-function surfaceMeta(payload: any): Pick<CentralCommandRow, "surfaceDate" | "surfaceRows" | "surfaceChains"> {
+function surfaceMeta(
+  payload: any,
+): Pick<CentralCommandRow, "surfaceDate" | "surfaceRows" | "surfaceChains"> {
   const surfaces = extractSurfaceArray(payload);
   const latest = surfaces
     .map((surface) => {
-      const chains = Array.isArray(surface?.chains) ? surface.chains : Array.isArray(surface?.optionChains) ? surface.optionChains : [];
-      const rowCount = chains.reduce((sum: number, chain: any) => sum + (Array.isArray(chain?.rows) ? chain.rows.length : 0), 0);
+      const chains = Array.isArray(surface?.chains)
+        ? surface.chains
+        : Array.isArray(surface?.optionChains)
+          ? surface.optionChains
+          : [];
+      const rowCount = chains.reduce(
+        (sum: number, chain: any) =>
+          sum + (Array.isArray(chain?.rows) ? chain.rows.length : 0),
+        0,
+      );
       return {
-        surfaceDate: dateOnly(surface?.snapshotDate ?? surface?.snapshot_date ?? surface?.date ?? surface?.asOfDate),
-        surfaceRows: Number(surface?.rowCount ?? surface?.row_count ?? rowCount ?? 0),
-        surfaceChains: Number(surface?.chainCount ?? surface?.chain_count ?? chains.length ?? 0),
+        surfaceDate: dateOnly(
+          surface?.snapshotDate ??
+            surface?.snapshot_date ??
+            surface?.date ??
+            surface?.asOfDate,
+        ),
+        surfaceRows: Number(
+          surface?.rowCount ?? surface?.row_count ?? rowCount ?? 0,
+        ),
+        surfaceChains: Number(
+          surface?.chainCount ?? surface?.chain_count ?? chains.length ?? 0,
+        ),
       };
     })
     .filter((item) => item.surfaceDate)
     .sort((a, b) => b.surfaceDate.localeCompare(a.surfaceDate))[0];
 
-  return latest ?? { surfaceDate: null, surfaceRows: null, surfaceChains: null };
+  return (
+    latest ?? { surfaceDate: null, surfaceRows: null, surfaceChains: null }
+  );
 }
 
-async function fetchLatestForecast(symbol: string): Promise<ForecastDbRow | null> {
+async function fetchLatestForecast(
+  symbol: string,
+): Promise<ForecastDbRow | null> {
   try {
-    const response = await fetch(`/api/forecasts/oi-field?symbol=${encodeURIComponent(symbol)}&limit=1`, { cache: "no-store" });
+    const response = await fetch(
+      `/api/forecasts/oi-field?symbol=${encodeURIComponent(symbol)}&limit=1`,
+      { cache: "no-store" },
+    );
     const payload = await response.json().catch(() => null);
     if (!response.ok) return null;
-    return Array.isArray(payload?.forecasts) ? payload.forecasts[0] ?? null : null;
+    return Array.isArray(payload?.forecasts)
+      ? (payload.forecasts[0] ?? null)
+      : null;
   } catch {
     return null;
   }
 }
 
-async function fetchLatestSurfaceMeta(symbol: string): Promise<Pick<CentralCommandRow, "surfaceDate" | "surfaceRows" | "surfaceChains">> {
+async function fetchLatestSurfaceMeta(
+  symbol: string,
+): Promise<
+  Pick<CentralCommandRow, "surfaceDate" | "surfaceRows" | "surfaceChains">
+> {
   try {
-    const response = await fetch(`/api/supabase/surface-snapshot?ticker=${encodeURIComponent(symbol)}`, { cache: "no-store" });
+    const response = await fetch(
+      `/api/supabase/surface-snapshot?ticker=${encodeURIComponent(symbol)}`,
+      { cache: "no-store" },
+    );
     const payload = await response.json().catch(() => null);
-    if (!response.ok) return { surfaceDate: null, surfaceRows: null, surfaceChains: null };
+    if (!response.ok)
+      return { surfaceDate: null, surfaceRows: null, surfaceChains: null };
     return surfaceMeta(payload);
   } catch {
     return { surfaceDate: null, surfaceRows: null, surfaceChains: null };
   }
 }
 
-function forecastHarvestItemFor(symbol: string, result: ForecastHarvestRunResult | null | undefined) {
-  const normalized = normalizeTickerInput(symbol);
-  return result?.items?.find((item) => normalizeTickerInput(item.symbol) === normalized) ?? null;
-}
-
-function stageLabel(value: unknown, fallback: string) {
-  const raw = String(value ?? fallback).replace(/_/g, " ");
-  return raw ? raw[0].toUpperCase() + raw.slice(1) : fallback;
-}
-
-function stageColor(value: unknown) {
-  const raw = String(value ?? "").toLowerCase();
-  if (["loaded", "generated", "saved", "captured", "ready"].includes(raw)) return colors.green;
-  if (["missing", "failed"].includes(raw)) return colors.red;
-  if (["fetching", "saving", "pending", "skipped", "surface-only", "needs-harvest"].includes(raw)) return colors.amber;
-  return colors.muted;
-}
-
 async function fetchNNReadiness(): Promise<NNReadiness | null> {
   try {
-    const response = await fetch("/api/forecast-harvest/readiness", { cache: "no-store" });
+    const response = await fetch("/api/forecast-harvest/readiness", {
+      cache: "no-store",
+    });
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok) return null;
     return payload as NNReadiness;
@@ -789,31 +924,44 @@ export default function DashboardPage() {
   const [mounted, setMounted] = useState(false);
   const [snapshotDate, setSnapshotDate] = useState(TODAY);
   const [tickerInput, setTickerInput] = useState("");
-  const [tickers, setTickers] = useState<string[]>(["AAPL", "SOFI", "MU", "^SPX"]);
+  const [tickers, setTickers] = useState<string[]>([
+    "AAPL",
+    "SOFI",
+    "MU",
+    "^SPX",
+  ]);
   const [queue, setQueue] = useState<HarvestItem[]>([]);
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState("READY");
   const [harvestOpen, setHarvestOpen] = useState(false);
   const [profiles, setProfiles] = useState<any[]>([]);
-  const [expandedTickers, setExpandedTickers] = useState<Record<string, boolean>>({});
+  const [expandedTickers, setExpandedTickers] = useState<
+    Record<string, boolean>
+  >({});
   const [newsPulses, setNewsPulses] = useState<DashboardNewsPulse[]>([]);
   const [newsLoading, setNewsLoading] = useState(false);
   const [newsHarvesting, setNewsHarvesting] = useState(false);
   const [newsStatus, setNewsStatus] = useState("News Pulse idle.");
   const [centralTickers, setCentralTickers] = useState<SavedTicker[]>([]);
-  const [centralEntitlement, setCentralEntitlement] = useState<Entitlement | null>(null);
+  const [centralEntitlement, setCentralEntitlement] =
+    useState<Entitlement | null>(null);
   const [centralUniverse, setCentralUniverse] = useState<UniverseTicker[]>([]);
   const [centralTickerInput, setCentralTickerInput] = useState("");
   const [centralReplaceSymbol, setCentralReplaceSymbol] = useState("");
   const [centralRows, setCentralRows] = useState<CentralCommandRow[]>([]);
-  const [centralStatus, setCentralStatus] = useState("Loading central ticker slots...");
+  const [centralStatus, setCentralStatus] = useState(
+    "Loading central ticker slots...",
+  );
   const [centralLoading, setCentralLoading] = useState(false);
   const [centralSaving, setCentralSaving] = useState(false);
   const [centralReplacementsUsed, setCentralReplacementsUsed] = useState(0);
   const [centralLoadedAt, setCentralLoadedAt] = useState<string | null>(null);
   const [forecastHarvestRunning, setForecastHarvestRunning] = useState(false);
-  const [forecastHarvestResult, setForecastHarvestResult] = useState<ForecastHarvestRunResult | null>(null);
-  const [forecastHarvestStatus, setForecastHarvestStatus] = useState("Forecast harvest idle.");
+  const [forecastHarvestResult, setForecastHarvestResult] =
+    useState<ForecastHarvestRunResult | null>(null);
+  const [forecastHarvestStatus, setForecastHarvestStatus] = useState(
+    "Forecast harvest idle.",
+  );
   const [captureSession, setCaptureSession] = useState("auto");
   const [nnReadiness, setNnReadiness] = useState<NNReadiness | null>(null);
 
@@ -821,7 +969,9 @@ export default function DashboardPage() {
     setMounted(true);
 
     try {
-      const savedTickers = JSON.parse(localStorage.getItem(HARVEST_TICKERS_KEY) || "[]");
+      const savedTickers = JSON.parse(
+        localStorage.getItem(HARVEST_TICKERS_KEY) || "[]",
+      );
       if (Array.isArray(savedTickers) && savedTickers.length) {
         setTickers(uniqueTickers(savedTickers));
       }
@@ -850,35 +1000,51 @@ export default function DashboardPage() {
 
   async function loadCentralUniverse(query = "") {
     try {
-      const response = await fetch(`/api/ticker-universe?limit=80${query ? `&q=${encodeURIComponent(query)}` : ""}`, { cache: "no-store" });
+      const response = await fetch(
+        `/api/ticker-universe?limit=80${query ? `&q=${encodeURIComponent(query)}` : ""}`,
+        { cache: "no-store" },
+      );
       const payload = await response.json().catch(() => null);
-      if (response.ok && Array.isArray(payload?.tickers)) setCentralUniverse(payload.tickers);
+      if (response.ok && Array.isArray(payload?.tickers))
+        setCentralUniverse(payload.tickers);
     } catch {
       // Helpful, but not required for the dashboard to render.
     }
   }
 
   async function loadDashboardNewsPulse(symbolsOverride?: string[]) {
-    const symbols = uniqueTickers(symbolsOverride ?? centralTickers.map((slot) => slot.symbol));
+    const symbols = uniqueTickers(
+      symbolsOverride ?? centralTickers.map((slot) => slot.symbol),
+    );
 
     if (!symbols.length) {
       setNewsPulses([]);
-      setNewsStatus("No locked ticker slots yet. News Pulse will activate after tickers are added.");
+      setNewsStatus(
+        "No locked ticker slots yet. News Pulse will activate after tickers are added.",
+      );
       return;
     }
 
     setNewsLoading(true);
-    setNewsStatus(`Loading News Pulse for ${symbols.length} locked ticker(s)...`);
+    setNewsStatus(
+      `Loading News Pulse for ${symbols.length} locked ticker(s)...`,
+    );
 
     try {
       const pulses = await fetchDashboardNewsPulse(symbols);
       setNewsPulses(pulses);
 
-      const activeCount = pulses.filter((pulse) => pulse.status !== "quiet").length;
-      const materialCount = pulses.filter((pulse) => safeNum(pulse.materiality) > 0 || pulse.count24h > 0).length;
-      setNewsStatus(activeCount || materialCount
-        ? `${activeCount} active ticker(s), ${materialCount} with material news context.`
-        : "No material ticker news found for locked tickers.");
+      const activeCount = pulses.filter(
+        (pulse) => pulse.status !== "quiet",
+      ).length;
+      const materialCount = pulses.filter(
+        (pulse) => safeNum(pulse.materiality) > 0 || pulse.count24h > 0,
+      ).length;
+      setNewsStatus(
+        activeCount || materialCount
+          ? `${activeCount} active ticker(s), ${materialCount} with material news context.`
+          : "No material ticker news found for locked tickers.",
+      );
     } catch (error: any) {
       setNewsStatus(error?.message ?? "Could not load News Pulse.");
       setNewsPulses(symbols.map((symbol) => quietNewsPulse(symbol)));
@@ -891,12 +1057,16 @@ export default function DashboardPage() {
     const symbols = uniqueTickers(centralTickers.map((slot) => slot.symbol));
 
     if (!symbols.length) {
-      setNewsStatus("No locked ticker slots yet. News harvest will activate after tickers are added.");
+      setNewsStatus(
+        "No locked ticker slots yet. News harvest will activate after tickers are added.",
+      );
       return;
     }
 
     setNewsHarvesting(true);
-    setNewsStatus(`Running live news harvest for ${symbols.length} locked ticker(s)...`);
+    setNewsStatus(
+      `Running live news harvest for ${symbols.length} locked ticker(s)...`,
+    );
 
     try {
       const response = await fetch("/api/news/harvest", {
@@ -915,10 +1085,14 @@ export default function DashboardPage() {
       const payload = await response.json().catch(() => null);
 
       if (!response.ok || !payload?.ok) {
-        throw new Error(payload?.error ?? `News harvest failed: ${response.status}`);
+        throw new Error(
+          payload?.error ?? `News harvest failed: ${response.status}`,
+        );
       }
 
-      setNewsStatus(`News harvest complete: inserted ${safeInt(payload.totalInserted, "0")} headline link(s), failed ${safeInt(payload.totalFailed, "0")}.`);
+      setNewsStatus(
+        `News harvest complete: inserted ${safeInt(payload.totalInserted, "0")} headline link(s), failed ${safeInt(payload.totalFailed, "0")}.`,
+      );
       await loadDashboardNewsPulse(symbols);
     } catch (error: any) {
       setNewsStatus(error?.message ?? "Could not run News Harvest.");
@@ -926,7 +1100,6 @@ export default function DashboardPage() {
       setNewsHarvesting(false);
     }
   }
-
 
   async function loadCentralWatchlist(): Promise<SavedTicker[]> {
     const response = await fetch("/api/user-watchlist", {
@@ -948,43 +1121,84 @@ export default function DashboardPage() {
 
   async function refreshCentralCommandHub(tickersOverride?: SavedTicker[]) {
     setCentralLoading(true);
-    setCentralStatus("Loading central ticker slots, latest surfaces, and OI Field forecasts...");
+    setCentralStatus(
+      "Loading central ticker slots, latest surfaces, and OI Field forecasts...",
+    );
 
     try {
-      const slots = tickersOverride ?? (centralTickers.length ? centralTickers : await loadCentralWatchlist());
-      const symbols = slots.map((slot) => normalizeTickerInput(slot.symbol)).filter(Boolean);
+      const slots =
+        tickersOverride ??
+        (centralTickers.length ? centralTickers : await loadCentralWatchlist());
+      const symbols = slots
+        .map((slot) => normalizeTickerInput(slot.symbol))
+        .filter(Boolean);
 
       if (!symbols.length) {
         setCentralRows([]);
-        setCentralStatus("No central ticker slots yet. Seed founder defaults or add tickers from the universe.");
-        setCentralLoadedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+        setCentralStatus(
+          "No central ticker slots yet. Seed founder defaults or add tickers from the universe.",
+        );
+        setCentralLoadedAt(
+          new Date().toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+        );
         await loadDashboardNewsPulse([]);
         return;
       }
 
-      const pairs = await Promise.all(symbols.map(async (symbol) => {
-        const slot = slots.find((item) => normalizeTickerInput(item.symbol) === symbol);
-        const [forecast, meta] = await Promise.all([fetchLatestForecast(symbol), fetchLatestSurfaceMeta(symbol)]);
-        const status: CentralCommandRow["status"] = forecast ? "ready" : meta.surfaceDate ? "surface-only" : "needs-harvest";
-        return {
-          symbol,
-          name: slot?.ticker_universe?.name,
-          assetType: slot?.ticker_universe?.asset_type,
-          forecast,
-          ...meta,
-          status,
-        } satisfies CentralCommandRow;
-      }));
+      const pairs = await Promise.all(
+        symbols.map(async (symbol) => {
+          const slot = slots.find(
+            (item) => normalizeTickerInput(item.symbol) === symbol,
+          );
+          const [forecast, meta] = await Promise.all([
+            fetchLatestForecast(symbol),
+            fetchLatestSurfaceMeta(symbol),
+          ]);
+          const status: CentralCommandRow["status"] = forecast
+            ? "ready"
+            : meta.surfaceDate
+              ? "surface-only"
+              : "needs-harvest";
+          return {
+            symbol,
+            name: slot?.ticker_universe?.name,
+            assetType: slot?.ticker_universe?.asset_type,
+            forecast,
+            ...meta,
+            status,
+          } satisfies CentralCommandRow;
+        }),
+      );
 
-      const statusRank: Record<CentralCommandRow["status"], number> = { ready: 3, "surface-only": 2, "needs-harvest": 1 };
-      const sorted = pairs.sort((a, b) => statusRank[b.status] - statusRank[a.status] || a.symbol.localeCompare(b.symbol));
+      const statusRank: Record<CentralCommandRow["status"], number> = {
+        ready: 3,
+        "surface-only": 2,
+        "needs-harvest": 1,
+      };
+      const sorted = pairs.sort(
+        (a, b) =>
+          statusRank[b.status] - statusRank[a.status] ||
+          a.symbol.localeCompare(b.symbol),
+      );
 
       setCentralRows(sorted);
-      setCentralLoadedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
-      setCentralStatus(`Loaded ${symbols.length} central ticker slot(s): ${sorted.filter((row) => row.status === "ready").length} forecast-ready, ${sorted.filter((row) => row.status === "surface-only").length} surface-only.`);
+      setCentralLoadedAt(
+        new Date().toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+      );
+      setCentralStatus(
+        `Loaded ${symbols.length} central ticker slot(s): ${sorted.filter((row) => row.status === "ready").length} forecast-ready, ${sorted.filter((row) => row.status === "surface-only").length} surface-only.`,
+      );
       await loadDashboardNewsPulse(symbols);
     } catch (error: any) {
-      setCentralStatus(error?.message ?? "Could not load central ticker command hub.");
+      setCentralStatus(
+        error?.message ?? "Could not load central ticker command hub.",
+      );
       setCentralRows([]);
     } finally {
       setCentralLoading(false);
@@ -996,39 +1210,77 @@ export default function DashboardPage() {
     if (readiness) setNnReadiness(readiness);
   }
 
-  async function runForecastHarvest(symbolsOverride?: string[]) {
-    const symbols = symbolsOverride?.length ? symbolsOverride : centralSymbols.length ? centralSymbols : centralTickers.map((slot) => normalizeTickerInput(slot.symbol)).filter(Boolean);
-    if (!symbols.length || forecastHarvestRunning) return null;
+  function effectiveCaptureSession() {
+    if (captureSession !== "auto") return captureSession;
+    const now = new Date();
+    const minutes = now.getHours() * 60 + now.getMinutes();
+    if (minutes < 9 * 60 + 30) return "premarket";
+    if (minutes < 15 * 60 + 30) return "midday";
+    return "close";
+  }
 
-    const resolvedSession = captureSession === "auto" ? inferForecastSession() : captureSession;
+  async function runForecastHarvest(symbolsOverride?: string[]) {
+    const symbols = symbolsOverride?.length
+      ? symbolsOverride
+      : centralSymbols.length
+        ? centralSymbols
+        : centralTickers
+            .map((slot) => normalizeTickerInput(slot.symbol))
+            .filter(Boolean);
+    if (!symbols.length || forecastHarvestRunning) return false;
+
+    const session = effectiveCaptureSession();
     setForecastHarvestRunning(true);
-    setForecastHarvestStatus(`Running forecast harvest for ${symbols.length} ticker(s) · session ${displayForecastSession(captureSession)}...`);
+    setForecastHarvestStatus(
+      `Generating baseline OI Field forecasts for ${symbols.length} ticker(s) · session ${session}...`,
+    );
 
     try {
       const response = await fetch("/api/forecast-harvest/run", {
         method: "POST",
         headers: await getDashboardAuthHeaders(true),
-        body: JSON.stringify({ symbols, captureSession: resolvedSession, notes: { source: "dashboard_command_hub", requestedSession: captureSession } }),
+        body: JSON.stringify({
+          symbols,
+          captureSession: session,
+          notes: {
+            source: "dashboard_command_hub",
+            mode: "surface_backed_baseline",
+          },
+        }),
       });
-      const payload = (await response.json().catch(() => null)) as ForecastHarvestRunResult | null;
+      const payload = (await response
+        .json()
+        .catch(() => null)) as ForecastHarvestRunResult | null;
 
-      if (!response.ok || !payload?.ok) throw new Error(payload?.error ?? `Forecast harvest failed: ${response.status}`);
+      if (!response.ok || !payload?.ok)
+        throw new Error(
+          payload?.error ?? `Forecast harvest failed: ${response.status}`,
+        );
 
       setForecastHarvestResult(payload);
-      setForecastHarvestStatus(`Forecast harvest complete: ${payload.captured ?? 0}/${payload.requested ?? symbols.length} captured · ${payload.failed ?? 0} failed · session ${payload.captureSession ?? resolvedSession}. ${payload.message ?? "Baseline OI forecast remains active until NN is activated."}`);
+      setForecastHarvestStatus(
+        `Forecast harvest complete: ${payload.captured ?? 0}/${payload.requested ?? symbols.length} saved · ${payload.failed ?? 0} failed · session ${payload.captureSession ?? session}.`,
+      );
       await Promise.all([refreshCentralCommandHub(), loadNNReadiness()]);
-      return payload;
+      return true;
     } catch (error: any) {
       setForecastHarvestStatus(error?.message ?? "Forecast harvest failed.");
-      return null;
+      return false;
     } finally {
       setForecastHarvestRunning(false);
     }
   }
 
-  async function addCentralTicker(symbolOverride?: string, replaceOverride?: string) {
-    const symbol = normalizeTickerInput(symbolOverride ?? centralTickerInput).replace(/[^A-Z0-9.\-^]/g, "");
-    const replaceSymbol = normalizeTickerInput(replaceOverride ?? centralReplaceSymbol).replace(/[^A-Z0-9.\-^]/g, "");
+  async function addCentralTicker(
+    symbolOverride?: string,
+    replaceOverride?: string,
+  ) {
+    const symbol = normalizeTickerInput(
+      symbolOverride ?? centralTickerInput,
+    ).replace(/[^A-Z0-9.\-^]/g, "");
+    const replaceSymbol = normalizeTickerInput(
+      replaceOverride ?? centralReplaceSymbol,
+    ).replace(/[^A-Z0-9.\-^]/g, "");
     if (!symbol) return;
 
     setCentralSaving(true);
@@ -1038,7 +1290,10 @@ export default function DashboardPage() {
       const response = await fetch("/api/user-watchlist", {
         method: "POST",
         headers: await getDashboardAuthHeaders(true),
-        body: JSON.stringify({ symbol, replaceSymbol: replaceSymbol || undefined }),
+        body: JSON.stringify({
+          symbol,
+          replaceSymbol: replaceSymbol || undefined,
+        }),
       });
       const payload = await response.json().catch(() => null);
 
@@ -1065,10 +1320,13 @@ export default function DashboardPage() {
     setCentralStatus(`Removing ${normalized} from central ticker slots...`);
 
     try {
-      const response = await fetch(`/api/user-watchlist?symbol=${encodeURIComponent(normalized)}`, {
-        method: "DELETE",
-        headers: await getDashboardAuthHeaders(),
-      });
+      const response = await fetch(
+        `/api/user-watchlist?symbol=${encodeURIComponent(normalized)}`,
+        {
+          method: "DELETE",
+          headers: await getDashboardAuthHeaders(),
+        },
+      );
       const payload = await response.json().catch(() => null);
 
       if (!response.ok || !payload?.ok) {
@@ -1103,12 +1361,24 @@ export default function DashboardPage() {
     }
   }
 
-  const positions = useMemo(() => flattenPortfolioPositions(profiles), [profiles]);
+  const positions = useMemo(
+    () => flattenPortfolioPositions(profiles),
+    [profiles],
+  );
   const groups = useMemo(() => groupPositionsByTicker(positions), [positions]);
   const totals = useMemo(() => aggregateTotals(groups), [groups]);
 
-  const normalTickers = useMemo(() => tickers.filter((ticker) => !isPremiumTicker(ticker)).slice(0, MAX_NORMAL_TICKERS), [tickers]);
-  const premiumTickers = useMemo(() => tickers.filter(isPremiumTicker), [tickers]);
+  const normalTickers = useMemo(
+    () =>
+      tickers
+        .filter((ticker) => !isPremiumTicker(ticker))
+        .slice(0, MAX_NORMAL_TICKERS),
+    [tickers],
+  );
+  const premiumTickers = useMemo(
+    () => tickers.filter(isPremiumTicker),
+    [tickers],
+  );
 
   function toggleTicker(ticker: string) {
     setExpandedTickers((prev) => ({ ...prev, [ticker]: !prev[ticker] }));
@@ -1119,7 +1389,9 @@ export default function DashboardPage() {
     if (!parsed.length) return;
 
     const next = uniqueTickers([...tickers, ...parsed]);
-    const normal = next.filter((ticker) => !isPremiumTicker(ticker)).slice(0, MAX_NORMAL_TICKERS);
+    const normal = next
+      .filter((ticker) => !isPremiumTicker(ticker))
+      .slice(0, MAX_NORMAL_TICKERS);
     const premium = next.filter(isPremiumTicker);
 
     setTickers(uniqueTickers([...normal, ...premium]));
@@ -1150,8 +1422,8 @@ export default function DashboardPage() {
               ...item,
               ...patch,
             }
-          : item
-      )
+          : item,
+      ),
     );
   }
 
@@ -1175,7 +1447,10 @@ export default function DashboardPage() {
       message: "Fetching option chain",
     });
 
-    const snapshot = await getOptionChain(normalizedTicker as any, snapshotDate);
+    const snapshot = await getOptionChain(
+      normalizedTicker as any,
+      snapshotDate,
+    );
     const rowCount = countRows(snapshot);
     const chainCount = snapshot?.chains?.length ?? 0;
 
@@ -1187,7 +1462,7 @@ export default function DashboardPage() {
         message: "No chains or rows returned",
         completedAt: new Date().toISOString(),
       });
-      throw new Error("No chains or rows returned");
+      return;
     }
 
     updateQueueItem(normalizedTicker, {
@@ -1243,30 +1518,24 @@ export default function DashboardPage() {
     return saveResult;
   }
 
-  async function runHarvest(targets: string[], options?: { runForecastAfter?: boolean }) {
-    if (running) return { saved: 0, failed: 0, targets: [] as string[] };
+  async function runHarvest(targets: string[]) {
+    if (running) return false;
 
     const uniqueTargets = uniqueTickers(targets);
 
     if (!uniqueTargets.length) {
       setStatus("NO TICKERS SELECTED");
-      return { saved: 0, failed: 0, targets: [] as string[] };
+      return false;
     }
 
     setRunning(true);
-    setStatus(`SURFACE HARVEST RUNNING: ${uniqueTargets.length} TICKER(S)`);
-    setForecastHarvestResult(null);
+    setStatus(`HARVEST RUNNING: ${uniqueTargets.length} TICKER(S)`);
     buildQueue(uniqueTargets);
-
-    let saved = 0;
-    let failed = 0;
 
     for (const ticker of uniqueTargets) {
       try {
         await harvestTicker(ticker);
-        saved += 1;
       } catch (error) {
-        failed += 1;
         console.error("[WheelDesk] Harvest failed:", ticker, error);
 
         updateQueueItem(ticker, {
@@ -1278,15 +1547,29 @@ export default function DashboardPage() {
     }
 
     setRunning(false);
-    setStatus(options?.runForecastAfter ? `SURFACE HARVEST COMPLETE: ${saved} SAVED · STARTING FORECAST HARVEST` : "READY");
+    setStatus("READY");
     await refreshCentralCommandHub();
+    return true;
+  }
 
-    if (options?.runForecastAfter && saved > 0) {
-      await runForecastHarvest(uniqueTargets);
-      setStatus("READY");
+  async function runFullOiHarvest() {
+    const symbols = uniqueTickers(centralSymbols);
+    if (!symbols.length || running || forecastHarvestRunning) return;
+    setForecastHarvestResult(null);
+    setForecastHarvestStatus(
+      "Step 1/2: capturing OI surfaces from provider...",
+    );
+    const surfaceOk = await runHarvest(symbols);
+    if (!surfaceOk) {
+      setForecastHarvestStatus(
+        "Full OI harvest stopped because surface harvest did not complete.",
+      );
+      return;
     }
-
-    return { saved, failed, targets: uniqueTargets };
+    setForecastHarvestStatus(
+      "Step 2/2: generating baseline OI Field forecasts from saved surfaces...",
+    );
+    await runForecastHarvest(symbols);
   }
 
   const savedCount = queue.filter((item) => item.status === "saved").length;
@@ -1294,460 +1577,705 @@ export default function DashboardPage() {
   const totalRows = queue.reduce((sum, item) => sum + (item.rowCount ?? 0), 0);
   const centralUsedSlots = centralTickers.length;
   const centralMaxSlots = Number(centralEntitlement?.maxTickers ?? 0);
-  const centralReplacementsLeft = Math.max(0, Number(centralEntitlement?.maxReplacementsPerDay ?? 0) - centralReplacementsUsed);
-  const centralReady = centralRows.filter((row) => row.status === "ready").length;
-  const centralSurfaceOnly = centralRows.filter((row) => row.status === "surface-only").length;
-  const centralNeedsHarvest = centralRows.filter((row) => row.status === "needs-harvest").length;
-  const centralTop = centralRows.find((row) => row.forecast) ?? centralRows[0] ?? null;
-  const centralSymbols = centralTickers.map((slot) => normalizeTickerInput(slot.symbol)).filter(Boolean);
-  const newsQuiet = newsPulses.filter((pulse) => pulse.status === "quiet").length;
-  const newsActive = newsPulses.filter((pulse) => pulse.status === "active").length;
-  const newsElevated = newsPulses.filter((pulse) => pulse.status === "elevated").length;
-  const newsShock = newsPulses.filter((pulse) => pulse.status === "shock").length;
-  const newsRows = newsPulses.length ? newsPulses : centralSymbols.map((symbol) => quietNewsPulse(symbol));
+  const centralReplacementsLeft = Math.max(
+    0,
+    Number(centralEntitlement?.maxReplacementsPerDay ?? 0) -
+      centralReplacementsUsed,
+  );
+  const centralReady = centralRows.filter(
+    (row) => row.status === "ready",
+  ).length;
+  const centralSurfaceOnly = centralRows.filter(
+    (row) => row.status === "surface-only",
+  ).length;
+  const centralNeedsHarvest = centralRows.filter(
+    (row) => row.status === "needs-harvest",
+  ).length;
+  const centralTop =
+    centralRows.find((row) => row.forecast) ?? centralRows[0] ?? null;
+  const centralSymbols = centralTickers
+    .map((slot) => normalizeTickerInput(slot.symbol))
+    .filter(Boolean);
+  const newsQuiet = newsPulses.filter(
+    (pulse) => pulse.status === "quiet",
+  ).length;
+  const newsActive = newsPulses.filter(
+    (pulse) => pulse.status === "active",
+  ).length;
+  const newsElevated = newsPulses.filter(
+    (pulse) => pulse.status === "elevated",
+  ).length;
+  const newsShock = newsPulses.filter(
+    (pulse) => pulse.status === "shock",
+  ).length;
+  const newsRows = newsPulses.length
+    ? newsPulses
+    : centralSymbols.map((symbol) => quietNewsPulse(symbol));
 
   return (
     <AuthGate>
-    <div className="wheeldesk-shell" style={styles.app}>
-  <WheelDeskSideNav active="dashboard" />
+      <div className="wheeldesk-shell" style={styles.app}>
+        <WheelDeskSideNav active="dashboard" />
 
- 
-
-      <main className="wheeldesk-page" style={styles.main}>
-        <header style={styles.header}>
-          <div>
-            <div style={styles.eyebrow}>WHEELDESK</div>
-            <h1 style={styles.title}>Dashboard</h1>
-          </div>
-
-          <div style={styles.headerRight}>
-            <span>ACCOUNT STATUS:</span>
-            <strong style={{ color: colors.green }}>OK TO TRADE</strong>
-            <a href="/control-center" style={styles.controlButton}>
-              Open Control Center
-            </a>
-          </div>
-        </header>
-
-        <section style={styles.commandHub}>
-          <div style={styles.commandHeader}>
+        <main className="wheeldesk-page" style={styles.main}>
+          <header style={styles.header}>
             <div>
-              <div style={styles.eyebrow}>Central Ticker Universe</div>
-              <h2 style={styles.commandTitle}>Dashboard Command Hub</h2>
-              <p style={styles.commandSubtitle}>
-                Manage the tickers that WheelDesk tracks for your account. Shared OI surfaces, OI Field forecasts, and future validation receipts should flow from this central universe into Control Center, Chart Room, Validation, and Watchlist Command.
-              </p>
+              <div style={styles.eyebrow}>WHEELDESK</div>
+              <h1 style={styles.title}>Dashboard</h1>
             </div>
 
-            <div style={styles.commandStatusBox}>
-              <span>{centralLoadedAt ? `Updated ${centralLoadedAt}` : "Loading"}</span>
-              <strong>{centralUsedSlots}/{centralMaxSlots || "?"}</strong>
-              <small>{centralEntitlement?.plan ?? "founder"} ticker slots</small>
+            <div style={styles.headerRight}>
+              <span>ACCOUNT STATUS:</span>
+              <strong style={{ color: colors.green }}>OK TO TRADE</strong>
+              <a href="/control-center" style={styles.controlButton}>
+                Open Control Center
+              </a>
             </div>
-          </div>
+          </header>
 
-          <div style={styles.commandStats}>
-            <div style={styles.commandStat}><span>Forecast Ready</span><strong style={{ color: colors.green }}>{centralReady}</strong></div>
-            <div style={styles.commandStat}><span>Surface Only</span><strong style={{ color: colors.amber }}>{centralSurfaceOnly}</strong></div>
-            <div style={styles.commandStat}><span>Needs Harvest</span><strong style={{ color: colors.red }}>{centralNeedsHarvest}</strong></div>
-            <div style={styles.commandStat}><span>Replacements Left</span><strong style={{ color: colors.cyan }}>{centralReplacementsLeft}</strong></div>
-            <div style={styles.commandStat}><span>Forecasts Captured</span><strong style={{ color: colors.cyan }}>{safeInt(nnReadiness?.captured ?? 0)}</strong></div>
-            <div style={styles.commandStat}><span>Neural Status</span><strong style={{ color: colors.amber }}>{readinessLabel(nnReadiness?.neuralStatus)}</strong></div>
-          </div>
-
-          <div style={styles.commandControls}>
-            <label style={styles.label}>
-              Add from universe
-              <input
-                value={centralTickerInput}
-                onChange={(event) => {
-                  const value = event.target.value.toUpperCase();
-                  setCentralTickerInput(value);
-                  loadCentralUniverse(value);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    addCentralTicker();
-                  }
-                }}
-                placeholder="AMD, SOFI, NVDA..."
-                style={styles.input}
-                list="dashboard-central-universe"
-              />
-              <datalist id="dashboard-central-universe">
-                {centralUniverse.map((ticker) => (
-                  <option key={ticker.symbol} value={ticker.symbol}>
-                    {ticker.name ?? ticker.symbol}
-                  </option>
-                ))}
-              </datalist>
-            </label>
-
-            <label style={styles.label}>
-              Replace if full
-              <select value={centralReplaceSymbol} onChange={(event) => setCentralReplaceSymbol(event.target.value)} style={styles.input}>
-                <option value="">Do not replace</option>
-                {centralTickers.map((ticker) => (
-                  <option key={ticker.symbol} value={ticker.symbol}>{ticker.symbol}</option>
-                ))}
-              </select>
-            </label>
-
-            <button type="button" onClick={() => addCentralTicker()} disabled={centralSaving || centralLoading || !centralTickerInput.trim()} style={styles.primaryButton}>
-              {centralSaving ? "Saving..." : "Add Slot"}
-            </button>
-
-            <button type="button" onClick={seedCentralFounderDefaults} disabled={centralSaving || centralLoading || centralTickers.length > 0} style={styles.button}>
-              Seed Founder Defaults
-            </button>
-
-            <button type="button" onClick={() => refreshCentralCommandHub()} disabled={centralSaving || centralLoading} style={styles.button}>
-              {centralLoading ? "Refreshing..." : "Refresh Hub"}
-            </button>
-
-            <label style={styles.label}>
-              Forecast session
-              <select value={captureSession} onChange={(event) => setCaptureSession(event.target.value)} style={styles.input}>
-                <option value="auto">Auto session ({inferForecastSession()})</option>
-                <option value="premarket">Premarket</option>
-                <option value="midday">Midday</option>
-                <option value="close">Close</option>
-                <option value="manual">Manual</option>
-              </select>
-            </label>
-
-            <button type="button" onClick={() => runHarvest(centralSymbols)} disabled={running || forecastHarvestRunning || !centralSymbols.length} style={styles.button}>
-              {running ? "Harvesting Surfaces..." : "Harvest Surfaces"}
-            </button>
-
-            <button type="button" onClick={() => runForecastHarvest()} disabled={running || forecastHarvestRunning || !centralSymbols.length} style={styles.button}>
-              {forecastHarvestRunning ? "Generating Forecasts..." : "Run Forecast Harvest"}
-            </button>
-
-            <button type="button" onClick={() => runHarvest(centralSymbols, { runForecastAfter: true })} disabled={running || forecastHarvestRunning || !centralSymbols.length} style={styles.primaryButton}>
-              {running || forecastHarvestRunning ? "Running Full OI Harvest..." : "Run Full OI Harvest"}
-            </button>
-          </div>
-
-          <div style={styles.commandMessage}>{centralStatus}</div>
-          <div style={styles.commandMessage}>
-            <strong style={{ color: colors.cyan }}>Forecast harvest:</strong> {forecastHarvestStatus}
-            {forecastHarvestResult?.neuralMode ? (
-              <span style={{ display: "block", marginTop: 6, color: colors.muted }}>
-                Neural mode: <strong style={{ color: colors.amber }}>{forecastHarvestResult.neuralMode}</strong>. The active forecast remains the baseline OI implied path until NN mode is explicitly activated.
-              </span>
-            ) : null}
-          </div>
-
-          {centralTop ? (
-            <div style={styles.commandTop}>
+          <section style={styles.commandHub}>
+            <div style={styles.commandHeader}>
               <div>
-                <div style={styles.eyebrow}>Start here</div>
-                <h3 style={styles.commandTopTitle}>{centralTop.symbol} · {commandStatus(centralTop)}</h3>
+                <div style={styles.eyebrow}>Central Ticker Universe</div>
+                <h2 style={styles.commandTitle}>Dashboard Command Hub</h2>
                 <p style={styles.commandSubtitle}>
-                  {centralTop.forecast
-                    ? `Bias ${centralTop.forecast.bias ?? "N/A"} · 30D base ${safeMoney(centralTop.forecast.base_30d)} · field ${safeMoney(centralTop.forecast.lower_30d)}–${safeMoney(centralTop.forecast.upper_30d)} · confidence ${formatPercent(centralTop.forecast.confidence)}.`
-                    : centralTop.surfaceDate
-                      ? `Surface captured on ${centralTop.surfaceDate}. Open Control Center and click Capture Forecast to create the OI Field receipt.`
-                      : "No surface exists yet. Harvest this ticker before using it in the daily read."}
+                  Manage the tickers that WheelDesk tracks for your account.
+                  Shared OI surfaces, OI Field forecasts, and future validation
+                  receipts should flow from this central universe into Control
+                  Center, Chart Room, Validation, and Watchlist Command.
                 </p>
               </div>
-              <div style={styles.commandTopActions}>
-                <a href={`/control-center?ticker=${encodeURIComponent(centralTop.symbol)}`} style={styles.controlButton}>Open Control</a>
-                <a href={`/control-center/chart?ticker=${encodeURIComponent(centralTop.symbol)}`} style={styles.controlButton}>Chart Room</a>
-                <a href="/watchlist" style={styles.controlButton}>Full Watchlist</a>
+
+              <div style={styles.commandStatusBox}>
+                <span>
+                  {centralLoadedAt ? `Updated ${centralLoadedAt}` : "Loading"}
+                </span>
+                <strong>
+                  {centralUsedSlots}/{centralMaxSlots || "?"}
+                </strong>
+                <small>
+                  {centralEntitlement?.plan ?? "founder"} ticker slots
+                </small>
               </div>
             </div>
-          ) : null}
 
-          <div style={styles.centralProcessTableWrap}>
-            <table style={styles.harvestTable}>
-              <thead>
-                <tr>
-                  <th style={styles.th}>Ticker</th>
-                  <th style={styles.th}>Surface</th>
-                  <th style={styles.th}>Exp. Chains</th>
-                  <th style={styles.th}>Rows</th>
-                  <th style={styles.th}>Forecast</th>
-                  <th style={styles.th}>30D Field</th>
-                  <th style={styles.th}>NN Mode</th>
-                  <th style={styles.th}>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {centralRows.length ? centralRows.map((row) => {
-                  const harvestItem = forecastHarvestItemFor(row.symbol, forecastHarvestResult);
-                  const surfaceText = harvestItem?.surfaceStatus
-                    ? stageLabel(harvestItem.surfaceStatus, "Surface")
-                    : row.surfaceDate
-                      ? "Captured"
-                      : "Missing";
-                  const forecastText = harvestItem?.forecastStatus
-                    ? stageLabel(harvestItem.forecastStatus, "Forecast")
-                    : row.forecast
-                      ? "Ready"
-                      : row.surfaceDate
-                        ? "Needs forecast"
-                        : "Waiting";
-                  const nnText = row.forecast ? "Baseline" : "Collecting";
-
-                  return (
-                    <tr key={row.symbol}>
-                      <td style={styles.td}>
-                        <strong>{row.symbol}</strong><br />
-                        <small style={{ color: colors.muted }}>{row.name ?? row.assetType ?? "WheelDesk universe"}</small>
-                      </td>
-                      <td style={styles.td}>
-                        <strong style={{ color: stageColor(harvestItem?.surfaceStatus ?? (row.surfaceDate ? "loaded" : "missing")) }}>{surfaceText}</strong><br />
-                        <small style={{ color: colors.muted }}>{harvestItem?.snapshotDate ?? row.surfaceDate ?? "No surface date"}</small>
-                      </td>
-                      <td style={styles.td}>
-                        {safeInt(harvestItem?.surfaceChains ?? row.surfaceChains, "—")}
-                      </td>
-                      <td style={styles.td}>
-                        {safeInt(harvestItem?.surfaceRows ?? row.surfaceRows, "—")}
-                      </td>
-                      <td style={styles.td}>
-                        <strong style={{ color: stageColor(harvestItem?.forecastStatus ?? (row.forecast ? "generated" : "skipped")) }}>{forecastText}</strong><br />
-                        <small style={{ color: colors.muted }}>{harvestItem?.expiration ?? row.forecast?.expiration ?? "No expiration"}</small>
-                      </td>
-                      <td style={styles.td}>
-                        {row.forecast
-                          ? `${safeMoney(row.forecast.lower_30d, "N/A")} – ${safeMoney(row.forecast.upper_30d, "N/A")}`
-                          : "N/A"}
-                        <br />
-                        <small style={{ color: colors.muted }}>Base {safeMoney(row.forecast?.base_30d, "N/A")}</small>
-                      </td>
-                      <td style={styles.td}>
-                        <strong style={{ color: colors.amber }}>{nnText}</strong><br />
-                        <small style={{ color: colors.muted }}>OI path active</small>
-                      </td>
-                      <td style={styles.td}>
-                        <a href={`/control-center?ticker=${encodeURIComponent(row.symbol)}`} style={styles.inlineAction}>Control</a>{" "}
-                        <a href={`/dashboard/validation?ticker=${encodeURIComponent(row.symbol)}`} style={styles.inlineAction}>Validate</a>{" "}
-                        <button type="button" onClick={() => removeCentralTicker(row.symbol)} style={styles.textButton} disabled={centralSaving}>Remove</button>
-                        {harvestItem?.message ? <div style={{ color: colors.muted, marginTop: 4 }}>{harvestItem.message}</div> : null}
-                      </td>
-                    </tr>
-                  );
-                }) : (
-                  <tr>
-                    <td style={styles.td} colSpan={8}>No central ticker slots yet. Seed founder defaults or add a ticker from the universe.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section style={styles.portfolioPanel}>
-          <div style={styles.panelStrip}>
-            <span>Equities and Equity Options</span>
-            <span>Updated {new Date().toLocaleString()}</span>
-          </div>
-
-          <table style={styles.statementTable}>
-            <thead>
-              <tr>
-                <th style={{ ...styles.th, width: "26%" }}>Instrument</th>
-                <th style={styles.thRight}>Qty</th>
-                <th style={styles.thRight}>Days</th>
-                <th style={styles.thRight}>Trade Price</th>
-                <th style={styles.thRight}>Mark</th>
-                <th style={styles.thRight}>Delta</th>
-                <th style={styles.thRight}>Theta</th>
-                <th style={styles.thRight}>P/L Open</th>
-                <th style={styles.thRight}>P/L Day</th>
-                <th style={styles.thRight}>BP Effect</th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {groups.length ? (
-                groups.map((group) => {
-                  const open = expandedTickers[group.ticker] ?? true;
-
-                  return (
-                    <TickerRows
-                      key={group.ticker}
-                      group={group}
-                      open={open}
-                      toggle={() => toggleTicker(group.ticker)}
-                    />
-                  );
-                })
-              ) : (
-                <tr>
-                  <td style={styles.td} colSpan={10}>
-                    No portfolio positions found. Build positions in the Portfolio page.
-                  </td>
-                </tr>
-              )}
-
-              <tr>
-                <td style={styles.totalCell}>Overall Totals</td>
-                <td style={styles.tdRight}>{safeInt(totals.stockShares)}</td>
-                <td style={styles.tdRight}>N/A</td>
-                <td style={styles.tdRight}></td>
-                <td style={styles.tdRight}></td>
-                <td style={styles.tdRight}>{safeFixed(totals.delta, 2)}</td>
-                <td style={styles.tdRight}>{safeFixed(totals.theta, 2)}</td>
-                <td style={styles.tdRight}>{safeMoney(totals.openPnL)}</td>
-                <td style={styles.tdRight}>{safeMoney(totals.dayPnL)}</td>
-                <td style={styles.tdRight}>{safeMoney(totals.bpEffect)}</td>
-              </tr>
-            </tbody>
-          </table>
-
-          <div style={styles.summaryBar}>
-            <span>POSITIONS: <strong>{safeInt(totals.positions)}</strong></span>
-            <span>SHORT CALLS: <strong style={{ color: colors.green }}>{safeInt(totals.shortCalls)}</strong></span>
-            <span>SHORT PUTS: <strong style={{ color: colors.green }}>{safeInt(totals.shortPuts)}</strong></span>
-            <span>BP EFFECT: <strong style={{ color: colors.green }}>{safeMoney(totals.bpEffect)}</strong></span>
-          </div>
-        </section>
-
-        <section style={styles.harvestDetails}>
-          <div style={styles.detailsSummaryButton}>
-            <span style={styles.harvestTitle}>
-              <span style={styles.harvestToggle}>✓</span>
-              Central Harvest Only
-            </span>
-            <span style={{ color: running ? colors.amber : colors.text }}>{status}</span>
-          </div>
-
-          <div style={styles.harvestBody}>
-            <p style={styles.commandSubtitle}>
-              The legacy manual Snapshot Harvest has been removed from the user dashboard. Harvesting now runs from the central ticker slots above so ticker limits, replacement rules, shared surfaces, and future forecast receipts stay aligned with the account universe.
-            </p>
-
-            <div style={styles.queueStats}>
-              <span>Last run saved: <strong>{savedCount}</strong></span>
-              <span>Failed: <strong>{failedCount}</strong></span>
-              <span>Rows: <strong>{safeInt(totalRows)}</strong></span>
-              <span>Tracked slots: <strong>{centralUsedSlots}/{centralMaxSlots || "?"}</strong></span>
-              <span>Forecast session: <strong>{displayForecastSession(captureSession)}</strong></span>
+            <div style={styles.commandStats}>
+              <div style={styles.commandStat}>
+                <span>Forecast Ready</span>
+                <strong style={{ color: colors.green }}>{centralReady}</strong>
+              </div>
+              <div style={styles.commandStat}>
+                <span>Surface Only</span>
+                <strong style={{ color: colors.amber }}>
+                  {centralSurfaceOnly}
+                </strong>
+              </div>
+              <div style={styles.commandStat}>
+                <span>Needs Harvest</span>
+                <strong style={{ color: colors.red }}>
+                  {centralNeedsHarvest}
+                </strong>
+              </div>
+              <div style={styles.commandStat}>
+                <span>Replacements Left</span>
+                <strong style={{ color: colors.cyan }}>
+                  {centralReplacementsLeft}
+                </strong>
+              </div>
+              <div style={styles.commandStat}>
+                <span>Forecasts Captured</span>
+                <strong style={{ color: colors.cyan }}>
+                  {safeInt(nnReadiness?.captured ?? 0)}
+                </strong>
+              </div>
+              <div style={styles.commandStat}>
+                <span>Neural Status</span>
+                <strong style={{ color: colors.amber }}>
+                  {readinessLabel(nnReadiness?.neuralStatus)}
+                </strong>
+              </div>
             </div>
 
-            <div style={styles.centralProcessTableWrap}>
+            <div style={styles.commandControls}>
+              <label style={styles.label}>
+                Add from universe
+                <input
+                  value={centralTickerInput}
+                  onChange={(event) => {
+                    const value = event.target.value.toUpperCase();
+                    setCentralTickerInput(value);
+                    loadCentralUniverse(value);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      addCentralTicker();
+                    }
+                  }}
+                  placeholder="AMD, SOFI, NVDA..."
+                  style={styles.input}
+                  list="dashboard-central-universe"
+                />
+                <datalist id="dashboard-central-universe">
+                  {centralUniverse.map((ticker) => (
+                    <option key={ticker.symbol} value={ticker.symbol}>
+                      {ticker.name ?? ticker.symbol}
+                    </option>
+                  ))}
+                </datalist>
+              </label>
+
+              <label style={styles.label}>
+                Replace if full
+                <select
+                  value={centralReplaceSymbol}
+                  onChange={(event) =>
+                    setCentralReplaceSymbol(event.target.value)
+                  }
+                  style={styles.input}
+                >
+                  <option value="">Do not replace</option>
+                  {centralTickers.map((ticker) => (
+                    <option key={ticker.symbol} value={ticker.symbol}>
+                      {ticker.symbol}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <button
+                type="button"
+                onClick={() => addCentralTicker()}
+                disabled={
+                  centralSaving || centralLoading || !centralTickerInput.trim()
+                }
+                style={styles.primaryButton}
+              >
+                {centralSaving ? "Saving..." : "Add Slot"}
+              </button>
+
+              <button
+                type="button"
+                onClick={seedCentralFounderDefaults}
+                disabled={
+                  centralSaving || centralLoading || centralTickers.length > 0
+                }
+                style={styles.button}
+              >
+                Seed Founder Defaults
+              </button>
+
+              <button
+                type="button"
+                onClick={() => refreshCentralCommandHub()}
+                disabled={centralSaving || centralLoading}
+                style={styles.button}
+              >
+                {centralLoading ? "Refreshing..." : "Refresh Hub"}
+              </button>
+
+              <label style={styles.label}>
+                Forecast session
+                <select
+                  value={captureSession}
+                  onChange={(event) => setCaptureSession(event.target.value)}
+                  style={styles.input}
+                >
+                  <option value="auto">Auto session</option>
+                  <option value="premarket">Premarket</option>
+                  <option value="midday">Midday</option>
+                  <option value="close">Close</option>
+                  <option value="manual">Manual</option>
+                </select>
+              </label>
+
+              <button
+                type="button"
+                onClick={runFullOiHarvest}
+                disabled={
+                  running || forecastHarvestRunning || !centralSymbols.length
+                }
+                style={styles.primaryButton}
+              >
+                {running || forecastHarvestRunning
+                  ? "Harvesting..."
+                  : "Run Full OI Harvest"}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => runHarvest(centralSymbols)}
+                disabled={running || !centralSymbols.length}
+                style={styles.button}
+              >
+                Surface Only
+              </button>
+
+              <button
+                type="button"
+                onClick={() => runForecastHarvest()}
+                disabled={forecastHarvestRunning || !centralSymbols.length}
+                style={styles.button}
+              >
+                Forecast Only
+              </button>
+            </div>
+
+            <div style={styles.commandMessage}>{centralStatus}</div>
+            <div style={styles.commandMessage}>
+              <strong style={{ color: colors.cyan }}>Forecast harvest:</strong>{" "}
+              {forecastHarvestStatus}
+              {forecastHarvestResult?.items?.length ? (
+                <div style={{ marginTop: 8, display: "grid", gap: 4 }}>
+                  {forecastHarvestResult.items.map((item) => (
+                    <div
+                      key={`${item.symbol}-${item.expiration ?? item.status}`}
+                      style={styles.harvestMiniRow}
+                    >
+                      <strong>{item.symbol}</strong>
+                      <span>Surface: {item.surfaceStatus ?? "—"}</span>
+                      <span>
+                        Forecast: {item.forecastStatus ?? item.status}
+                      </span>
+                      <span>
+                        Save:{" "}
+                        {item.saveStatus ??
+                          (item.status === "captured" ? "saved" : "—")}
+                      </span>
+                      <span>
+                        {item.expiration
+                          ? `Exp ${item.expiration}`
+                          : (item.message ?? "")}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+
+            {centralTop ? (
+              <div style={styles.commandTop}>
+                <div>
+                  <div style={styles.eyebrow}>Start here</div>
+                  <h3 style={styles.commandTopTitle}>
+                    {centralTop.symbol} · {commandStatus(centralTop)}
+                  </h3>
+                  <p style={styles.commandSubtitle}>
+                    {centralTop.forecast
+                      ? `Bias ${centralTop.forecast.bias ?? "N/A"} · 30D base ${safeMoney(centralTop.forecast.base_30d)} · field ${safeMoney(centralTop.forecast.lower_30d)}–${safeMoney(centralTop.forecast.upper_30d)} · confidence ${formatPercent(centralTop.forecast.confidence)}.`
+                      : centralTop.surfaceDate
+                        ? `Surface captured on ${centralTop.surfaceDate}. Open Control Center and click Capture Forecast to create the OI Field receipt.`
+                        : "No surface exists yet. Harvest this ticker before using it in the daily read."}
+                  </p>
+                </div>
+                <div style={styles.commandTopActions}>
+                  <a
+                    href={`/control-center?ticker=${encodeURIComponent(centralTop.symbol)}`}
+                    style={styles.controlButton}
+                  >
+                    Open Control
+                  </a>
+                  <a
+                    href={`/control-center/chart?ticker=${encodeURIComponent(centralTop.symbol)}`}
+                    style={styles.controlButton}
+                  >
+                    Chart Room
+                  </a>
+                  <a href="/watchlist" style={styles.controlButton}>
+                    Full Watchlist
+                  </a>
+                </div>
+              </div>
+            ) : null}
+
+            <div style={styles.centralTableWrap}>
               <table style={styles.harvestTable}>
                 <thead>
                   <tr>
-                    <th style={styles.th}>Ticker</th>
-                    <th style={styles.th}>Surface Capture</th>
-                    <th style={styles.th}>Yahoo/API Step</th>
-                    <th style={styles.th}>Chains</th>
-                    <th style={styles.th}>Rows</th>
-                    <th style={styles.th}>Snapshot</th>
-                    <th style={styles.th}>Saved Surface</th>
+                    <th style={styles.harvestTh}>Ticker</th>
+                    <th style={styles.harvestTh}>Surface</th>
+                    <th style={styles.harvestTh}>Rows</th>
+                    <th style={styles.harvestTh}>Forecast</th>
+                    <th style={styles.harvestTh}>30D Field</th>
+                    <th style={styles.harvestTh}>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {queue.length ? queue.map((item) => (
-                    <tr key={item.ticker}>
-                      <td style={styles.td}><strong>{item.ticker}</strong></td>
-                      <td style={styles.td}><strong style={{ color: stageColor(item.status) }}>{stageLabel(item.status, "Waiting")}</strong></td>
-                      <td style={styles.td}>{item.message ?? "Waiting"}</td>
-                      <td style={styles.td}>{safeInt(item.chainCount, "—")}</td>
-                      <td style={styles.td}>{safeInt(item.rowCount, "—")}</td>
-                      <td style={styles.td}>{item.snapshotDate ?? "—"}</td>
-                      <td style={styles.td}>{item.surfaceKey ? <span style={{ color: colors.green }}>Saved</span> : item.status === "failed" ? <span style={{ color: colors.red }}>Failed</span> : "—"}</td>
-                    </tr>
-                  )) : (
+                  {centralRows.length ? (
+                    centralRows.map((row) => (
+                      <tr key={row.symbol}>
+                        <td style={styles.harvestTd}>
+                          <strong>{row.symbol}</strong>
+                          <br />
+                          <small style={styles.centralSlotName}>
+                            {row.name ?? row.assetType ?? "WheelDesk universe"}
+                          </small>
+                        </td>
+                        <td style={styles.harvestTd}>
+                          {row.surfaceDate ?? "none"}
+                        </td>
+                        <td style={styles.harvestTd}>
+                          {row.surfaceRows ? safeInt(row.surfaceRows) : "—"}
+                        </td>
+                        <td style={styles.harvestTd}>
+                          <strong style={{ color: commandStatusColor(row) }}>
+                            {commandStatus(row)}
+                          </strong>
+                        </td>
+                        <td style={styles.harvestTd}>
+                          {row.forecast
+                            ? `${safeMoney(row.forecast.lower_30d)} – ${safeMoney(row.forecast.upper_30d)}`
+                            : "—"}
+                        </td>
+                        <td style={styles.harvestTd}>
+                          <a
+                            href={`/control-center?ticker=${encodeURIComponent(row.symbol)}`}
+                            style={styles.inlineAction}
+                          >
+                            {row.forecast ? "Control" : "Capture"}
+                          </a>
+                          {" · "}
+                          <a
+                            href={`/dashboard/validation?ticker=${encodeURIComponent(row.symbol)}`}
+                            style={styles.inlineAction}
+                          >
+                            Validate
+                          </a>
+                          {" · "}
+                          <button
+                            type="button"
+                            onClick={() => removeCentralTicker(row.symbol)}
+                            style={styles.textButton}
+                            disabled={centralSaving}
+                          >
+                            Remove
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
                     <tr>
-                      <td style={styles.td} colSpan={7}>No surface harvest run in this browser session. Click Harvest Surfaces or Run Full OI Harvest to see each ticker fetch, save, and complete.</td>
+                      <td style={styles.harvestTd} colSpan={6}>
+                        No central ticker slots yet. Seed founder defaults or
+                        add a ticker from the universe.
+                      </td>
                     </tr>
                   )}
                 </tbody>
               </table>
             </div>
-          </div>
-        </section>
+          </section>
 
-        <section style={styles.newsPanel}>
-          <div style={styles.newsHeader}>
-            <div>
-              <strong>News Pulse</strong>
-              <span>Ticker-scoped headlines from the locked universe. 24h pulse + latest cached headlines help explain forecast divergence.</span>
+          <section style={styles.portfolioPanel}>
+            <div style={styles.panelStrip}>
+              <span>Equities and Equity Options</span>
+              <span>Updated {new Date().toLocaleString()}</span>
             </div>
-            <div style={styles.newsHeaderActions}>
-              <span>{newsHarvesting ? "Harvesting live news..." : newsLoading ? "Refreshing cache..." : newsStatus}</span>
-              <button
-                type="button"
-                onClick={() => loadDashboardNewsPulse(centralSymbols)}
-                disabled={newsLoading || newsHarvesting || !centralSymbols.length}
-                style={styles.newsButton}
-              >
-                Refresh Cache
-              </button>
-              <button
-                type="button"
-                onClick={runDashboardNewsHarvest}
-                disabled={newsLoading || newsHarvesting || !centralSymbols.length}
-                style={{ ...styles.newsButton, borderColor: colors.green, color: colors.green }}
-              >
-                Run News Harvest
-              </button>
-              <a href="/news" style={styles.newsButton}>Open News</a>
+
+            <table style={styles.statementTable}>
+              <thead>
+                <tr>
+                  <th style={{ ...styles.th, width: "26%" }}>Instrument</th>
+                  <th style={styles.thRight}>Qty</th>
+                  <th style={styles.thRight}>Days</th>
+                  <th style={styles.thRight}>Trade Price</th>
+                  <th style={styles.thRight}>Mark</th>
+                  <th style={styles.thRight}>Delta</th>
+                  <th style={styles.thRight}>Theta</th>
+                  <th style={styles.thRight}>P/L Open</th>
+                  <th style={styles.thRight}>P/L Day</th>
+                  <th style={styles.thRight}>BP Effect</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {groups.length ? (
+                  groups.map((group) => {
+                    const open = expandedTickers[group.ticker] ?? true;
+
+                    return (
+                      <TickerRows
+                        key={group.ticker}
+                        group={group}
+                        open={open}
+                        toggle={() => toggleTicker(group.ticker)}
+                      />
+                    );
+                  })
+                ) : (
+                  <tr>
+                    <td style={styles.td} colSpan={10}>
+                      No portfolio positions found. Build positions in the
+                      Portfolio page.
+                    </td>
+                  </tr>
+                )}
+
+                <tr>
+                  <td style={styles.totalCell}>Overall Totals</td>
+                  <td style={styles.tdRight}>{safeInt(totals.stockShares)}</td>
+                  <td style={styles.tdRight}>N/A</td>
+                  <td style={styles.tdRight}></td>
+                  <td style={styles.tdRight}></td>
+                  <td style={styles.tdRight}>{safeFixed(totals.delta, 2)}</td>
+                  <td style={styles.tdRight}>{safeFixed(totals.theta, 2)}</td>
+                  <td style={styles.tdRight}>{safeMoney(totals.openPnL)}</td>
+                  <td style={styles.tdRight}>{safeMoney(totals.dayPnL)}</td>
+                  <td style={styles.tdRight}>{safeMoney(totals.bpEffect)}</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <div style={styles.summaryBar}>
+              <span>
+                POSITIONS: <strong>{safeInt(totals.positions)}</strong>
+              </span>
+              <span>
+                SHORT CALLS:{" "}
+                <strong style={{ color: colors.green }}>
+                  {safeInt(totals.shortCalls)}
+                </strong>
+              </span>
+              <span>
+                SHORT PUTS:{" "}
+                <strong style={{ color: colors.green }}>
+                  {safeInt(totals.shortPuts)}
+                </strong>
+              </span>
+              <span>
+                BP EFFECT:{" "}
+                <strong style={{ color: colors.green }}>
+                  {safeMoney(totals.bpEffect)}
+                </strong>
+              </span>
             </div>
-          </div>
+          </section>
 
-          <div style={styles.newsSummaryGrid}>
-            <div style={styles.newsStatCard}><span>Quiet</span><strong>{newsQuiet}</strong></div>
-            <div style={styles.newsStatCard}><span>Active</span><strong style={{ color: colors.cyan }}>{newsActive}</strong></div>
-            <div style={styles.newsStatCard}><span>Elevated</span><strong style={{ color: colors.amber }}>{newsElevated}</strong></div>
-            <div style={styles.newsStatCard}><span>Shock Risk</span><strong style={{ color: colors.red }}>{newsShock}</strong></div>
-          </div>
+          <section style={styles.harvestDetails}>
+            <div style={styles.detailsSummaryButton}>
+              <span style={styles.harvestTitle}>
+                <span style={styles.harvestToggle}>✓</span>
+                Central Harvest Only
+              </span>
+              <span style={{ color: running ? colors.amber : colors.text }}>
+                {status}
+              </span>
+            </div>
 
-          {centralSymbols.length ? (
-            <div style={styles.newsTableWrap}>
-              <div style={styles.newsTableHeader}>
-                <span>Ticker</span>
-                <span>Pulse</span>
-                <span>24h</span>
-                <span>Materiality</span>
-                <span>Sentiment</span>
-                <span>Forecast impact</span>
-                <span>Latest headline</span>
-                <span>Age</span>
-                <span>Open</span>
+            <div style={styles.harvestBody}>
+              <p style={styles.commandSubtitle}>
+                The legacy manual Snapshot Harvest has been removed from the
+                user dashboard. Harvesting now runs from the central ticker
+                slots above so ticker limits, replacement rules, shared
+                surfaces, and future forecast receipts stay aligned with the
+                account universe.
+              </p>
+
+              <div style={styles.queueStats}>
+                <span>
+                  Last run saved: <strong>{savedCount}</strong>
+                </span>
+                <span>
+                  Failed: <strong>{failedCount}</strong>
+                </span>
+                <span>
+                  Rows: <strong>{safeInt(totalRows)}</strong>
+                </span>
+                <span>
+                  Tracked slots:{" "}
+                  <strong>
+                    {centralUsedSlots}/{centralMaxSlots || "?"}
+                  </strong>
+                </span>
               </div>
 
-              {newsRows.map((pulse) => (
-                <div key={pulse.symbol} style={styles.newsPulseRow}>
-                  <strong style={styles.newsTicker}>{pulse.symbol}</strong>
-                  <span style={{ ...styles.newsStatusPill, color: newsPulseColor(pulse.status), borderColor: newsPulseColor(pulse.status) }}>
-                    {newsPulseLabel(pulse.status)}
-                  </span>
-                  <span>{safeInt(pulse.count24h, "0")}</span>
-                  <span>{safeInt(pulse.materiality, "0")}</span>
-                  <span>{pulse.sentiment === null ? "—" : pulse.sentiment > 0 ? `+${pulse.sentiment}` : pulse.sentiment}</span>
-                  <span>{newsImpactLabel(pulse.forecastImpact)}</span>
-                  <span style={styles.newsHeadline}>{pulse.latestHeadline ?? "No recent material ticker news detected."}</span>
-                  <span>{formatNewsAge(pulse.latestPublishedAt)}</span>
-                  <span style={styles.newsActions}>
-                    <a href={`/news?symbol=${encodeURIComponent(pulse.symbol)}`} style={styles.inlineAction}>News</a>
-                    <a href={`/control-center/chart?ticker=${encodeURIComponent(pulse.symbol)}`} style={styles.inlineAction}>Chart</a>
-                  </span>
-                </div>
-              ))}
+              {queue.length ? (
+                <table style={styles.harvestTable}>
+                  <thead>
+                    <tr>
+                      <th style={styles.harvestTh}>Ticker</th>
+                      <th style={styles.harvestTh}>Surface stage</th>
+                      <th style={styles.harvestTh}>Chains</th>
+                      <th style={styles.harvestTh}>Rows</th>
+                      <th style={styles.harvestTh}>Message</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {queue.map((item) => (
+                      <tr key={item.ticker}>
+                        <td style={styles.harvestTd}>
+                          <strong>{item.ticker}</strong>
+                        </td>
+                        <td
+                          style={{
+                            ...styles.harvestTd,
+                            color: statusColor(item.status),
+                            fontWeight: 900,
+                          }}
+                        >
+                          {item.status.toUpperCase()}
+                        </td>
+                        <td style={styles.harvestTd}>
+                          {item.chainCount ?? "—"}
+                        </td>
+                        <td style={styles.harvestTd}>
+                          {item.rowCount ? safeInt(item.rowCount) : "—"}
+                        </td>
+                        <td style={styles.harvestTd}>{item.message}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : null}
             </div>
-          ) : (
-            <div style={styles.emptyNewsState}>
-              No locked ticker slots yet. Add tickers in the Dashboard Command Hub to activate ticker-scoped News Pulse.
-            </div>
-          )}
-        </section>
+          </section>
 
-      </main>
-    </div>
-  
+          <section style={styles.newsPanel}>
+            <div style={styles.newsHeader}>
+              <div>
+                <strong>News Pulse</strong>
+                <span>
+                  Ticker-scoped headlines from the locked universe. 24h pulse +
+                  latest cached headlines help explain forecast divergence.
+                </span>
+              </div>
+              <div style={styles.newsHeaderActions}>
+                <span>
+                  {newsHarvesting
+                    ? "Harvesting live news..."
+                    : newsLoading
+                      ? "Refreshing cache..."
+                      : newsStatus}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => loadDashboardNewsPulse(centralSymbols)}
+                  disabled={
+                    newsLoading || newsHarvesting || !centralSymbols.length
+                  }
+                  style={styles.newsButton}
+                >
+                  Refresh Cache
+                </button>
+                <button
+                  type="button"
+                  onClick={runDashboardNewsHarvest}
+                  disabled={
+                    newsLoading || newsHarvesting || !centralSymbols.length
+                  }
+                  style={{
+                    ...styles.newsButton,
+                    borderColor: colors.green,
+                    color: colors.green,
+                  }}
+                >
+                  Run News Harvest
+                </button>
+                <a href="/news" style={styles.newsButton}>
+                  Open News
+                </a>
+              </div>
+            </div>
+
+            <div style={styles.newsSummaryGrid}>
+              <div style={styles.newsStatCard}>
+                <span>Quiet</span>
+                <strong>{newsQuiet}</strong>
+              </div>
+              <div style={styles.newsStatCard}>
+                <span>Active</span>
+                <strong style={{ color: colors.cyan }}>{newsActive}</strong>
+              </div>
+              <div style={styles.newsStatCard}>
+                <span>Elevated</span>
+                <strong style={{ color: colors.amber }}>{newsElevated}</strong>
+              </div>
+              <div style={styles.newsStatCard}>
+                <span>Shock Risk</span>
+                <strong style={{ color: colors.red }}>{newsShock}</strong>
+              </div>
+            </div>
+
+            {centralSymbols.length ? (
+              <div style={styles.newsTableWrap}>
+                <div style={styles.newsTableHeader}>
+                  <span>Ticker</span>
+                  <span>Pulse</span>
+                  <span>24h</span>
+                  <span>Materiality</span>
+                  <span>Sentiment</span>
+                  <span>Forecast impact</span>
+                  <span>Latest headline</span>
+                  <span>Age</span>
+                  <span>Open</span>
+                </div>
+
+                {newsRows.map((pulse) => (
+                  <div key={pulse.symbol} style={styles.newsPulseRow}>
+                    <strong style={styles.newsTicker}>{pulse.symbol}</strong>
+                    <span
+                      style={{
+                        ...styles.newsStatusPill,
+                        color: newsPulseColor(pulse.status),
+                        borderColor: newsPulseColor(pulse.status),
+                      }}
+                    >
+                      {newsPulseLabel(pulse.status)}
+                    </span>
+                    <span>{safeInt(pulse.count24h, "0")}</span>
+                    <span>{safeInt(pulse.materiality, "0")}</span>
+                    <span>
+                      {pulse.sentiment === null
+                        ? "—"
+                        : pulse.sentiment > 0
+                          ? `+${pulse.sentiment}`
+                          : pulse.sentiment}
+                    </span>
+                    <span>{newsImpactLabel(pulse.forecastImpact)}</span>
+                    <span style={styles.newsHeadline}>
+                      {pulse.latestHeadline ??
+                        "No recent material ticker news detected."}
+                    </span>
+                    <span>{formatNewsAge(pulse.latestPublishedAt)}</span>
+                    <span style={styles.newsActions}>
+                      <a
+                        href={`/news?symbol=${encodeURIComponent(pulse.symbol)}`}
+                        style={styles.inlineAction}
+                      >
+                        News
+                      </a>
+                      <a
+                        href={`/control-center/chart?ticker=${encodeURIComponent(pulse.symbol)}`}
+                        style={styles.inlineAction}
+                      >
+                        Chart
+                      </a>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={styles.emptyNewsState}>
+                No locked ticker slots yet. Add tickers in the Dashboard Command
+                Hub to activate ticker-scoped News Pulse.
+              </div>
+            )}
+          </section>
+        </main>
+      </div>
     </AuthGate>
   );
 }
 
-function TickerRows({ group, open, toggle }: { group: TickerGroup; open: boolean; toggle: () => void }) {
+function TickerRows({
+  group,
+  open,
+  toggle,
+}: {
+  group: TickerGroup;
+  open: boolean;
+  toggle: () => void;
+}) {
   return (
     <>
       <tr style={styles.groupRow}>
@@ -1773,12 +2301,23 @@ function TickerRows({ group, open, toggle }: { group: TickerGroup; open: boolean
             <tr key={position.id} style={styles.positionRow}>
               <td style={styles.childCell}>
                 <div>{position.instrument}</div>
-                <small>{position.profileName} • {position.side} {position.instrumentType}</small>
+                <small>
+                  {position.profileName} • {position.side}{" "}
+                  {position.instrumentType}
+                </small>
               </td>
               <td style={styles.tdRight}>{safeInt(position.qty)}</td>
-              <td style={styles.tdRight}>{position.dte == null ? "N/A" : safeInt(position.dte)}</td>
-              <td style={styles.tdRight}>{position.tradePrice == null ? "" : safeMoney(position.tradePrice)}</td>
-              <td style={styles.tdRight}>{position.mark == null ? "" : safeMoney(position.mark)}</td>
+              <td style={styles.tdRight}>
+                {position.dte == null ? "N/A" : safeInt(position.dte)}
+              </td>
+              <td style={styles.tdRight}>
+                {position.tradePrice == null
+                  ? ""
+                  : safeMoney(position.tradePrice)}
+              </td>
+              <td style={styles.tdRight}>
+                {position.mark == null ? "" : safeMoney(position.mark)}
+              </td>
               <td style={styles.tdRight}>{safeFixed(position.delta, 2)}</td>
               <td style={styles.tdRight}>{safeFixed(position.theta, 2)}</td>
               <td style={styles.tdRight}>{safeMoney(position.openPnL)}</td>
@@ -1873,12 +2412,11 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1.35,
   },
   main: {
-    flex:1,
+    flex: 1,
     minWidth: 0,
     background: "#050d17",
     color: "#e5f2ff",
     padding: "16px",
-    
   },
   header: {
     minHeight: 72,
@@ -1919,7 +2457,8 @@ const styles: Record<string, React.CSSProperties> = {
   },
   commandHub: {
     border: "1px solid rgba(38, 230, 255, 0.25)",
-    background: "linear-gradient(135deg, rgba(8, 34, 53, 0.94), rgba(5, 13, 24, 0.96))",
+    background:
+      "linear-gradient(135deg, rgba(8, 34, 53, 0.94), rgba(5, 13, 24, 0.96))",
     borderRadius: 18,
     padding: "1rem",
     display: "grid",
@@ -2018,7 +2557,13 @@ const styles: Record<string, React.CSSProperties> = {
     display: "grid",
     gap: "0.45rem",
   },
-  centralSlotTop: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, color: colors.text },
+  centralSlotTop: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    color: colors.text,
+  },
   centralSlotName: { color: colors.muted, minHeight: 18 },
   centralForecastGrid: {
     display: "grid",
@@ -2036,8 +2581,18 @@ const styles: Record<string, React.CSSProperties> = {
     borderTop: `1px solid ${colors.borderSoft}`,
     paddingTop: "0.45rem",
   },
-  centralSlotActions: { display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" },
-  inlineAction: { color: colors.cyan, textDecoration: "none", fontWeight: 900, fontSize: 12 },
+  centralSlotActions: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 8,
+    alignItems: "center",
+  },
+  inlineAction: {
+    color: colors.cyan,
+    textDecoration: "none",
+    fontWeight: 900,
+    fontSize: 12,
+  },
   textButton: {
     border: "none",
     background: "transparent",
@@ -2279,18 +2834,43 @@ const styles: Record<string, React.CSSProperties> = {
     gap: "1rem",
     color: colors.muted,
   },
-  centralProcessTableWrap: {
-    marginTop: "0.8rem",
-    border: `1px solid ${colors.borderSoft}`,
-    borderRadius: 10,
-    overflowX: "auto",
-    background: "#06101b",
-  },
   harvestTable: {
     width: "100%",
     borderCollapse: "collapse",
-    marginTop: "0",
+    marginTop: "0.7rem",
     fontSize: 12,
+  },
+  harvestTh: {
+    color: colors.muted,
+    textAlign: "left",
+    padding: "0.45rem 0.55rem",
+    borderBottom: `1px solid ${colors.borderSoft}`,
+    textTransform: "uppercase",
+    letterSpacing: "0.08em",
+    fontSize: 10,
+  },
+  harvestTd: {
+    padding: "0.5rem 0.55rem",
+    borderBottom: `1px solid ${colors.borderSoft}`,
+    color: colors.text,
+    verticalAlign: "top",
+  },
+  harvestMiniRow: {
+    display: "grid",
+    gridTemplateColumns: "70px 110px 130px 100px minmax(0, 1fr)",
+    gap: 8,
+    alignItems: "center",
+    color: colors.muted,
+    borderTop: `1px solid ${colors.borderSoft}`,
+    paddingTop: 4,
+    fontSize: 11,
+  },
+  centralTableWrap: {
+    marginTop: "0.8rem",
+    border: `1px solid ${colors.border}`,
+    borderRadius: 10,
+    overflow: "hidden",
+    background: "#07121f",
   },
   newsPanel: {
     marginTop: "0.8rem",
@@ -2353,7 +2933,8 @@ const styles: Record<string, React.CSSProperties> = {
   newsTableHeader: {
     minWidth: 1180,
     display: "grid",
-    gridTemplateColumns: "0.6fr 0.9fr 0.45fr 0.75fr 0.75fr 1fr 2.4fr 0.7fr 0.7fr",
+    gridTemplateColumns:
+      "0.6fr 0.9fr 0.45fr 0.75fr 0.75fr 1fr 2.4fr 0.7fr 0.7fr",
     gap: 8,
     color: colors.muted,
     fontSize: 11,
@@ -2366,7 +2947,8 @@ const styles: Record<string, React.CSSProperties> = {
   newsPulseRow: {
     minWidth: 1180,
     display: "grid",
-    gridTemplateColumns: "0.6fr 0.9fr 0.45fr 0.75fr 0.75fr 1fr 2.4fr 0.7fr 0.7fr",
+    gridTemplateColumns:
+      "0.6fr 0.9fr 0.45fr 0.75fr 0.75fr 1fr 2.4fr 0.7fr 0.7fr",
     gap: 8,
     alignItems: "center",
     color: colors.text,
@@ -2403,4 +2985,4 @@ const styles: Record<string, React.CSSProperties> = {
     color: colors.muted,
     fontSize: 13,
   },
-}; 
+};
