@@ -255,17 +255,19 @@ function chainRows(chain: any): any[] {
   return Array.isArray(chain?.rows) ? chain.rows : Array.isArray(chain?.chainRows) ? chain.chainRows : [];
 }
 
+type ForecastChainCandidate = { chain: any; expiration: string | null; dte: number | null; rows: number };
+
 function chooseForecastChain(surface: any): any | null {
   const snapshotDate = dateOnly(surface?.snapshotDate ?? surface?.snapshot_date);
   const chains = Array.isArray(surface?.chains) ? surface.chains : [];
-  const candidates = chains
+  const candidates: ForecastChainCandidate[] = chains
     .map((chain: any) => {
       const expiration = chainExpiration(chain);
       const chainDte = finite(chain?.dteAtCapture ?? chain?.dte ?? chain?.summary?.dte) ?? dte(snapshotDate, expiration);
       return { chain, expiration, dte: chainDte, rows: chainRows(chain).length };
     })
-    .filter((item) => item.expiration && item.rows > 0 && item.dte != null && item.dte >= 0)
-    .sort((a, b) => Math.abs((a.dte ?? 999) - 30) - Math.abs((b.dte ?? 999) - 30));
+    .filter((item: ForecastChainCandidate) => Boolean(item.expiration) && item.rows > 0 && item.dte != null && item.dte >= 0)
+    .sort((a: ForecastChainCandidate, b: ForecastChainCandidate) => Math.abs((a.dte ?? 999) - 30) - Math.abs((b.dte ?? 999) - 30));
 
   return candidates[0]?.chain ?? null;
 }

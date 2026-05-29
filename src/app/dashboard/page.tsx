@@ -681,22 +681,67 @@ function extractSurfaceArray(payload: any): any[] {
   return payload?.snapshot || payload?.surface ? [payload.snapshot ?? payload.surface] : [];
 }
 
+function normalizeSurfaceTicker(surface: any): string {
+  return normalizeTickerInput(surface?.ticker ?? surface?.symbol ?? surface?.underlyingSymbol ?? surface?.metadata?.originalSnapshot?.ticker);
+}
+
+function surfaceRowCount(surface: any): number {
+  const chains = Array.isArray(surface?.chains) ? surface.chains : Array.isArray(surface?.optionChains) ? surface.optionChains : [];
+  const rowCount = chains.reduce((sum: number, chain: any) => {
+    const rows = Array.isArray(chain?.rows) ? chain.rows : Array.isArray(chain?.chainRows) ? chain.chainRows : [];
+    const calls = Array.isArray(chain?.calls) ? chain.calls : [];
+    const puts = Array.isArray(chain?.puts) ? chain.puts : [];
+    return sum + Math.max(rows.length, calls.length + puts.length);
+  }, 0);
+
+  return Number(surface?.rowCount ?? surface?.row_count ?? surface?.chainRowCount ?? surface?.chain_row_count ?? rowCount ?? 0);
+}
+
+function surfaceChainCount(surface: any): number {
+  const chains = Array.isArray(surface?.chains) ? surface.chains : Array.isArray(surface?.optionChains) ? surface.optionChains : [];
+  return Number(surface?.chainCount ?? surface?.chain_count ?? chains.length ?? 0);
+}
+
 function surfaceMeta(payload: any): Pick<CentralCommandRow, "surfaceDate" | "surfaceRows" | "surfaceChains"> {
   const surfaces = extractSurfaceArray(payload);
   const latest = surfaces
-    .map((surface) => {
-      const chains = Array.isArray(surface?.chains) ? surface.chains : Array.isArray(surface?.optionChains) ? surface.optionChains : [];
-      const rowCount = chains.reduce((sum: number, chain: any) => sum + (Array.isArray(chain?.rows) ? chain.rows.length : 0), 0);
-      return {
-        surfaceDate: dateOnly(surface?.snapshotDate ?? surface?.snapshot_date ?? surface?.date ?? surface?.asOfDate),
-        surfaceRows: Number(surface?.rowCount ?? surface?.row_count ?? rowCount ?? 0),
-        surfaceChains: Number(surface?.chainCount ?? surface?.chain_count ?? chains.length ?? 0),
-      };
-    })
+    .map((surface) => ({
+      surfaceDate: dateOnly(surface?.snapshotDate ?? surface?.snapshot_date ?? surface?.date ?? surface?.asOfDate),
+      surfaceRows: surfaceRowCount(surface),
+      surfaceChains: surfaceChainCount(surface),
+    }))
     .filter((item) => item.surfaceDate)
     .sort((a, b) => b.surfaceDate.localeCompare(a.surfaceDate))[0];
 
   return latest ?? { surfaceDate: null, surfaceRows: null, surfaceChains: null };
+}
+
+async function fetchAllSurfaceMetaMap(symbols: string[]): Promise<Map<string, Pick<CentralCommandRow, "surfaceDate" | "surfaceRows" | "surfaceChains">>> {
+  const wanted = new Set(symbols.map(normalizeTickerInput).filter(Boolean));
+  const map = new Map<string, Pick<CentralCommandRow, "surfaceDate" | "surfaceRows" | "surfaceChains">>();
+
+  if (!wanted.size) return map;
+
+  try {
+    const response = await fetch(`/api/supabase/surface-snapshot?mode=list&limit=500`, { cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) return map;
+
+    for (const surface of extractSurfaceArray(payload)) {
+      const symbol = normalizeSurfaceTicker(surface);
+      if (!wanted.has(symbol)) continue;
+
+      const meta = surfaceMeta({ snapshots: [surface] });
+      const current = map.get(symbol);
+      if (!current?.surfaceDate || (meta.surfaceDate && meta.surfaceDate >= current.surfaceDate)) {
+        map.set(symbol, meta);
+      }
+    }
+  } catch {
+    // Fall back to per-symbol reads below.
+  }
+
+  return map;
 }
 
 async function fetchLatestForecast(symbol: string): Promise<ForecastDbRow | null> {
@@ -926,10 +971,20 @@ export default function DashboardPage() {
         return;
       }
 
+      const surfaceMetaMap = await fetchAllSurfaceMetaMap(symbols);
+
       const pairs = await Promise.all(symbols.map(async (symbol) => {
         const slot = slots.find((item) => normalizeTickerInput(item.symbol) === symbol);
-        const [forecast, meta] = await Promise.all([fetchLatestForecast(symbol), fetchLatestSurfaceMeta(symbol)]);
-        const status: CentralCommandRow["status"] = forecast ? "ready" : meta.surfaceDate ? "surface-only" : "needs-harvest";
+        const forecast = await fetchLatestForecast(symbol);
+        const meta = surfaceMetaMap.get(symbol) ?? await fetchLatestSurfaceMeta(symbol);
+
+        // A forecast without a visible surface is an orphaned/stale forecast. Do not let
+        // it make the dashboard say the ticker is fully ready, because Control Center
+        // and Chart Room are surface-first.
+        const status: CentralCommandRow["status"] = meta.surfaceDate
+          ? (forecast ? "ready" : "surface-only")
+          : "needs-harvest";
+
         return {
           symbol,
           name: slot?.ticker_universe?.name,
@@ -1442,31 +1497,49 @@ export default function DashboardPage() {
             </div>
           ) : null}
 
-          <div style={styles.centralSlotGrid}>
-            {centralRows.length ? centralRows.map((row) => (
-              <div key={row.symbol} style={styles.centralSlotCard}>
-                <div style={styles.centralSlotTop}>
-                  <strong>{row.symbol}</strong>
-                  <span style={{ color: commandStatusColor(row), fontWeight: 900 }}>{commandStatus(row)}</span>
-                </div>
-                <small style={styles.centralSlotName}>{row.name ?? row.assetType ?? "WheelDesk universe"}</small>
-                <div style={styles.centralForecastGrid}>
-                  <span>30D Base <strong>{safeMoney(row.forecast?.base_30d, "N/A")}</strong></span>
-                  <span>Lower <strong>{safeMoney(row.forecast?.lower_30d, "N/A")}</strong></span>
-                  <span>Upper <strong>{safeMoney(row.forecast?.upper_30d, "N/A")}</strong></span>
-                  <span>Trap <strong>{formatPercent(row.forecast?.trap_probability)}</strong></span>
-                </div>
-                <div style={styles.centralSlotFoot}>
-                  <span>Surface {row.surfaceDate ?? "none"}</span>
-                  <span>{row.surfaceRows ? `${safeInt(row.surfaceRows)} rows` : "no rows"}</span>
-                </div>
-                <div style={styles.centralSlotActions}>
-                  <a href={`/control-center?ticker=${encodeURIComponent(row.symbol)}`} style={styles.inlineAction}>{row.forecast ? "Control" : "Capture"}</a>
-                  <a href={`/dashboard/validation?ticker=${encodeURIComponent(row.symbol)}`} style={styles.inlineAction}>Validate</a>
-                  <button type="button" onClick={() => removeCentralTicker(row.symbol)} style={styles.textButton} disabled={centralSaving}>Remove</button>
-                </div>
-              </div>
-            )) : (
+          <div style={styles.centralTableWrap}>
+            {centralRows.length ? (
+              <table style={styles.centralCommandTable}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Ticker</th>
+                    <th style={styles.th}>Surface</th>
+                    <th style={styles.thRight}>Rows</th>
+                    <th style={styles.th}>Forecast</th>
+                    <th style={styles.th}>30D Field</th>
+                    <th style={styles.th}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {centralRows.map((row) => (
+                    <tr key={row.symbol}>
+                      <td style={styles.td}>
+                        <strong>{row.symbol}</strong>
+                        <div style={styles.centralSlotName}>{row.name ?? row.assetType ?? "WheelDesk universe"}</div>
+                      </td>
+                      <td style={styles.td}>{row.surfaceDate ?? "none"}</td>
+                      <td style={styles.tdRight}>{row.surfaceRows ? safeInt(row.surfaceRows) : "—"}</td>
+                      <td style={{ ...styles.td, color: commandStatusColor(row), fontWeight: 900 }}>
+                        {commandStatus(row)}
+                        {!row.surfaceDate && row.forecast ? <div style={{ color: colors.amber, fontSize: 11 }}>orphan forecast hidden until surface is visible</div> : null}
+                      </td>
+                      <td style={styles.td}>
+                        {row.forecast && row.surfaceDate
+                          ? `${safeMoney(row.forecast.lower_30d)} – ${safeMoney(row.forecast.upper_30d)}`
+                          : "—"}
+                      </td>
+                      <td style={styles.td}>
+                        <a href={`/control-center?ticker=${encodeURIComponent(row.symbol)}`} style={styles.inlineAction}>{row.surfaceDate ? "Control" : "Capture"}</a>
+                        <span> · </span>
+                        <a href={`/dashboard/validation?ticker=${encodeURIComponent(row.symbol)}`} style={styles.inlineAction}>Validate</a>
+                        <span> · </span>
+                        <button type="button" onClick={() => removeCentralTicker(row.symbol)} style={styles.textButton} disabled={centralSaving}>Remove</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
               <div style={styles.emptyCentral}>
                 No central ticker slots yet. Seed founder defaults or add a ticker from the universe.
               </div>
@@ -1576,32 +1649,44 @@ export default function DashboardPage() {
                 <span>Session: <strong>{captureSession === "auto" ? `Auto → ${effectiveCaptureSession()}` : captureSession}</strong></span>
               </div>
 
-              <table style={styles.harvestTable}>
-                <thead>
-                  <tr>
-                    <th style={styles.th}>Ticker</th>
-                    <th style={styles.th}>Surface Fetch</th>
-                    <th style={styles.th}>Supabase Save</th>
-                    <th style={styles.thRight}>Chains</th>
-                    <th style={styles.thRight}>Rows</th>
-                    <th style={styles.th}>Snapshot</th>
-                    <th style={styles.th}>Message</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(queue.length ? queue : centralSymbols.map((symbol) => ({ ticker: symbol, status: "pending" as HarvestStatus, message: "Waiting" }))).map((item) => (
-                    <tr key={item.ticker}>
-                      <td style={styles.td}><strong>{item.ticker}</strong></td>
-                      <td style={styles.td}>{item.status === "fetching" ? "Fetching Yahoo API..." : item.status === "pending" ? "Waiting" : item.status === "failed" ? "Failed" : "Fetched"}</td>
-                      <td style={styles.td}>{item.status === "saving" ? "Saving..." : item.status === "saved" ? "Saved" : item.status === "failed" ? "Failed" : "—"}</td>
-                      <td style={styles.tdRight}>{item.chainCount ?? "—"}</td>
-                      <td style={styles.tdRight}>{item.rowCount ?? "—"}</td>
-                      <td style={styles.td}>{item.snapshotDate ?? "—"}</td>
-                      <td style={styles.td}>{item.message ?? "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              {(() => {
+                const displayedQueue: HarvestItem[] = queue.length
+                  ? queue
+                  : centralSymbols.map((symbol): HarvestItem => ({
+                      ticker: symbol,
+                      status: "pending",
+                      message: "Waiting",
+                    }));
+
+                return (
+                  <table style={styles.harvestTable}>
+                    <thead>
+                      <tr>
+                        <th style={styles.th}>Ticker</th>
+                        <th style={styles.th}>Surface Fetch</th>
+                        <th style={styles.th}>Supabase Save</th>
+                        <th style={styles.thRight}>Chains</th>
+                        <th style={styles.thRight}>Rows</th>
+                        <th style={styles.th}>Snapshot</th>
+                        <th style={styles.th}>Message</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {displayedQueue.map((item) => (
+                        <tr key={item.ticker}>
+                          <td style={styles.td}><strong>{item.ticker}</strong></td>
+                          <td style={styles.td}>{item.status === "fetching" ? "Fetching Yahoo API..." : item.status === "pending" ? "Waiting" : item.status === "failed" ? "Failed" : "Fetched"}</td>
+                          <td style={styles.td}>{item.status === "saving" ? "Saving..." : item.status === "saved" ? "Saved" : item.status === "failed" ? "Failed" : "—"}</td>
+                          <td style={styles.tdRight}>{item.chainCount ?? "—"}</td>
+                          <td style={styles.tdRight}>{item.rowCount ?? "—"}</td>
+                          <td style={styles.td}>{item.snapshotDate ?? "—"}</td>
+                          <td style={styles.td}>{item.message ?? "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                );
+              })()}
 
               {forecastHarvestResult?.items?.length ? (
                 <table style={styles.harvestTable}>

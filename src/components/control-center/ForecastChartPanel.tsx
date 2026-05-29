@@ -332,6 +332,26 @@ function capturedDivergenceReadout(row: CapturedForecastRow | null | undefined, 
   const forecastLower = capturedForecastAt(row, elapsedSessions || 1, "lower");
   const actualClose = latest.close;
 
+  const anchorSpot = toNumber(row?.spot);
+  if (anchorSpot != null && actualClose > 0) {
+    const mismatchPct = Math.abs(actualClose - anchorSpot) / Math.max(1, Math.abs(actualClose));
+    if (mismatchPct > 0.25) {
+      return {
+        status: "pending",
+        label: "Context mismatch",
+        tone: colors.amber,
+        actualClose,
+        forecastBase: null,
+        forecastUpper: null,
+        forecastLower: null,
+        divergence: null,
+        divergencePct: null,
+        normalizedDivergence: null,
+        elapsedSessions,
+      };
+    }
+  }
+
   if (forecastBase == null || actualClose == null) {
     return {
       status: "pending",
@@ -677,6 +697,7 @@ export default function ForecastChartPanel({
         if (surfaceDate) params.set("snapshotDate", String(surfaceDate).slice(0, 10));
         if (expiration) params.set("expiration", String(expiration).slice(0, 10));
         if (captureSession) params.set("captureSession", String(captureSession));
+        if (surfaceDate || expiration) params.set("fallback", "0");
 
         const response = await fetch(`/api/forecasts/oi-field/latest?${params.toString()}`, { cache: "no-store" });
         const payload = await response.json().catch(() => null);
