@@ -316,6 +316,15 @@ function makeCapturedForecastPath(
   return uniqueAscending(points);
 }
 
+function capturedContextMismatch(row: CapturedForecastRow | null | undefined, candleData: CandleSeriesData[]): boolean {
+  if (!row || !candleData.length) return false;
+  const anchorSpot = toNumber(row.spot);
+  const latest = candleData[candleData.length - 1];
+  if (anchorSpot == null || !latest?.close) return false;
+  const mismatchPct = Math.abs(latest.close - anchorSpot) / Math.max(1, Math.abs(latest.close));
+  return mismatchPct > 0.25;
+}
+
 function capturedDivergenceReadout(row: CapturedForecastRow | null | undefined, candleData: CandleSeriesData[]): DivergenceReadout | null {
   if (!row || !candleData.length) return null;
 
@@ -1029,7 +1038,8 @@ export default function ForecastChartPanel({
     const showMatrix = Boolean(matrix) && showClassic;
     const showFlowOverlay = Boolean(flowOverlay) && showClassic;
     const showFieldRails = showFieldForecast && Boolean(path);
-    const showCapturedDivergence = forecastDivergenceEnabled && Boolean(capturedForecast) && effectiveMode !== "candles";
+    const capturedMismatch = capturedContextMismatch(capturedForecast, candleData);
+    const showCapturedDivergence = forecastDivergenceEnabled && Boolean(capturedForecast) && !capturedMismatch && effectiveMode !== "candles";
 
     const baseData = showPath ? makeAnchoredPath(path?.basePath, lastTime, lastClose) : [];
     const upperData = showPath ? makeAnchoredPath(path?.upperBand, lastTime, lastClose) : [];

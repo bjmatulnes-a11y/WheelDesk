@@ -757,7 +757,7 @@ async function fetchLatestForecast(symbol: string): Promise<ForecastDbRow | null
 
 async function fetchLatestSurfaceMeta(symbol: string): Promise<Pick<CentralCommandRow, "surfaceDate" | "surfaceRows" | "surfaceChains">> {
   try {
-    const response = await fetch(`/api/supabase/surface-snapshot?ticker=${encodeURIComponent(symbol)}`, { cache: "no-store" });
+    const response = await fetch(`/api/supabase/surface-snapshot?ticker=${encodeURIComponent(symbol)}&latest=1`, { cache: "no-store" });
     const payload = await response.json().catch(() => null);
     if (!response.ok) return { surfaceDate: null, surfaceRows: null, surfaceChains: null };
     return surfaceMeta(payload);
@@ -971,12 +971,14 @@ export default function DashboardPage() {
         return;
       }
 
-      const surfaceMetaMap = await fetchAllSurfaceMetaMap(symbols);
-
+      // Read the same per-ticker latest surface endpoint used by Control Center / Chart Room.
+      // The earlier bulk mode=list shortcut could miss tickers depending on row limits and
+      // created the confusing dashboard state where Chart Room had a surface but Dashboard
+      // showed none.
       const pairs = await Promise.all(symbols.map(async (symbol) => {
         const slot = slots.find((item) => normalizeTickerInput(item.symbol) === symbol);
         const forecast = await fetchLatestForecast(symbol);
-        const meta = surfaceMetaMap.get(symbol) ?? await fetchLatestSurfaceMeta(symbol);
+        const meta = await fetchLatestSurfaceMeta(symbol);
 
         // A forecast without a visible surface is an orphaned/stale forecast. Do not let
         // it make the dashboard say the ticker is fully ready, because Control Center
@@ -1386,7 +1388,7 @@ export default function DashboardPage() {
             <div style={styles.commandStat}><span>Surface Only</span><strong style={{ color: colors.amber }}>{centralSurfaceOnly}</strong></div>
             <div style={styles.commandStat}><span>Needs Harvest</span><strong style={{ color: colors.red }}>{centralNeedsHarvest}</strong></div>
             <div style={styles.commandStat}><span>Replacements Left</span><strong style={{ color: colors.cyan }}>{centralReplacementsLeft}</strong></div>
-            <div style={styles.commandStat}><span>Forecasts Captured</span><strong style={{ color: colors.cyan }}>{safeInt(nnReadiness?.captured ?? 0)}</strong></div>
+            <div style={styles.commandStat}><span>Forecast Receipts</span><strong style={{ color: colors.cyan }}>{safeInt(nnReadiness?.captured ?? 0)}</strong></div>
             <div style={styles.commandStat}><span>Neural Status</span><strong style={{ color: colors.amber }}>{readinessLabel(nnReadiness?.neuralStatus)}</strong></div>
           </div>
 

@@ -117,7 +117,11 @@ async function optionalRunInsert(payload: Record<string, unknown>) {
 }
 
 async function optionalRunItemInsert(payload: Record<string, unknown>) {
-  await supabaseServer.from("forecast_capture_run_items").insert(payload);
+  // Run-item logging should never break the actual forecast harvest. Older
+  // installs can have UUID-only forecast_id columns while legacy forecast rows
+  // may use text ids. The main harvest result is the saved oi_field_forecasts row.
+  const { error } = await supabaseServer.from("forecast_capture_run_items").insert(payload);
+  return error?.message ?? null;
 }
 
 function stripIdentity(row: Record<string, unknown>) {
@@ -239,6 +243,11 @@ function finite(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function uuidOrNull(value: unknown): string | null {
+  const raw = String(value ?? "").trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(raw) ? raw : null;
+}
+
 function dte(snapshotDate: string | null, expiration: string | null): number | null {
   if (!snapshotDate || !expiration) return null;
   const start = new Date(`${snapshotDate}T00:00:00Z`).getTime();
@@ -309,7 +318,7 @@ function capturePayloadToDb(payload: any, userId: string | null, captureSession:
   return {
     symbol: normalizeSymbol(payload.symbol),
     user_id: userId,
-    surface_snapshot_id: payload.surfaceSnapshotId ?? null,
+    surface_snapshot_id: uuidOrNull(payload.surfaceSnapshotId),
     source: `forecast_harvest_${captureSession}`,
     capture_session: captureSession,
     capture_kind: captureKind,
@@ -397,14 +406,20 @@ async function buildForecastFromLatestSurface(symbol: string, userId: string | n
     snapshotDate: (surface as any).snapshotDate,
     expiration: selectedExpiration,
     dte: selectedDte,
-    surfaceSnapshotId: (surface as any).id ?? (surface as any).surfaceKey ?? null,
+    surfaceSnapshotId: uuidOrNull((surface as any).metadata?.supabaseSnapshotId ?? (surface as any).id),
     forecast,
     ivSurface,
     selectedSurface: surface,
     selectedChainSurface: selectedSurface,
     source: "forecast_harvest",
     provider: "supabase_surface",
-    inputs: { captureSession, captureKind, generatedBy: "forecast_harvest_surface_baseline" },
+    inputs: {
+      captureSession,
+      captureKind,
+      generatedBy: "forecast_harvest_surface_baseline",
+      sourceSurfaceKey: (surface as any).surfaceKey ?? null,
+      sourceSupabaseSnapshotId: uuidOrNull((surface as any).metadata?.supabaseSnapshotId ?? (surface as any).id),
+    },
   });
 
   if (!capturePayload) throw new Error("Forecast capture payload could not be built.");
@@ -492,7 +507,7 @@ export async function POST(request: Request) {
           run_id: run.id,
           symbol,
           status: "captured",
-          forecast_id: forecastId,
+          forecast_id: uuidOrNull(forecastId),
           message,
           started_at: itemStartedAt,
           completed_at: new Date().toISOString(),
