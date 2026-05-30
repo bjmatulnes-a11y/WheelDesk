@@ -60,18 +60,21 @@ type CapturedForecastRow = {
   base_10d?: number | string | null;
   base_14d?: number | string | null;
   base_30d?: number | string | null;
+  base_exp?: number | string | null;
   upper_1d?: number | string | null;
   upper_3d?: number | string | null;
   upper_5d?: number | string | null;
   upper_10d?: number | string | null;
   upper_14d?: number | string | null;
   upper_30d?: number | string | null;
+  upper_exp?: number | string | null;
   lower_1d?: number | string | null;
   lower_3d?: number | string | null;
   lower_5d?: number | string | null;
   lower_10d?: number | string | null;
   lower_14d?: number | string | null;
   lower_30d?: number | string | null;
+  lower_exp?: number | string | null;
 };
 
 type DivergenceReadout = {
@@ -247,27 +250,44 @@ function businessDaysBetween(startTime: UTCTimestamp, endTime: UTCTimestamp): nu
 }
 
 function capturedAnchorTime(row: CapturedForecastRow | null | undefined): UTCTimestamp | null {
-  return dateToTime(row?.generated_at ?? row?.snapshot_date);
+  // Business-day validation must anchor to the frozen snapshot date.
+  // generated_at is only a receipt timestamp and can distort daily-candle elapsed math.
+  return dateToTime(row?.snapshot_date ?? row?.generated_at);
 }
 
-function capturedAnchorPrice(row: CapturedForecastRow | null | undefined, fallback: number): number {
-  return toNumber(row?.spot) ?? fallback;
+function capturedAnchorPrice(row: CapturedForecastRow | null | undefined): number | null {
+  // A captured receipt without a frozen spot is not valid for validation.
+  // Do not rebase historical forecasts to the latest close.
+  return toNumber(row?.spot);
 }
 
-function capturedHorizonRows(row: CapturedForecastRow | null | undefined, side: "base" | "upper" | "lower") {
+function capturedHorizonRows(
+  row: CapturedForecastRow | null | undefined,
+  side: "base" | "upper" | "lower",
+  axisMode: ForecastAxisMode,
+  terminalSessions: number
+) {
   if (!row) return [];
-  const keys = [
+
+  const terminal = Math.max(1, Math.round(terminalSessions || (axisMode === "compact" ? 14 : 30)));
+  const keys: Array<[number, string]> = [
     [1, `${side}_1d`],
     [3, `${side}_3d`],
     [5, `${side}_5d`],
     [10, `${side}_10d`],
     [14, `${side}_14d`],
-    [30, `${side}_30d`],
-  ] as const;
+  ];
+
+  if (axisMode === "expiration") {
+    keys.push([terminal, `${side}_exp`]);
+  } else if (axisMode === "full") {
+    keys.push([30, `${side}_30d`]);
+  }
 
   const rows: Array<{ sessions: number; value: number }> = [];
 
   for (const [sessions, key] of keys) {
+    if (axisMode !== "expiration" && sessions > terminal) continue;
     const value = toNumber((row as any)[key]);
     if (value !== null) {
       rows.push({ sessions: Number(sessions), value });
@@ -277,8 +297,14 @@ function capturedHorizonRows(row: CapturedForecastRow | null | undefined, side: 
   return rows.sort((a, b) => a.sessions - b.sessions);
 }
 
-function capturedForecastAt(row: CapturedForecastRow | null | undefined, sessions: number, side: "base" | "upper" | "lower"): number | null {
-  const rows = capturedHorizonRows(row, side);
+function capturedForecastAt(
+  row: CapturedForecastRow | null | undefined,
+  sessions: number,
+  side: "base" | "upper" | "lower",
+  axisMode: ForecastAxisMode,
+  terminalSessions: number
+): number | null {
+  const rows = capturedHorizonRows(row, side, axisMode, terminalSessions);
   if (!rows.length) return null;
   if (sessions <= rows[0].sessions) return rows[0].value;
 
@@ -297,19 +323,21 @@ function capturedForecastAt(row: CapturedForecastRow | null | undefined, session
 
 function makeCapturedForecastPath(
   row: CapturedForecastRow | null | undefined,
-  lastTime: UTCTimestamp,
-  lastClose: number,
-  side: "base" | "upper" | "lower"
+  _lastTime: UTCTimestamp,
+  _lastClose: number,
+  side: "base" | "upper" | "lower",
+  axisMode: ForecastAxisMode,
+  terminalSessions: number
 ): ChartLinePoint[] {
   if (!row) return [];
 
-  const anchorTime = capturedAnchorTime(row) ?? lastTime;
-  const anchorValue = side === "base" ? capturedAnchorPrice(row, lastClose) : capturedForecastAt(row, 1, side);
-  if (anchorValue == null) return [];
+  const anchorTime = capturedAnchorTime(row);
+  const anchorValue = capturedAnchorPrice(row);
+  if (anchorTime == null || anchorValue == null) return [];
 
   const points: ChartLinePoint[] = [{ time: anchorTime, value: anchorValue }];
 
-  for (const item of capturedHorizonRows(row, side)) {
+  for (const item of capturedHorizonRows(row, side, axisMode, terminalSessions)) {
     points.push({ time: addBusinessDays(anchorTime, item.sessions), value: item.value });
   }
 
@@ -325,7 +353,12 @@ function capturedContextMismatch(row: CapturedForecastRow | null | undefined, ca
   return mismatchPct > 0.25;
 }
 
-function capturedDivergenceReadout(row: CapturedForecastRow | null | undefined, candleData: CandleSeriesData[]): DivergenceReadout | null {
+function capturedDivergenceReadout(
+  row: CapturedForecastRow | null | undefined,
+  candleData: CandleSeriesData[],
+  axisMode: ForecastAxisMode,
+  terminalSessions: number
+): DivergenceReadout | null {
   if (!row || !candleData.length) return null;
 
   const anchorTime = capturedAnchorTime(row);
@@ -336,9 +369,9 @@ function capturedDivergenceReadout(row: CapturedForecastRow | null | undefined, 
   if (!latest) return null;
 
   const elapsedSessions = businessDaysBetween(anchorTime, latest.time);
-  const forecastBase = capturedForecastAt(row, elapsedSessions || 1, "base");
-  const forecastUpper = capturedForecastAt(row, elapsedSessions || 1, "upper");
-  const forecastLower = capturedForecastAt(row, elapsedSessions || 1, "lower");
+  const forecastBase = capturedForecastAt(row, elapsedSessions || 1, "base", axisMode, terminalSessions);
+  const forecastUpper = capturedForecastAt(row, elapsedSessions || 1, "upper", axisMode, terminalSessions);
+  const forecastLower = capturedForecastAt(row, elapsedSessions || 1, "lower", axisMode, terminalSessions);
   const actualClose = latest.close;
 
   const anchorSpot = toNumber(row?.spot);
@@ -449,13 +482,14 @@ function makeFieldForecastPath(
   lastTime: UTCTimestamp,
   lastClose: number,
   valueKey: "baseTarget" | "upperBand" | "lowerBand",
-  terminalSessions: number
+  terminalSessions: number,
+  includeExpiration: boolean
 ): ChartLinePoint[] {
   if (!forecast?.horizons?.length) return [];
 
   const rows: ChartLinePoint[] = [{ time: lastTime, value: lastClose }];
 
-  const horizons = visibleFieldHorizonsForTerminal(forecast, terminalSessions)
+  const horizons = visibleFieldHorizonsForTerminal(forecast, terminalSessions, includeExpiration)
     .filter((horizon) => Number.isFinite(Number(horizon.sessions)))
     .sort((a, b) => Number(a.sessions) - Number(b.sessions));
 
@@ -494,21 +528,21 @@ function fieldTerminalSessionsForAxis(forecast: OIFieldForecastResult | null | u
   const exp = expirationHorizon(forecast);
   const expSessions = toNumber(exp?.sessions);
 
-  if (axisMode === "compact") {
-    if (expSessions != null && expSessions > 0 && expSessions < 14) return Math.max(1, Math.round(expSessions));
-    return 14;
-  }
+  if (axisMode === "compact") return 14;
 
   if (axisMode === "expiration") {
     if (expSessions != null && expSessions > 0) return Math.max(1, Math.min(60, Math.round(expSessions)));
     return 30;
   }
 
-  if (expSessions != null && expSessions > 0 && expSessions <= 30) return Math.max(1, Math.round(expSessions));
   return 30;
 }
 
-function visibleFieldHorizonsForTerminal(forecast: OIFieldForecastResult | null | undefined, terminalSessions: number) {
+function visibleFieldHorizonsForTerminal(
+  forecast: OIFieldForecastResult | null | undefined,
+  terminalSessions: number,
+  includeExpiration: boolean
+) {
   if (!forecast?.horizons?.length) return [];
 
   const terminal = Math.max(1, Math.round(terminalSessions));
@@ -519,7 +553,7 @@ function visibleFieldHorizonsForTerminal(forecast: OIFieldForecastResult | null 
     .filter((horizon) => {
       const sessions = toNumber(horizon.sessions);
       if (sessions == null) return false;
-      if (String(horizon.key).startsWith("EXP")) return expSessions != null && Math.round(expSessions) <= terminal;
+      if (String(horizon.key).startsWith("EXP")) return includeExpiration && expSessions != null && Math.round(expSessions) <= terminal;
       return sessions <= terminal;
     })
     .sort((a, b) => Number(a.sessions) - Number(b.sessions));
@@ -538,7 +572,7 @@ function visibleFieldHorizonsForTerminal(forecast: OIFieldForecastResult | null 
 function fieldTerminalHorizonForAxis(forecast: OIFieldForecastResult | null | undefined, axisMode: ForecastAxisMode) {
   if (!forecast?.horizons?.length) return null;
   const terminal = fieldTerminalSessionsForAxis(forecast, axisMode);
-  const visible = visibleFieldHorizonsForTerminal(forecast, terminal);
+  const visible = visibleFieldHorizonsForTerminal(forecast, terminal, axisMode === "expiration");
   return (
     visible.find((horizon) => Math.round(Number(horizon.sessions)) === terminal) ??
     visible[visible.length - 1] ??
@@ -666,7 +700,7 @@ export default function ForecastChartPanel({
   const [forecastAxisMode, setForecastAxisMode] = useState<ForecastAxisMode>(
     defaultForecastAxisMode ?? (chartHeight >= 620 ? "full" : "compact")
   );
-  const [forecastDivergenceEnabled, setForecastDivergenceEnabled] = useState(defaultForecastDivergence ?? chartHeight >= 620);
+  const [forecastDivergenceEnabled, setForecastDivergenceEnabled] = useState(defaultForecastDivergence ?? false);
   const [capturedForecast, setCapturedForecast] = useState<CapturedForecastRow | null>(null);
   const [capturedForecastStatus, setCapturedForecastStatus] = useState("");
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1054,9 +1088,10 @@ export default function ForecastChartPanel({
     bearRef.current?.setData(bearData);
 
     const terminalSessions = fieldTerminalSessionsForAxis(fieldForecast, forecastAxisMode);
-    const fieldBaseData = showFieldForecast ? makeFieldForecastPath(fieldForecast, lastTime, lastClose, "baseTarget", terminalSessions) : [];
-    const fieldUpperData = showFieldForecast ? makeFieldForecastPath(fieldForecast, lastTime, lastClose, "upperBand", terminalSessions) : [];
-    const fieldLowerData = showFieldForecast ? makeFieldForecastPath(fieldForecast, lastTime, lastClose, "lowerBand", terminalSessions) : [];
+    const includeExpirationHorizon = forecastAxisMode === "expiration";
+    const fieldBaseData = showFieldForecast ? makeFieldForecastPath(fieldForecast, lastTime, lastClose, "baseTarget", terminalSessions, includeExpirationHorizon) : [];
+    const fieldUpperData = showFieldForecast ? makeFieldForecastPath(fieldForecast, lastTime, lastClose, "upperBand", terminalSessions, includeExpirationHorizon) : [];
+    const fieldLowerData = showFieldForecast ? makeFieldForecastPath(fieldForecast, lastTime, lastClose, "lowerBand", terminalSessions, includeExpirationHorizon) : [];
     const wheel = fieldTerminalHorizonForAxis(fieldForecast, forecastAxisMode) ?? wheelHorizon(fieldForecast);
     const wheelFloor = toNumber(wheel?.lowerBand ?? null);
     const fieldTimes = fieldBaseData.length ? fieldBaseData.map((point) => point.time) : [];
@@ -1066,9 +1101,9 @@ export default function ForecastChartPanel({
     fieldLowerRef.current?.setData(fieldLowerData);
     fieldWheelRef.current?.setData(showFieldForecast && wheelFloor != null ? horizontalBand(fieldTimes, wheelFloor) : []);
 
-    const divergenceBaseData = showCapturedDivergence ? makeCapturedForecastPath(capturedForecast, lastTime, lastClose, "base") : [];
-    const divergenceUpperData = showCapturedDivergence ? makeCapturedForecastPath(capturedForecast, lastTime, lastClose, "upper") : [];
-    const divergenceLowerData = showCapturedDivergence ? makeCapturedForecastPath(capturedForecast, lastTime, lastClose, "lower") : [];
+    const divergenceBaseData = showCapturedDivergence ? makeCapturedForecastPath(capturedForecast, lastTime, lastClose, "base", forecastAxisMode, terminalSessions) : [];
+    const divergenceUpperData = showCapturedDivergence ? makeCapturedForecastPath(capturedForecast, lastTime, lastClose, "upper", forecastAxisMode, terminalSessions) : [];
+    const divergenceLowerData = showCapturedDivergence ? makeCapturedForecastPath(capturedForecast, lastTime, lastClose, "lower", forecastAxisMode, terminalSessions) : [];
     divergenceBaseRef.current?.setData(divergenceBaseData);
     divergenceUpperRef.current?.setData(divergenceUpperData);
     divergenceLowerRef.current?.setData(divergenceLowerData);
@@ -1152,7 +1187,7 @@ export default function ForecastChartPanel({
     }
 
     if (showCapturedDivergence) {
-      const divReadout = capturedDivergenceReadout(capturedForecast, candleData);
+      const divReadout = capturedDivergenceReadout(capturedForecast, candleData, forecastAxisMode, terminalSessions);
       addPriceLine({ price: divReadout?.forecastBase, color: "#f8fafc", title: `Captured base ${fmt(divReadout?.forecastBase)}`, dashed: false, width: 2 });
       addPriceLine({ price: divReadout?.forecastUpper, color: "#22c55e", title: `Captured upper ${fmt(divReadout?.forecastUpper)}`, dashed: true, width: 1 });
       addPriceLine({ price: divReadout?.forecastLower, color: "#fb7185", title: `Captured lower ${fmt(divReadout?.forecastLower)}`, dashed: true, width: 1 });
@@ -1210,7 +1245,7 @@ export default function ForecastChartPanel({
   const thirtyDay = horizonByKey(fieldForecast, "30D");
   const fieldBand = activeFieldBandForAxis(fieldForecast, forecastAxisMode);
   const effectiveModeLabel = modeLabel(chartMode === "field-v2" && !fieldForecast ? "classic" : chartMode);
-  const divergenceReadout = forecastDivergenceEnabled ? capturedDivergenceReadout(capturedForecast, normalizeCandles(candles ?? [])) : null;
+  const divergenceReadout = forecastDivergenceEnabled ? capturedDivergenceReadout(capturedForecast, normalizeCandles(candles ?? []), forecastAxisMode, terminalSessions) : null;
 
   return (
     <section style={{ ...cardStyle, padding: "0.85rem", minHeight: chartHeight + 90, position: "relative" }}>
@@ -1314,9 +1349,9 @@ export default function ForecastChartPanel({
                 fontWeight: 950,
                 cursor: "pointer",
               }}
-              title={capturedForecastStatus || "Overlay the latest captured forecast and compare actual price against it."}
+              title={capturedForecastStatus || "Overlay the matched captured forecast receipt for validation."}
             >
-              Forecast Divergence
+              Validation Overlay
             </button>
           </div>
         </div>
@@ -1408,7 +1443,7 @@ export default function ForecastChartPanel({
         {fieldForecast && chartMode !== "classic" && chartMode !== "candles" ? <span><strong style={{ color: "#10b981" }}>Dotted green</strong> wheel support floor</span> : null}
         {path && (chartMode === "classic" || chartMode === "both") ? <span><strong style={{ color: colors.text }}>Dashed white</strong> legacy base path</span> : null}
         {ivSurface && (chartMode === "classic" || chartMode === "both") ? <span><strong style={{ color: colors.teal }}>Cyan</strong> matched IV band</span> : null}
-        {forecastDivergenceEnabled ? <span>Forecast divergence: <strong style={{ color: divergenceReadout?.tone ?? colors.text }}>{divergenceReadout?.label ?? (capturedForecastStatus || "No captured forecast")}</strong></span> : null}
+        {forecastDivergenceEnabled ? <span>Validation overlay: <strong style={{ color: divergenceReadout?.tone ?? colors.text }}>{divergenceReadout?.label ?? (capturedForecastStatus || "No captured forecast")}</strong></span> : null}
         {forecastDivergenceEnabled && capturedForecast?.generated_at ? <span>Captured: <strong style={{ color: colors.text }}>{new Date(capturedForecast.generated_at).toLocaleString()}</strong></span> : null}
         {forecastDivergenceEnabled && (surfaceDate || expiration) ? <span>Requested context: <strong style={{ color: colors.text }}>{surfaceDate || "any surface"}</strong> / <strong style={{ color: colors.text }}>{expiration || "any expiration"}</strong></span> : null}
         {edge || path || matrix ? <span>Regime: <strong style={{ color: colors.text }}>{path ? pathRegime(path) : fieldForecast?.regime ?? "mixed"}</strong></span> : null}

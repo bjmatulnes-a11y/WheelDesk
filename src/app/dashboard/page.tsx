@@ -146,6 +146,9 @@ type ForecastDbRow = {
   base_30d?: number | string | null;
   upper_30d?: number | string | null;
   lower_30d?: number | string | null;
+  base_exp?: number | string | null;
+  upper_exp?: number | string | null;
+  lower_exp?: number | string | null;
   expected_move_lower?: number | string | null;
   expected_move_upper?: number | string | null;
   trap_probability?: number | string | null;
@@ -671,6 +674,41 @@ function toNumber(value: unknown): number | null {
 function formatPercent(value: unknown): string {
   const n = toNumber(value);
   return n == null ? "N/A" : `${n.toFixed(0)}%`;
+}
+
+function forecastFieldLabel(forecast?: ForecastDbRow | null): string {
+  const exp = dateOnly(forecast?.expiration);
+  const hasExpBand = toNumber(forecast?.lower_exp) != null && toNumber(forecast?.upper_exp) != null;
+  return exp && hasExpBand ? `${exp} / EXP` : "30D";
+}
+
+function forecastFieldLower(forecast?: ForecastDbRow | null): number | null {
+  const exp = dateOnly(forecast?.expiration);
+  const expLower = toNumber(forecast?.lower_exp);
+  return exp && expLower != null ? expLower : toNumber(forecast?.lower_30d);
+}
+
+function forecastFieldUpper(forecast?: ForecastDbRow | null): number | null {
+  const exp = dateOnly(forecast?.expiration);
+  const expUpper = toNumber(forecast?.upper_exp);
+  return exp && expUpper != null ? expUpper : toNumber(forecast?.upper_30d);
+}
+
+function forecastFieldBase(forecast?: ForecastDbRow | null): number | null {
+  const exp = dateOnly(forecast?.expiration);
+  const expBase = toNumber(forecast?.base_exp);
+  return exp && expBase != null ? expBase : toNumber(forecast?.base_30d);
+}
+
+function forecastFieldBaseLabel(forecast?: ForecastDbRow | null): string {
+  const base = forecastFieldBase(forecast);
+  return base != null ? safeMoney(base) : "—";
+}
+
+function forecastFieldRangeLabel(forecast?: ForecastDbRow | null): string {
+  const lower = forecastFieldLower(forecast);
+  const upper = forecastFieldUpper(forecast);
+  return lower != null && upper != null ? `${safeMoney(lower)} – ${safeMoney(upper)}` : "—";
 }
 
 function extractSurfaceArray(payload: any): any[] {
@@ -1485,7 +1523,7 @@ export default function DashboardPage() {
                 <h3 style={styles.commandTopTitle}>{centralTop.symbol} · {commandStatus(centralTop)}</h3>
                 <p style={styles.commandSubtitle}>
                   {centralTop.forecast
-                    ? `Bias ${centralTop.forecast.bias ?? "N/A"} · 30D base ${safeMoney(centralTop.forecast.base_30d)} · field ${safeMoney(centralTop.forecast.lower_30d)}–${safeMoney(centralTop.forecast.upper_30d)} · confidence ${formatPercent(centralTop.forecast.confidence)}.`
+                    ? `Bias ${centralTop.forecast.bias ?? "N/A"} · saved ${forecastFieldLabel(centralTop.forecast)} base ${forecastFieldBaseLabel(centralTop.forecast)} · field ${forecastFieldRangeLabel(centralTop.forecast)} · confidence ${formatPercent(centralTop.forecast.confidence)}.`
                     : centralTop.surfaceDate
                       ? `Surface captured on ${centralTop.surfaceDate}. Open Control Center and click Capture Forecast to create the OI Field receipt.`
                       : "No surface exists yet. Harvest this ticker before using it in the daily read."}
@@ -1508,7 +1546,7 @@ export default function DashboardPage() {
                     <th style={styles.th}>Surface</th>
                     <th style={styles.thRight}>Rows</th>
                     <th style={styles.th}>Forecast</th>
-                    <th style={styles.th}>30D Field</th>
+                    <th style={styles.th}>Saved Field</th>
                     <th style={styles.th}>Actions</th>
                   </tr>
                 </thead>
@@ -1527,7 +1565,7 @@ export default function DashboardPage() {
                       </td>
                       <td style={styles.td}>
                         {row.forecast && row.surfaceDate
-                          ? `${safeMoney(row.forecast.lower_30d)} – ${safeMoney(row.forecast.upper_30d)}`
+                          ? `${forecastFieldLabel(row.forecast)} · ${forecastFieldRangeLabel(row.forecast)}`
                           : "—"}
                       </td>
                       <td style={styles.td}>
