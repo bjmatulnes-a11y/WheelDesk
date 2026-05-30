@@ -5,7 +5,11 @@ import type { WallMigrationSummary } from "./oi-wall-migration-engine";
 
 export type OIFieldHorizonBucket = "short" | "swing" | "wheel" | "expiration";
 export type OIFieldBias = "bullish" | "bearish" | "neutral" | "mixed";
-export type OIFieldPosture = "actionable" | "watch" | "defensive" | "stand_down";
+export type OIFieldPosture =
+  | "actionable"
+  | "watch"
+  | "defensive"
+  | "stand_down";
 
 export type OIFieldHorizonForecast = {
   key: string;
@@ -70,12 +74,17 @@ function round(value: number, decimals = 2): number {
 }
 
 function avg(values: Array<number | null | undefined>): number | null {
-  const clean = values.filter((value): value is number => Number.isFinite(value));
+  const clean = values.filter((value): value is number =>
+    Number.isFinite(value),
+  );
   if (!clean.length) return null;
   return clean.reduce((sum, value) => sum + value, 0) / clean.length;
 }
 
-function horizonBucket(sessions: number, isExpiration = false): OIFieldHorizonBucket {
+function horizonBucket(
+  sessions: number,
+  isExpiration = false,
+): OIFieldHorizonBucket {
   if (isExpiration) return "expiration";
   if (sessions <= 5) return "short";
   if (sessions <= 14) return "swing";
@@ -87,16 +96,27 @@ function horizonLabel(sessions: number, isExpiration = false): string {
   return `${sessions}D`;
 }
 
-function pointValue(points: any[] | undefined, sessions: number, currentPrice: number): number | null {
+function pointValue(
+  points: any[] | undefined,
+  sessions: number,
+  currentPrice: number,
+): number | null {
   if (!Array.isArray(points) || !points.length || sessions <= 0) return null;
 
   const clean = points
-    .map((point) => toNumber(point?.value ?? point?.price ?? point?.adjustedCenter))
-    .filter((value): value is number => value != null && Number.isFinite(value));
+    .map((point) =>
+      toNumber(point?.value ?? point?.price ?? point?.adjustedCenter),
+    )
+    .filter(
+      (value): value is number => value != null && Number.isFinite(value),
+    );
 
   if (!clean.length) return null;
 
-  const index = Math.min(clean.length - 1, Math.max(0, Math.round(sessions) - 1));
+  const index = Math.min(
+    clean.length - 1,
+    Math.max(0, Math.round(sessions) - 1),
+  );
 
   if (sessions <= clean.length) return round(clean[index]);
 
@@ -105,7 +125,7 @@ function pointValue(points: any[] | undefined, sessions: number, currentPrice: n
   const extra = sessions - clean.length;
   const decay = Math.sqrt(Math.max(1, sessions) / Math.max(1, clean.length));
 
-  return round(last + slopePerSession * extra * 0.45 / decay);
+  return round(last + (slopePerSession * extra * 0.45) / decay);
 }
 
 function inferBaseBias(args: {
@@ -115,7 +135,12 @@ function inferBaseBias(args: {
   projection?: OIProjectionReport | null;
 }): OIFieldBias {
   const pathBias = String(args.path?.pathBias ?? "");
-  if (pathBias === "bullish" || pathBias === "bearish" || pathBias === "neutral") return pathBias;
+  if (
+    pathBias === "bullish" ||
+    pathBias === "bearish" ||
+    pathBias === "neutral"
+  )
+    return pathBias;
 
   if (args.wall?.migrationBias === "bullish") return "bullish";
   if (args.wall?.migrationBias === "bearish") return "bearish";
@@ -134,8 +159,11 @@ function confidenceScore(args: {
   wall?: WallMigrationSummary | null;
   projection?: OIProjectionReport | null;
 }): number {
-  const pathConfidence = String(args.path?.confidence ?? args.projection?.confidence ?? "low");
-  let score = pathConfidence === "high" ? 72 : pathConfidence === "medium" ? 59 : 45;
+  const pathConfidence = String(
+    args.path?.confidence ?? args.projection?.confidence ?? "low",
+  );
+  let score =
+    pathConfidence === "high" ? 72 : pathConfidence === "medium" ? 59 : 45;
 
   const dataQuality = toNumber(args.edge?.dataQualityScore);
   if (dataQuality != null) score += (dataQuality - 70) * 0.22;
@@ -167,11 +195,18 @@ function directionalProbability(args: {
   sessions: number;
   wallDistancePct?: number | null;
 }): number {
-  const { currentPrice, target, baseBias, confidence, direction, sessions } = args;
-  const driftPct = target != null && currentPrice > 0 ? ((target - currentPrice) / currentPrice) * 100 : 0;
+  const { currentPrice, target, baseBias, confidence, direction, sessions } =
+    args;
+  const driftPct =
+    target != null && currentPrice > 0
+      ? ((target - currentPrice) / currentPrice) * 100
+      : 0;
   const horizonBoost = clamp(Math.log1p(sessions) / Math.log1p(30), 0.25, 1.05);
   const confidenceBoost = (confidence - 55) * 0.22;
-  const wallDistanceAdjustment = args.wallDistancePct != null ? clamp(10 - args.wallDistancePct * 0.9, -8, 10) : 0;
+  const wallDistanceAdjustment =
+    args.wallDistancePct != null
+      ? clamp(10 - args.wallDistancePct * 0.9, -8, 10)
+      : 0;
 
   let score = 36 + confidenceBoost + wallDistanceAdjustment * horizonBoost;
 
@@ -198,7 +233,10 @@ function pinProbability(args: {
   confidence: number;
   sessions: number;
 }): number {
-  const driftPct = args.target != null && args.currentPrice > 0 ? Math.abs((args.target - args.currentPrice) / args.currentPrice) * 100 : 0;
+  const driftPct =
+    args.target != null && args.currentPrice > 0
+      ? Math.abs((args.target - args.currentPrice) / args.currentPrice) * 100
+      : 0;
   const compression = String(args.edge?.compressionState ?? "");
   const pinSnapRisk = toNumber(args.edge?.pinSnapRiskScore) ?? 0;
   const confidenceBoost = (args.confidence - 55) * 0.18;
@@ -223,12 +261,21 @@ function postureFrom(args: {
   if (args.trapProbability >= 72) return "stand_down";
   if (args.confidence < 42) return "watch";
   if (args.wheelHold != null && args.wheelHold < 45) return "defensive";
-  if (args.sessions >= 14 && args.wheelHold != null && args.wheelHold >= 62 && args.trapProbability <= 58) return "actionable";
+  if (
+    args.sessions >= 14 &&
+    args.wheelHold != null &&
+    args.wheelHold >= 62 &&
+    args.trapProbability <= 58
+  )
+    return "actionable";
   if (args.bias === "bullish" || args.bias === "bearish") return "watch";
   return "watch";
 }
 
-function biasFromDrift(driftPct: number | null, baseBias: OIFieldBias): OIFieldBias {
+function biasFromDrift(
+  driftPct: number | null,
+  baseBias: OIFieldBias,
+): OIFieldBias {
   if (driftPct == null) return baseBias;
   if (driftPct >= 1.2) return "bullish";
   if (driftPct <= -1.2) return "bearish";
@@ -245,11 +292,16 @@ function readoutFor(args: {
   trap: number;
   posture: OIFieldPosture;
 }): string {
-  if (args.trap >= 72) return `${args.label}: trap/chop risk dominates; require confirmation before adding premium.`;
-  if (args.pin >= Math.max(args.upper, args.lower) + 10) return `${args.label}: pin/magnet behavior is the leading structure.`;
-  if (args.upper > args.lower + 12) return `${args.label}: upside wall-touch/unlock pressure leads the map.`;
-  if (args.lower > args.upper + 12) return `${args.label}: downside support test/break risk leads the map.`;
-  if (args.posture === "actionable") return `${args.label}: premium-selling posture is constructive if strikes stay outside the active rails.`;
+  if (args.trap >= 72)
+    return `${args.label}: trap/chop risk dominates; require confirmation before adding premium.`;
+  if (args.pin >= Math.max(args.upper, args.lower) + 10)
+    return `${args.label}: pin/magnet behavior is the leading structure.`;
+  if (args.upper > args.lower + 12)
+    return `${args.label}: upside wall-touch/unlock pressure leads the map.`;
+  if (args.lower > args.upper + 12)
+    return `${args.label}: downside support test/break risk leads the map.`;
+  if (args.posture === "actionable")
+    return `${args.label}: premium-selling posture is constructive if strikes stay outside the active rails.`;
   return `${args.label}: mixed structure; use rails and validation rather than directional conviction.`;
 }
 
@@ -262,16 +314,39 @@ function buildHorizon(args: {
   baseBias: OIFieldBias;
   confidence: number;
 }): OIFieldHorizonForecast {
-  const target = pointValue(args.path?.basePath, args.sessions, args.currentPrice);
-  const upperBand = pointValue(args.path?.upperBand, args.sessions, args.currentPrice);
-  const lowerBand = pointValue(args.path?.lowerBand, args.sessions, args.currentPrice);
-  const expectedDriftPct = target != null ? round(((target - args.currentPrice) / args.currentPrice) * 100, 2) : null;
+  const target = pointValue(
+    args.path?.basePath,
+    args.sessions,
+    args.currentPrice,
+  );
+  const upperBand = pointValue(
+    args.path?.upperBand,
+    args.sessions,
+    args.currentPrice,
+  );
+  const lowerBand = pointValue(
+    args.path?.lowerBand,
+    args.sessions,
+    args.currentPrice,
+  );
+  const expectedDriftPct =
+    target != null
+      ? round(((target - args.currentPrice) / args.currentPrice) * 100, 2)
+      : null;
   const bias = biasFromDrift(expectedDriftPct, args.baseBias);
 
-  const invalidAbove = toNumber(args.path?.invalidAbove ?? args.edge?.resistance);
+  const invalidAbove = toNumber(
+    args.path?.invalidAbove ?? args.edge?.resistance,
+  );
   const invalidBelow = toNumber(args.path?.invalidBelow ?? args.edge?.support);
-  const upperDistancePct = invalidAbove != null ? Math.abs((invalidAbove - args.currentPrice) / args.currentPrice) * 100 : null;
-  const lowerDistancePct = invalidBelow != null ? Math.abs((args.currentPrice - invalidBelow) / args.currentPrice) * 100 : null;
+  const upperDistancePct =
+    invalidAbove != null
+      ? Math.abs((invalidAbove - args.currentPrice) / args.currentPrice) * 100
+      : null;
+  const lowerDistancePct =
+    invalidBelow != null
+      ? Math.abs((args.currentPrice - invalidBelow) / args.currentPrice) * 100
+      : null;
 
   const upperWallTouchProbability = directionalProbability({
     currentPrice: args.currentPrice,
@@ -303,15 +378,40 @@ function buildHorizon(args: {
   });
 
   const trapBase = toNumber(args.edge?.trapRisk) ?? 45;
-  const expansionPenalty = String(args.path?.regime ?? "").includes("expansion") ? 7 : 0;
+  const expansionPenalty = String(args.path?.regime ?? "").includes("expansion")
+    ? 7
+    : 0;
   const shortHorizonChop = args.sessions <= 5 && pin >= 60 ? 7 : 0;
-  const trapProbability = Math.round(clamp(trapBase * 0.68 + expansionPenalty + shortHorizonChop + Math.abs((expectedDriftPct ?? 0)) * 0.7, 8, 92));
+  const trapProbability = Math.round(
+    clamp(
+      trapBase * 0.68 +
+        expansionPenalty +
+        shortHorizonChop +
+        Math.abs(expectedDriftPct ?? 0) * 0.7,
+      8,
+      92,
+    ),
+  );
 
   const support = toNumber(args.edge?.support ?? args.path?.invalidBelow);
-  const supportDistancePct = support != null ? ((args.currentPrice - support) / args.currentPrice) * 100 : null;
-  const wheelSupportHoldProbability = supportDistancePct == null
-    ? null
-    : Math.round(clamp(58 + supportDistancePct * 3.2 + args.confidence * 0.18 - trapProbability * 0.28 - lowerWallBreakProbability * 0.22, 8, 92));
+  const supportDistancePct =
+    support != null
+      ? ((args.currentPrice - support) / args.currentPrice) * 100
+      : null;
+  const wheelSupportHoldProbability =
+    supportDistancePct == null
+      ? null
+      : Math.round(
+          clamp(
+            58 +
+              supportDistancePct * 3.2 +
+              args.confidence * 0.18 -
+              trapProbability * 0.28 -
+              lowerWallBreakProbability * 0.22,
+            8,
+            92,
+          ),
+        );
 
   const premiumSellerPosture = postureFrom({
     bias,
@@ -322,8 +422,11 @@ function buildHorizon(args: {
   });
 
   const label = horizonLabel(args.sessions, Boolean(args.isExpiration));
-  const confidenceAdjustment = args.sessions >= 30 ? -4 : args.sessions <= 3 ? -2 : 0;
-  const confidenceScore = Math.round(clamp(args.confidence + confidenceAdjustment, 10, 94));
+  const confidenceAdjustment =
+    args.sessions >= 30 ? -4 : args.sessions <= 3 ? -2 : 0;
+  const confidenceScore = Math.round(
+    clamp(args.confidence + confidenceAdjustment, 10, 94),
+  );
 
   return {
     key: args.isExpiration ? "EXP" : `${args.sessions}D`,
@@ -354,62 +457,111 @@ function buildHorizon(args: {
   };
 }
 
-function scoreByBucket(horizons: OIFieldHorizonForecast[], bucket: OIFieldHorizonBucket): number {
+function scoreByBucket(
+  horizons: OIFieldHorizonForecast[],
+  bucket: OIFieldHorizonBucket,
+): number {
   const rows = horizons.filter((row) => row.bucket === bucket);
   if (!rows.length) return 0;
 
   const values = rows.map((row) => {
-    const constructive = Math.max(row.pinProbability, row.upperWallTouchProbability, row.wheelSupportHoldProbability ?? 0);
-    const risk = Math.max(row.lowerWallBreakProbability * 0.7, row.trapProbability * 0.9);
-    return clamp(constructive * 0.62 + row.confidenceScore * 0.38 - risk * 0.18, 0, 100);
+    const constructive = Math.max(
+      row.pinProbability,
+      row.upperWallTouchProbability,
+      row.wheelSupportHoldProbability ?? 0,
+    );
+    const risk = Math.max(
+      row.lowerWallBreakProbability * 0.7,
+      row.trapProbability * 0.9,
+    );
+    return clamp(
+      constructive * 0.62 + row.confidenceScore * 0.38 - risk * 0.18,
+      0,
+      100,
+    );
   });
 
   return Math.round(avg(values) ?? 0);
 }
 
-export function buildOIFieldForecast(args: BuildArgs): OIFieldForecastResult | null {
+export function buildOIFieldForecast(
+  args: BuildArgs,
+): OIFieldForecastResult | null {
   const path = args.path ?? null;
   const edge = args.edgeSummary ?? null;
   const projection = args.projectionReport ?? null;
   const wall = args.wallMigration ?? null;
-  const currentPrice = toNumber(args.currentPrice) ?? toNumber(path?.currentPrice) ?? toNumber(edge?.analysisPrice) ?? toNumber(projection?.currentPrice);
+  const currentPrice =
+    toNumber(args.currentPrice) ??
+    toNumber(path?.currentPrice) ??
+    toNumber(edge?.analysisPrice) ??
+    toNumber(projection?.currentPrice);
 
-  if (!currentPrice || currentPrice <= 0 || (!path && !edge && !projection)) return null;
+  if (!currentPrice || currentPrice <= 0 || (!path && !edge && !projection))
+    return null;
 
   const selectedExpirationDte = toNumber(args.selectedExpirationDte);
   const baseBias = inferBaseBias({ path, edge, wall, projection });
   const confidence = confidenceScore({ path, edge, wall, projection });
 
   const horizonsToBuild = [1, 3, 5, 10, 14, 30];
-  const horizons = horizonsToBuild.map((sessions) => buildHorizon({
-    sessions,
-    currentPrice,
-    path,
-    edge,
-    baseBias,
-    confidence,
-  }));
-
-  if (selectedExpirationDte != null && selectedExpirationDte > 0 && selectedExpirationDte <= 75 && !horizonsToBuild.includes(Math.round(selectedExpirationDte))) {
-    horizons.push(buildHorizon({
-      sessions: Math.round(selectedExpirationDte),
-      isExpiration: true,
+  const horizons = horizonsToBuild.map((sessions) =>
+    buildHorizon({
+      sessions,
       currentPrice,
       path,
       edge,
       baseBias,
       confidence,
-    }));
+    }),
+  );
+
+  if (
+    selectedExpirationDte != null &&
+    selectedExpirationDte > 0 &&
+    selectedExpirationDte <= 75
+  ) {
+    // EXP is a semantic lane, not just another N-day horizon. Keep it even when
+    // the selected expiration equals 14D/30D so the chart can distinguish
+    // "Full 30D" from "To EXP" and validation receipts can replay the right context.
+    horizons.push(
+      buildHorizon({
+        sessions: Math.round(selectedExpirationDte),
+        isExpiration: true,
+        currentPrice,
+        path,
+        edge,
+        baseBias,
+        confidence,
+      }),
+    );
   }
 
-  const sorted = horizons.sort((a, b) => a.sessions - b.sessions || a.key.localeCompare(b.key));
+  const sorted = horizons.sort(
+    (a, b) => a.sessions - b.sessions || a.key.localeCompare(b.key),
+  );
   const shortTermScore = scoreByBucket(sorted, "short");
   const swingScore = scoreByBucket(sorted, "swing");
-  const wheelScore = Math.max(scoreByBucket(sorted, "wheel"), scoreByBucket(sorted, "expiration"));
+  const wheelScore = Math.max(
+    scoreByBucket(sorted, "wheel"),
+    scoreByBucket(sorted, "expiration"),
+  );
 
   const best = sorted.slice().sort((a, b) => {
-    const aEdge = Math.max(a.pinProbability, a.upperWallTouchProbability, a.wheelSupportHoldProbability ?? 0) - a.trapProbability * 0.6;
-    const bEdge = Math.max(b.pinProbability, b.upperWallTouchProbability, b.wheelSupportHoldProbability ?? 0) - b.trapProbability * 0.6;
+    const aEdge =
+      Math.max(
+        a.pinProbability,
+        a.upperWallTouchProbability,
+        a.wheelSupportHoldProbability ?? 0,
+      ) -
+      a.trapProbability * 0.6;
+    const bEdge =
+      Math.max(
+        b.pinProbability,
+        b.upperWallTouchProbability,
+        b.wheelSupportHoldProbability ?? 0,
+      ) -
+      b.trapProbability * 0.6;
     return bEdge - aEdge;
   })[0];
 
@@ -418,14 +570,28 @@ export function buildOIFieldForecast(args: BuildArgs): OIFieldForecastResult | n
     "Short horizons emphasize reaction/pin behavior; 10D/14D emphasize swing follow-through; 30D/EXP emphasize wheel and premium-selling posture.",
   ];
 
-  if (!wall?.hasPrior) engineNotes.push("No prior surface was available, so migration-sensitive confidence is reduced.");
-  if ((edge?.staleDays ?? 0) > 0) engineNotes.push("Surface freshness is imperfect; validate levels against current candles before acting.");
-  if ((edge?.trapRisk ?? 0) >= 70) engineNotes.push("Trap risk is elevated; the forecast should be read as a rail map rather than a clean directional call.");
+  if (!wall?.hasPrior)
+    engineNotes.push(
+      "No prior surface was available, so migration-sensitive confidence is reduced.",
+    );
+  if ((edge?.staleDays ?? 0) > 0)
+    engineNotes.push(
+      "Surface freshness is imperfect; validate levels against current candles before acting.",
+    );
+  if ((edge?.trapRisk ?? 0) >= 70)
+    engineNotes.push(
+      "Trap risk is elevated; the forecast should be read as a rail map rather than a clean directional call.",
+    );
 
   return {
     version: "oi-field-v2",
     ticker: String(path?.ticker ?? edge?.ticker ?? projection?.ticker ?? ""),
-    snapshotDate: String(path?.snapshotDate ?? edge?.snapshotDate ?? projection?.snapshotDate ?? ""),
+    snapshotDate: String(
+      path?.snapshotDate ??
+        edge?.snapshotDate ??
+        projection?.snapshotDate ??
+        "",
+    ),
     currentPrice,
     selectedExpirationDte,
     regime: String(path?.regime ?? "mixed"),
@@ -435,7 +601,9 @@ export function buildOIFieldForecast(args: BuildArgs): OIFieldForecastResult | n
     swingScore,
     wheelScore,
     horizons: sorted,
-    readout: best?.readout ?? "OI Field v2 needs more option/candle context before producing a useful horizon read.",
+    readout:
+      best?.readout ??
+      "OI Field v2 needs more option/candle context before producing a useful horizon read.",
     engineNotes,
   };
 }

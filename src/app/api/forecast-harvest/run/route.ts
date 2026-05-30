@@ -14,6 +14,8 @@ import { buildOIFieldForecastCapturePayload } from "../../../../lib/oi-forecast-
 
 export const runtime = "nodejs";
 
+const CLASSIC_OI_PATH_MAX_DTE = 30;
+
 type HarvestSession = "premarket" | "midday" | "close" | "manual";
 type CaptureKind = "scheduled" | "manual_batch";
 
@@ -67,12 +69,17 @@ const NN_READY_RETURN_SELECT = [
   "outcome_status",
 ].join(",");
 
-const LEGACY_RETURN_SELECT = "id,symbol,snapshot_date,expiration,generated_at,source";
+const LEGACY_RETURN_SELECT =
+  "id,symbol,snapshot_date,expiration,generated_at,source";
 
 function cleanSession(value: unknown): HarvestSession {
   const normalized = String(value ?? "manual").toLowerCase();
   if (normalized === "auto") return autoSession();
-  return normalized === "premarket" || normalized === "midday" || normalized === "close" ? normalized : "manual";
+  return normalized === "premarket" ||
+    normalized === "midday" ||
+    normalized === "close"
+    ? normalized
+    : "manual";
 }
 
 function autoSession(): HarvestSession {
@@ -84,7 +91,9 @@ function autoSession(): HarvestSession {
     hour12: false,
   }).formatToParts(now);
   const hour = Number(eastern.find((part) => part.type === "hour")?.value ?? 0);
-  const minute = Number(eastern.find((part) => part.type === "minute")?.value ?? 0);
+  const minute = Number(
+    eastern.find((part) => part.type === "minute")?.value ?? 0,
+  );
   const minutes = hour * 60 + minute;
   if (minutes < 9 * 60 + 30) return "premarket";
   if (minutes < 15 * 60 + 45) return "midday";
@@ -113,14 +122,19 @@ async function optionalRunInsert(payload: Record<string, unknown>) {
     .maybeSingle();
 
   if (error) return { id: null as string | null, error: error.message };
-  return { id: (data?.id as string | undefined) ?? null, error: null as string | null };
+  return {
+    id: (data?.id as string | undefined) ?? null,
+    error: null as string | null,
+  };
 }
 
 async function optionalRunItemInsert(payload: Record<string, unknown>) {
   // Run-item logging should never break the actual forecast harvest. Older
   // installs can have UUID-only forecast_id columns while legacy forecast rows
   // may use text ids. The main harvest result is the saved oi_field_forecasts row.
-  const { error } = await supabaseServer.from("forecast_capture_run_items").insert(payload);
+  const { error } = await supabaseServer
+    .from("forecast_capture_run_items")
+    .insert(payload);
   return error?.message ?? null;
 }
 
@@ -154,10 +168,16 @@ function stripHarvestFields(row: Record<string, unknown>) {
 
 function isMissingHarvestColumn(error: unknown) {
   const message = dbErrorMessage(error);
-  return /capture_session|capture_kind|capture_run_id|forecast_anchor_at|model_status|engine_version|training_eligible|outcome_status|schema cache|column/i.test(message);
+  return /capture_session|capture_kind|capture_run_id|forecast_anchor_at|model_status|engine_version|training_eligible|outcome_status|schema cache|column/i.test(
+    message,
+  );
 }
 
-async function loadSymbols(userId: string | null, requested: string[], limit: number) {
+async function loadSymbols(
+  userId: string | null,
+  requested: string[],
+  limit: number,
+) {
   if (requested.length) return requested.slice(0, limit);
 
   if (userId) {
@@ -168,7 +188,9 @@ async function loadSymbols(userId: string | null, requested: string[], limit: nu
       .order("slot_index", { ascending: true })
       .limit(limit);
 
-    return uniqueSymbols((data ?? []).map((row: { symbol?: unknown }) => row.symbol));
+    return uniqueSymbols(
+      (data ?? []).map((row: { symbol?: unknown }) => row.symbol),
+    );
   }
 
   const { data } = await supabaseServer
@@ -178,7 +200,9 @@ async function loadSymbols(userId: string | null, requested: string[], limit: nu
     .order("data_priority", { ascending: true })
     .limit(limit);
 
-  return uniqueSymbols((data ?? []).map((row: { symbol?: unknown }) => row.symbol));
+  return uniqueSymbols(
+    (data ?? []).map((row: { symbol?: unknown }) => row.symbol),
+  );
 }
 
 async function upsertHarvestForecast(clone: Record<string, unknown>): Promise<{
@@ -210,7 +234,9 @@ async function upsertHarvestForecast(clone: Record<string, unknown>): Promise<{
 
   const legacy = await supabaseServer
     .from("oi_field_forecasts")
-    .upsert(stripHarvestFields(clone), { onConflict: "symbol,snapshot_date,expiration,source" })
+    .upsert(stripHarvestFields(clone), {
+      onConflict: "symbol,snapshot_date,expiration,source",
+    })
     .select(LEGACY_RETURN_SELECT)
     .maybeSingle();
 
@@ -229,13 +255,14 @@ async function upsertHarvestForecast(clone: Record<string, unknown>): Promise<{
   };
 }
 
-
 function dateOnly(value: unknown): string | null {
   const raw = String(value ?? "").trim();
   if (!raw) return null;
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
   const parsed = new Date(raw);
-  return Number.isFinite(parsed.getTime()) ? parsed.toISOString().slice(0, 10) : null;
+  return Number.isFinite(parsed.getTime())
+    ? parsed.toISOString().slice(0, 10)
+    : null;
 }
 
 function finite(value: unknown): number | null {
@@ -245,10 +272,17 @@ function finite(value: unknown): number | null {
 
 function uuidOrNull(value: unknown): string | null {
   const raw = String(value ?? "").trim();
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(raw) ? raw : null;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    raw,
+  )
+    ? raw
+    : null;
 }
 
-function dte(snapshotDate: string | null, expiration: string | null): number | null {
+function dte(
+  snapshotDate: string | null,
+  expiration: string | null,
+): number | null {
   if (!snapshotDate || !expiration) return null;
   const start = new Date(`${snapshotDate}T00:00:00Z`).getTime();
   const end = new Date(`${expiration}T00:00:00Z`).getTime();
@@ -261,28 +295,88 @@ function chainExpiration(chain: any): string | null {
 }
 
 function chainRows(chain: any): any[] {
-  return Array.isArray(chain?.rows) ? chain.rows : Array.isArray(chain?.chainRows) ? chain.chainRows : [];
+  return Array.isArray(chain?.rows)
+    ? chain.rows
+    : Array.isArray(chain?.chainRows)
+      ? chain.chainRows
+      : [];
 }
 
-type ForecastChainCandidate = { chain: any; expiration: string | null; dte: number | null; rows: number };
+type ForecastChainCandidate = {
+  chain: any;
+  expiration: string | null;
+  dte: number | null;
+  rows: number;
+};
 
 function chooseForecastChain(surface: any): any | null {
-  const snapshotDate = dateOnly(surface?.snapshotDate ?? surface?.snapshot_date);
+  const snapshotDate = dateOnly(
+    surface?.snapshotDate ?? surface?.snapshot_date,
+  );
   const chains = Array.isArray(surface?.chains) ? surface.chains : [];
   const candidates: ForecastChainCandidate[] = chains
     .map((chain: any) => {
       const expiration = chainExpiration(chain);
-      const chainDte = finite(chain?.dteAtCapture ?? chain?.dte ?? chain?.summary?.dte) ?? dte(snapshotDate, expiration);
-      return { chain, expiration, dte: chainDte, rows: chainRows(chain).length };
+      const chainDte =
+        finite(chain?.dteAtCapture ?? chain?.dte ?? chain?.summary?.dte) ??
+        dte(snapshotDate, expiration);
+      return {
+        chain,
+        expiration,
+        dte: chainDte,
+        rows: chainRows(chain).length,
+      };
     })
-    .filter((item: ForecastChainCandidate) => Boolean(item.expiration) && item.rows > 0 && item.dte != null && item.dte >= 0)
-    .sort((a: ForecastChainCandidate, b: ForecastChainCandidate) => Math.abs((a.dte ?? 999) - 30) - Math.abs((b.dte ?? 999) - 30));
+    .filter(
+      (item: ForecastChainCandidate) =>
+        Boolean(item.expiration) &&
+        item.rows > 0 &&
+        item.dte != null &&
+        item.dte >= 0,
+    )
+    .sort(
+      (a: ForecastChainCandidate, b: ForecastChainCandidate) =>
+        Math.abs((a.dte ?? 999) - 30) - Math.abs((b.dte ?? 999) - 30),
+    );
 
   return candidates[0]?.chain ?? null;
 }
 
 function singleChainSurface(surface: any, chain: any): any {
   return { ...surface, chains: [chain] };
+}
+
+function dteWindowSurface(
+  surface: any,
+  maxDte = CLASSIC_OI_PATH_MAX_DTE,
+): any | null {
+  const snapshotDate = dateOnly(
+    surface?.snapshotDate ?? surface?.snapshot_date,
+  );
+  const chains = Array.isArray(surface?.chains) ? surface.chains : [];
+  const windowChains = chains
+    .map((chain: any) => {
+      const expiration = chainExpiration(chain);
+      const chainDte =
+        finite(chain?.dteAtCapture ?? chain?.dte ?? chain?.summary?.dte) ??
+        dte(snapshotDate, expiration);
+      return {
+        chain,
+        expiration,
+        dte: chainDte,
+        rows: chainRows(chain).length,
+      };
+    })
+    .filter(
+      (item: ForecastChainCandidate) =>
+        item.rows > 0 &&
+        item.dte != null &&
+        item.dte >= 0 &&
+        item.dte <= maxDte,
+    )
+    .map((item: ForecastChainCandidate) => item.chain);
+
+  return windowChains.length ? { ...surface, chains: windowChains } : null;
 }
 
 function toChainSnapshot(surface: any) {
@@ -299,22 +393,37 @@ function toChainSnapshot(surface: any) {
 }
 
 function candleRecords(candles: any[]) {
-  return (candles ?? []).map((candle) => ({
-    date: String(candle.date ?? candle.time ?? candle.timestamp ?? ""),
-    open: finite(candle.open) ?? 0,
-    high: finite(candle.high) ?? 0,
-    low: finite(candle.low) ?? 0,
-    close: finite(candle.close) ?? 0,
-    volume: finite(candle.volume) ?? 0,
-  })).filter((candle) => candle.date && candle.close > 0);
+  return (candles ?? [])
+    .map((candle) => ({
+      date: String(candle.date ?? candle.time ?? candle.timestamp ?? ""),
+      open: finite(candle.open) ?? 0,
+      high: finite(candle.high) ?? 0,
+      low: finite(candle.low) ?? 0,
+      close: finite(candle.close) ?? 0,
+      volume: finite(candle.volume) ?? 0,
+    }))
+    .filter((candle) => candle.date && candle.close > 0);
 }
 
-function horizonValue(payload: any, key: string, field: "base" | "upper" | "lower") {
-  const row = (payload?.horizons ?? []).find((horizon: any) => String(horizon?.horizon ?? "").toUpperCase() === key);
+function horizonValue(
+  payload: any,
+  key: string,
+  field: "base" | "upper" | "lower",
+) {
+  const row = (payload?.horizons ?? []).find(
+    (horizon: any) => String(horizon?.horizon ?? "").toUpperCase() === key,
+  );
   return finite(row?.[field]);
 }
 
-function capturePayloadToDb(payload: any, userId: string | null, captureSession: HarvestSession, captureKind: CaptureKind, runId: string | null, startedAt: string) {
+function capturePayloadToDb(
+  payload: any,
+  userId: string | null,
+  captureSession: HarvestSession,
+  captureKind: CaptureKind,
+  runId: string | null,
+  startedAt: string,
+) {
   return {
     symbol: normalizeSymbol(payload.symbol),
     user_id: userId,
@@ -325,7 +434,8 @@ function capturePayloadToDb(payload: any, userId: string | null, captureSession:
     capture_run_id: runId,
     forecast_anchor_at: startedAt,
     provider: payload.provider ?? "supabase_surface",
-    snapshot_date: dateOnly(payload.snapshotDate) ?? new Date().toISOString().slice(0, 10),
+    snapshot_date:
+      dateOnly(payload.snapshotDate) ?? new Date().toISOString().slice(0, 10),
     expiration: dateOnly(payload.expiration),
     dte: finite(payload.dte),
     spot: finite(payload.spot),
@@ -366,8 +476,9 @@ function capturePayloadToDb(payload: any, userId: string | null, captureSession:
     posture: payload.posture ?? null,
     inputs: payload.inputs ?? null,
     forecast: payload.forecast ?? null,
-    engine_version: payload.engineVersion ?? payload.inputs?.engineVersion ?? "oi-field-v2",
-    model_status: "collecting",
+    engine_version:
+      payload.engineVersion ?? payload.inputs?.engineVersion ?? "oi-field-v2",
+    model_status: payload.modelStatus ?? "collecting_baseline_only",
     nn_model_version: null,
     baseline_forecast: payload.baselineForecast ?? payload.forecast ?? null,
     feature_vector: payload.featureVector ?? payload.inputs ?? null,
@@ -378,36 +489,117 @@ function capturePayloadToDb(payload: any, userId: string | null, captureSession:
   };
 }
 
-async function buildForecastFromLatestSurface(symbol: string, userId: string | null, captureSession: HarvestSession, captureKind: CaptureKind, runId: string | null, startedAt: string) {
+async function buildForecastFromLatestSurface(
+  symbol: string,
+  userId: string | null,
+  captureSession: HarvestSession,
+  captureKind: CaptureKind,
+  runId: string | null,
+  startedAt: string,
+) {
   const surface = await readLatestSurfaceSnapshotFromSupabase(symbol);
-  if (!surface) throw new Error("No saved OI surface found. Run Surface Harvest first.");
+  if (!surface)
+    throw new Error("No saved OI surface found. Run Surface Harvest first.");
 
   const chain = chooseForecastChain(surface);
-  if (!chain) throw new Error("Saved surface has no usable expiration chain rows.");
+  if (!chain)
+    throw new Error("Saved surface has no usable expiration chain rows.");
 
   const selectedSurface = singleChainSurface(surface, chain);
-  const candles = candleRecords(await getPriceSeries(symbol as any, "daily").catch(() => []));
-  const spot = finite(candles.at(-1)?.close) ?? finite((surface as any).price?.close) ?? finite((surface as any).dailyStructure?.spot) ?? null;
-  if (!spot) throw new Error("Could not determine spot price for forecast generation.");
+  const classicSurface =
+    dteWindowSurface(surface, CLASSIC_OI_PATH_MAX_DTE) ?? selectedSurface;
+  const candles = candleRecords(
+    await getPriceSeries(symbol as any, "daily").catch(() => []),
+  );
+  const spot =
+    finite(candles.at(-1)?.close) ??
+    finite((surface as any).price?.close) ??
+    finite((surface as any).dailyStructure?.spot) ??
+    null;
+  if (!spot)
+    throw new Error("Could not determine spot price for forecast generation.");
 
-  const edgeSummary = buildTraderEdgeSummary({ ticker: symbol, surface: selectedSurface as any, candles: candles as any, livePrice: spot });
-  const wallMigration = buildWallMigrationSummary({ currentSurface: selectedSurface as any, priorSurface: null });
-  const projectionReport = buildOIProjectionReport({ snapshot: toChainSnapshot(selectedSurface) as any, currentPrice: spot });
-  const path = buildOIImpliedPath({ projectionReport, edgeSummary, wallMigration, currentPrice: spot });
+  const classicEdgeSummary = buildTraderEdgeSummary({
+    ticker: symbol,
+    surface: classicSurface as any,
+    candles: candles as any,
+    livePrice: spot,
+  });
+  const classicWallMigration = buildWallMigrationSummary({
+    currentSurface: classicSurface as any,
+    priorSurface: null,
+  });
+  const classicProjectionReport = buildOIProjectionReport({
+    snapshot: toChainSnapshot(classicSurface) as any,
+    currentPrice: spot,
+    maxDte: CLASSIC_OI_PATH_MAX_DTE,
+  });
+  const classicPath = buildOIImpliedPath({
+    projectionReport: classicProjectionReport,
+    edgeSummary: classicEdgeSummary,
+    wallMigration: classicWallMigration,
+    currentPrice: spot,
+  });
+
+  const edgeSummary = buildTraderEdgeSummary({
+    ticker: symbol,
+    surface: selectedSurface as any,
+    candles: candles as any,
+    livePrice: spot,
+  });
+  const wallMigration = buildWallMigrationSummary({
+    currentSurface: selectedSurface as any,
+    priorSurface: null,
+  });
+  const projectionReport = buildOIProjectionReport({
+    snapshot: toChainSnapshot(selectedSurface) as any,
+    currentPrice: spot,
+  });
+  const path = buildOIImpliedPath({
+    projectionReport,
+    edgeSummary,
+    wallMigration,
+    currentPrice: spot,
+  });
   const selectedExpiration = chainExpiration(chain);
-  const selectedDte = finite((chain as any).dteAtCapture ?? (chain as any).dte ?? (chain as any).summary?.dte) ?? dte(dateOnly((surface as any).snapshotDate), selectedExpiration);
-  const forecast = buildOIFieldForecast({ path, projectionReport, edgeSummary, wallMigration, currentPrice: spot, selectedExpirationDte: selectedDte });
-  if (!forecast) throw new Error("Baseline OI Field forecast could not be generated from the saved surface.");
+  const selectedDte =
+    finite(
+      (chain as any).dteAtCapture ??
+        (chain as any).dte ??
+        (chain as any).summary?.dte,
+    ) ?? dte(dateOnly((surface as any).snapshotDate), selectedExpiration);
+  const forecast = buildOIFieldForecast({
+    path,
+    projectionReport,
+    edgeSummary,
+    wallMigration,
+    currentPrice: spot,
+    selectedExpirationDte: selectedDte,
+  });
+  if (!forecast)
+    throw new Error(
+      "Baseline OI Field forecast could not be generated from the saved surface.",
+    );
 
-  const ivSurface = buildIVSurfaceSummary({ surface: selectedSurface as any, currentPrice: spot, horizonDays: selectedDte ?? 30, candles: candles as any });
+  const ivSurface = buildIVSurfaceSummary({
+    surface: selectedSurface as any,
+    currentPrice: spot,
+    horizonDays: selectedDte ?? 30,
+    candles: candles as any,
+  });
   const capturePayload = buildOIFieldForecastCapturePayload({
     ticker: symbol,
     spot,
     snapshotDate: (surface as any).snapshotDate,
     expiration: selectedExpiration,
     dte: selectedDte,
-    surfaceSnapshotId: uuidOrNull((surface as any).metadata?.supabaseSnapshotId ?? (surface as any).id),
+    surfaceSnapshotId: uuidOrNull(
+      (surface as any).metadata?.supabaseSnapshotId ?? (surface as any).id,
+    ),
     forecast,
+    classicPath,
+    chainPath: path,
+    forecastOverlayMaxDte: CLASSIC_OI_PATH_MAX_DTE,
     ivSurface,
     selectedSurface: surface,
     selectedChainSurface: selectedSurface,
@@ -417,15 +609,26 @@ async function buildForecastFromLatestSurface(symbol: string, userId: string | n
       captureSession,
       captureKind,
       generatedBy: "forecast_harvest_surface_baseline",
+      forecastOverlayMode: "classic_oi_path_30d_plus_selected_chain_field",
       sourceSurfaceKey: (surface as any).surfaceKey ?? null,
-      sourceSupabaseSnapshotId: uuidOrNull((surface as any).metadata?.supabaseSnapshotId ?? (surface as any).id),
+      sourceSupabaseSnapshotId: uuidOrNull(
+        (surface as any).metadata?.supabaseSnapshotId ?? (surface as any).id,
+      ),
     },
   });
 
-  if (!capturePayload) throw new Error("Forecast capture payload could not be built.");
+  if (!capturePayload)
+    throw new Error("Forecast capture payload could not be built.");
 
   return {
-    dbPayload: capturePayloadToDb(capturePayload, userId, captureSession, captureKind, runId, startedAt),
+    dbPayload: capturePayloadToDb(
+      capturePayload,
+      userId,
+      captureSession,
+      captureKind,
+      runId,
+      startedAt,
+    ),
     surfaceDate: dateOnly((surface as any).snapshotDate),
     expiration: selectedExpiration,
     rowCount: chainRows(chain).length,
@@ -434,8 +637,12 @@ async function buildForecastFromLatestSurface(symbol: string, userId: string | n
 
 export async function POST(request: Request) {
   const cronSecret = process.env.CRON_SECRET;
-  const requestSecret = request.headers.get("x-cron-secret") ?? request.headers.get("x-wheeldesk-cron-secret");
-  const isCron = Boolean(cronSecret && requestSecret && requestSecret === cronSecret);
+  const requestSecret =
+    request.headers.get("x-cron-secret") ??
+    request.headers.get("x-wheeldesk-cron-secret");
+  const isCron = Boolean(
+    cronSecret && requestSecret && requestSecret === cronSecret,
+  );
 
   let userId: string | null = null;
   if (!isCron) {
@@ -444,8 +651,12 @@ export async function POST(request: Request) {
       userId = user.id;
     } catch (error) {
       return NextResponse.json(
-        { ok: false, error: error instanceof Error ? error.message : "Missing bearer token" },
-        { status: 401 }
+        {
+          ok: false,
+          error:
+            error instanceof Error ? error.message : "Missing bearer token",
+        },
+        { status: 401 },
       );
     }
   }
@@ -453,7 +664,9 @@ export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as RequestBody;
   const captureSession = cleanSession(body.captureSession);
   const captureKind: CaptureKind = isCron ? "scheduled" : "manual_batch";
-  const requestedSymbols = uniqueSymbols(Array.isArray(body.symbols) ? body.symbols : []);
+  const requestedSymbols = uniqueSymbols(
+    Array.isArray(body.symbols) ? body.symbols : [],
+  );
   const limit = Math.max(1, Math.min(Number(body.limit ?? 50), 100));
   const symbols = await loadSymbols(userId, requestedSymbols, limit);
 
@@ -477,17 +690,26 @@ export async function POST(request: Request) {
     const itemStartedAt = new Date().toISOString();
 
     try {
-      const generated = await buildForecastFromLatestSurface(symbol, userId, captureSession, captureKind, run.id, startedAt);
+      const generated = await buildForecastFromLatestSurface(
+        symbol,
+        userId,
+        captureSession,
+        captureKind,
+        run.id,
+        startedAt,
+      );
       const save = await upsertHarvestForecast(generated.dbPayload);
       if (save.error) throw new Error(save.error);
-      if (!save.saved) throw new Error("Forecast harvest save did not return a row.");
+      if (!save.saved)
+        throw new Error("Forecast harvest save did not return a row.");
       if (save.schemaMode === "legacy") legacySchemaCount += 1;
 
       captured += 1;
       const forecastId = save.saved.id ?? null;
-      const message = save.schemaMode === "legacy"
-        ? "Surface loaded, baseline forecast generated, saved with legacy schema fallback."
-        : "Surface loaded, baseline forecast generated, forecast saved.";
+      const message =
+        save.schemaMode === "legacy"
+          ? "Surface loaded, baseline forecast generated, saved with legacy schema fallback."
+          : "Surface loaded, baseline forecast generated, forecast saved.";
 
       items.push({
         symbol,
@@ -515,8 +737,13 @@ export async function POST(request: Request) {
       }
     } catch (error) {
       failed += 1;
-      const message = error instanceof Error ? error.message : "Forecast harvest failed.";
-      const status = /No saved OI surface/i.test(message) ? "surface_missing" : /forecast/i.test(message) ? "forecast_failed" : "failed";
+      const message =
+        error instanceof Error ? error.message : "Forecast harvest failed.";
+      const status = /No saved OI surface/i.test(message)
+        ? "surface_missing"
+        : /forecast/i.test(message)
+          ? "forecast_failed"
+          : "failed";
       items.push({
         symbol,
         status: status as HarvestItem["status"],

@@ -22,6 +22,9 @@ export type OIProjectionReport = {
   snapshotDate: string;
   currentPrice: number;
   points: OIProjectionPoint[];
+  maxDte: number | null;
+  includedExpirations: string[];
+  forecastMode: "classic_oi_path";
   slope: number;
   frontCenter: number;
   backCenter: number;
@@ -56,12 +59,12 @@ function linearSlope(points: OIProjectionPoint[]): number {
 
   const numerator = points.reduce(
     (sum, _, i) => sum + (xs[i] - xMean) * (ys[i] - yMean),
-    0
+    0,
   );
 
   const denominator = points.reduce(
     (sum, _, i) => sum + (xs[i] - xMean) ** 2,
-    0
+    0,
   );
 
   return denominator === 0 ? 0 : numerator / denominator;
@@ -71,7 +74,9 @@ function weightedAverage(points: OIProjectionPoint[]): number {
   const totalWeight = points.reduce((s, p) => s + p.weight, 0);
   if (!totalWeight) return avg(points.map((p) => p.adjustedCenter));
 
-  return points.reduce((s, p) => s + p.adjustedCenter * p.weight, 0) / totalWeight;
+  return (
+    points.reduce((s, p) => s + p.adjustedCenter * p.weight, 0) / totalWeight
+  );
 }
 
 function pointWeight(p: {
@@ -93,8 +98,19 @@ function classifyProjection(args: {
   backCenter: number;
   curveDelta: number;
   spotOffset: number;
-}): { bias: ProjectionBias; confidence: "low" | "medium" | "high"; reasons: string[] } {
-  const { currentPrice, slope, frontCenter, backCenter, curveDelta, spotOffset } = args;
+}): {
+  bias: ProjectionBias;
+  confidence: "low" | "medium" | "high";
+  reasons: string[];
+} {
+  const {
+    currentPrice,
+    slope,
+    frontCenter,
+    backCenter,
+    curveDelta,
+    spotOffset,
+  } = args;
 
   const reasons: string[] = [];
   let score = 0;
@@ -110,48 +126,51 @@ function classifyProjection(args: {
     score -= 1;
     reasons.push(`Forward OI slope is negative at ${slope.toFixed(4)} / day.`);
   } else {
-    reasons.push(`Forward OI slope is mostly flat at ${slope.toFixed(4)} / day.`);
+    reasons.push(
+      `Forward OI slope is mostly flat at ${slope.toFixed(4)} / day.`,
+    );
   }
 
   if (curveDelta > curveThreshold) {
     score += 2;
     reasons.push(
       `Back expirations are meaningfully above front expirations (${frontCenter.toFixed(
-        2
-      )} → ${backCenter.toFixed(2)}).`
+        2,
+      )} → ${backCenter.toFixed(2)}).`,
     );
   } else if (curveDelta < -curveThreshold) {
     score -= 2;
     reasons.push(
       `Back expirations are meaningfully below front expirations (${frontCenter.toFixed(
-        2
-      )} → ${backCenter.toFixed(2)}).`
+        2,
+      )} → ${backCenter.toFixed(2)}).`,
     );
   } else {
     reasons.push(
       `Front and back expiration centers are close (${frontCenter.toFixed(
-        2
-      )} → ${backCenter.toFixed(2)}).`
+        2,
+      )} → ${backCenter.toFixed(2)}).`,
     );
   }
 
   if (spotOffset > spotThreshold) {
     score += 2;
     reasons.push(
-      `Weighted OI path is above spot by ${(spotOffset * 100).toFixed(1)}%.`
+      `Weighted OI path is above spot by ${(spotOffset * 100).toFixed(1)}%.`,
     );
   } else if (spotOffset < -spotThreshold) {
     score -= 2;
     reasons.push(
-      `Weighted OI path is below spot by ${(spotOffset * 100).toFixed(1)}%.`
+      `Weighted OI path is below spot by ${(spotOffset * 100).toFixed(1)}%.`,
     );
   } else {
     reasons.push(
-      `Weighted OI path is near spot (${(spotOffset * 100).toFixed(1)}% offset).`
+      `Weighted OI path is near spot (${(spotOffset * 100).toFixed(1)}% offset).`,
     );
   }
 
-  const bias: ProjectionBias = score >= 2 ? "bullish" : score <= -2 ? "bearish" : "neutral";
+  const bias: ProjectionBias =
+    score >= 2 ? "bullish" : score <= -2 ? "bearish" : "neutral";
   const confidence =
     Math.abs(score) >= 4 ? "high" : Math.abs(score) >= 2 ? "medium" : "low";
 
@@ -166,7 +185,7 @@ function buildPoint(args: {
   const intelligence = analyzeOIIntelligence({
     rows: args.chain.rows,
     summary: args.chain.summary,
-    currentPrice: args.currentPrice
+    currentPrice: args.currentPrice,
   });
 
   const base = {
@@ -179,7 +198,7 @@ function buildPoint(args: {
     callWall: intelligence.adjustedCallWall,
     putWall: intelligence.adjustedPutWall,
     prevailingScore: args.chain.summary.prevailingScore,
-    anomalyCount: intelligence.anomalies.length
+    anomalyCount: intelligence.anomalies.length,
   };
 
   return {
@@ -187,28 +206,38 @@ function buildPoint(args: {
     weight: pointWeight({
       dte: base.dte,
       prevailingScore: base.prevailingScore,
-      anomalyCount: base.anomalyCount
-    })
+      anomalyCount: base.anomalyCount,
+    }),
   };
 }
 
 export function buildOIProjectionReport(args: {
   snapshot: ChainSnapshot | null;
   currentPrice: number;
+  maxDte?: number | null;
+  minDte?: number | null;
 }): OIProjectionReport | null {
   const { snapshot, currentPrice } = args;
 
   if (!snapshot || !snapshot.chains.length || !currentPrice) return null;
+
+  const minDte = Number.isFinite(Number(args.minDte))
+    ? Math.max(0, Number(args.minDte))
+    : 0;
+  const maxDte = Number.isFinite(Number(args.maxDte))
+    ? Math.max(minDte, Number(args.maxDte))
+    : null;
 
   const points = snapshot.chains
     .map((chain) =>
       buildPoint({
         chain,
         snapshotDate: snapshot.snapshotDate,
-        currentPrice
-      })
+        currentPrice,
+      }),
     )
     .filter((p) => Number.isFinite(p.adjustedCenter))
+    .filter((p) => p.dte >= minDte && (maxDte == null || p.dte <= maxDte))
     .sort((a, b) => a.dte - b.dte);
 
   if (!points.length) return null;
@@ -230,23 +259,28 @@ export function buildOIProjectionReport(args: {
     frontCenter,
     backCenter,
     curveDelta,
-    spotOffset
+    spotOffset,
   });
 
+  const windowLabel =
+    maxDte != null ? `${Math.round(maxDte)}D truncated` : "all-expiration";
   const summary =
     points.length < 2
-      ? "Not enough expirations to build a forward OI path."
+      ? `Not enough expirations inside the ${windowLabel} OI window to build a forward path.`
       : classification.bias === "bullish"
-        ? `OI implied path has bullish structure: weighted centers sit above spot and/or rise across expirations.`
+        ? `Classic OI path has bullish structure inside the ${windowLabel} window: weighted centers sit above spot and/or rise across expirations.`
         : classification.bias === "bearish"
-          ? `OI implied path has bearish structure: weighted centers sit below spot and/or decline across expirations.`
-          : `OI implied path is mixed/neutral: forward centers do not show a strong directional skew.`;
+          ? `Classic OI path has bearish structure inside the ${windowLabel} window: weighted centers sit below spot and/or decline across expirations.`
+          : `Classic OI path is mixed/neutral inside the ${windowLabel} window: forward centers do not show a strong directional skew.`;
 
   return {
     ticker: snapshot.ticker,
     snapshotDate: snapshot.snapshotDate,
     currentPrice,
     points,
+    maxDte,
+    includedExpirations: points.map((point) => point.expiration),
+    forecastMode: "classic_oi_path",
     slope,
     frontCenter,
     backCenter,
@@ -255,6 +289,6 @@ export function buildOIProjectionReport(args: {
     projectedBias: classification.bias,
     confidence: classification.confidence,
     reasons: classification.reasons,
-    summary
+    summary,
   };
 }

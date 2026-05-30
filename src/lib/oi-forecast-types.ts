@@ -1,4 +1,11 @@
-export type ForecastHorizonKey = "1D" | "3D" | "5D" | "10D" | "14D" | "30D" | "EXP";
+export type ForecastHorizonKey =
+  | "1D"
+  | "3D"
+  | "5D"
+  | "10D"
+  | "14D"
+  | "30D"
+  | "EXP";
 
 export type ForecastHorizonPayload = {
   horizon: ForecastHorizonKey;
@@ -18,6 +25,7 @@ export type ForecastHorizonPayload = {
 
 export type NeuralForecastModelStatus =
   | "collecting"
+  | "collecting_baseline_only"
   | "research_preview"
   | "eligible"
   | "active"
@@ -63,7 +71,15 @@ export type OIFieldForecastPayload = {
   outcomeStatus?: string | null;
 };
 
-export const FORECAST_HORIZONS: ForecastHorizonKey[] = ["1D", "3D", "5D", "10D", "14D", "30D", "EXP"];
+export const FORECAST_HORIZONS: ForecastHorizonKey[] = [
+  "1D",
+  "3D",
+  "5D",
+  "10D",
+  "14D",
+  "30D",
+  "EXP",
+];
 
 export function finiteNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -74,7 +90,10 @@ export function finiteNumber(value: unknown): number | null {
   return null;
 }
 
-export function horizonByKey(payload: OIFieldForecastPayload, key: ForecastHorizonKey): ForecastHorizonPayload | undefined {
+export function horizonByKey(
+  payload: OIFieldForecastPayload,
+  key: ForecastHorizonKey,
+): ForecastHorizonPayload | undefined {
   return payload.horizons?.find((item) => item.horizon === key);
 }
 

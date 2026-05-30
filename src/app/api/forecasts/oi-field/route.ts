@@ -30,28 +30,48 @@ type ForecastReturnRow = {
   capture_kind?: string | null;
 };
 
+function uuidOrNull(value: unknown): string | null {
+  const raw = String(value ?? "").trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    raw,
+  )
+    ? raw
+    : null;
+}
+
 function captureSessionFromPayload(payload: OIFieldForecastPayload): string {
-  return String((payload as any).captureSession ?? (payload as any).capture_session ?? payload.inputs?.captureSession ?? "manual").toLowerCase();
+  return String(
+    (payload as any).captureSession ??
+      (payload as any).capture_session ??
+      payload.inputs?.captureSession ??
+      "manual",
+  ).toLowerCase();
 }
 
 function captureKindFromPayload(payload: OIFieldForecastPayload): string {
-  return String((payload as any).captureKind ?? (payload as any).capture_kind ?? "manual").toLowerCase();
+  return String(
+    (payload as any).captureKind ?? (payload as any).capture_kind ?? "manual",
+  ).toLowerCase();
 }
 
-
-function fieldFromHorizon(payload: OIFieldForecastPayload, key: ForecastHorizonKey, field: "base" | "upper" | "lower") {
+function fieldFromHorizon(
+  payload: OIFieldForecastPayload,
+  key: ForecastHorizonKey,
+  field: "base" | "upper" | "lower",
+) {
   return finiteNumber(horizonByKey(payload, key)?.[field]);
 }
 
 function toDbPayload(payload: OIFieldForecastPayload, userId: string | null) {
   const symbol = normalizeSymbol(payload.symbol);
-  const snapshotDate = dateOnly(payload.snapshotDate) ?? new Date().toISOString().slice(0, 10);
+  const snapshotDate =
+    dateOnly(payload.snapshotDate) ?? new Date().toISOString().slice(0, 10);
   const expiration = dateOnly(payload.expiration);
 
   return {
     symbol,
     user_id: userId,
-    surface_snapshot_id: payload.surfaceSnapshotId ?? null,
+    surface_snapshot_id: uuidOrNull(payload.surfaceSnapshotId),
     source: payload.source ?? "control_center",
     capture_session: captureSessionFromPayload(payload),
     capture_kind: captureKindFromPayload(payload),
@@ -93,12 +113,18 @@ function toDbPayload(payload: OIFieldForecastPayload, userId: string | null) {
     upper_touch_probability: finiteNumber(payload.upperTouchProbability),
     lower_break_probability: finiteNumber(payload.lowerBreakProbability),
     trap_probability: finiteNumber(payload.trapProbability),
-    wheel_support_hold_probability: finiteNumber(payload.wheelSupportHoldProbability),
+    wheel_support_hold_probability: finiteNumber(
+      payload.wheelSupportHoldProbability,
+    ),
     posture: payload.posture ?? null,
     inputs: payload.inputs ?? null,
-    forecast: payload.forecast ?? { horizons: payload.horizons ?? FORECAST_HORIZONS.map((horizon) => ({ horizon })) },
-    engine_version: payload.engineVersion ?? payload.inputs?.engineVersion ?? null,
-    model_status: payload.modelStatus ?? "collecting",
+    forecast: payload.forecast ?? {
+      horizons:
+        payload.horizons ?? FORECAST_HORIZONS.map((horizon) => ({ horizon })),
+    },
+    engine_version:
+      payload.engineVersion ?? payload.inputs?.engineVersion ?? null,
+    model_status: payload.modelStatus ?? "collecting_baseline_only",
     nn_model_version: payload.nnModelVersion ?? null,
     baseline_forecast: payload.baselineForecast ?? payload.forecast ?? null,
     feature_vector: payload.featureVector ?? payload.inputs ?? null,
@@ -130,7 +156,9 @@ function stripNeuralFields(dbPayload: Record<string, unknown>) {
 }
 
 function isMissingNeuralColumnError(message: string) {
-  return /engine_version|model_status|nn_model_version|baseline_forecast|feature_vector|nn_adjustment|final_forecast|training_eligible|outcome_status|capture_session|capture_kind|capture_run_id|forecast_anchor_at|schema cache|column/i.test(message);
+  return /engine_version|model_status|nn_model_version|baseline_forecast|feature_vector|nn_adjustment|final_forecast|training_eligible|outcome_status|capture_session|capture_kind|capture_run_id|forecast_anchor_at|schema cache|column/i.test(
+    message,
+  );
 }
 
 export async function GET(request: Request) {
@@ -150,28 +178,42 @@ export async function GET(request: Request) {
     const { data, error } = await query;
 
     if (error) {
-      return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+      return NextResponse.json(
+        { ok: false, error: error.message },
+        { status: 500 },
+      );
     }
 
     return NextResponse.json({ ok: true, forecasts: data ?? [] });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Could not load OI field forecasts.";
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Could not load OI field forecasts.";
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
 }
 
 export async function POST(request: Request) {
   try {
-    const user = await getAuthenticatedUserFromRequest(request).catch(() => null);
+    const user = await getAuthenticatedUserFromRequest(request).catch(
+      () => null,
+    );
     const payload = (await request.json()) as OIFieldForecastPayload;
     const dbPayload = toDbPayload(payload, user?.id ?? null);
 
     if (!dbPayload.symbol) {
-      return NextResponse.json({ ok: false, error: "Forecast symbol is required." }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "Forecast symbol is required." },
+        { status: 400 },
+      );
     }
 
     if (dbPayload.spot === null) {
-      return NextResponse.json({ ok: false, error: "Forecast spot price is required." }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "Forecast spot price is required." },
+        { status: 400 },
+      );
     }
 
     const { data: universeRow } = await supabaseServer
@@ -196,43 +238,65 @@ export async function POST(request: Request) {
     }
 
     let schemaMode: "nn-ready" | "legacy" = "nn-ready";
-    let savedForecast: ForecastReturnRow | Record<string, unknown> | null = null;
+    let savedForecast: ForecastReturnRow | Record<string, unknown> | null =
+      null;
 
     const saveResult = await supabaseServer
       .from("oi_field_forecasts")
-      .upsert(dbPayload, { onConflict: "symbol,snapshot_date,expiration,source" })
+      .upsert(dbPayload, {
+        onConflict: "symbol,snapshot_date,expiration,source",
+      })
       .select(FORECAST_RETURN_SELECT)
       .single<ForecastReturnRow>();
 
-    if (saveResult.error && isMissingNeuralColumnError(saveResult.error.message)) {
+    if (
+      saveResult.error &&
+      isMissingNeuralColumnError(saveResult.error.message)
+    ) {
       schemaMode = "legacy";
       const retry = await supabaseServer
         .from("oi_field_forecasts")
-        .upsert(stripNeuralFields(dbPayload), { onConflict: "symbol,snapshot_date,expiration,source" })
+        .upsert(stripNeuralFields(dbPayload), {
+          onConflict: "symbol,snapshot_date,expiration,source",
+        })
         .select("id,symbol,snapshot_date,expiration,generated_at")
         .single();
 
       if (retry.error) {
         return NextResponse.json(
-          { ok: false, error: retry.error.message, saveError: saveResult.error.message, schemaMode },
-          { status: 500 }
+          {
+            ok: false,
+            error: retry.error.message,
+            saveError: saveResult.error.message,
+            schemaMode,
+          },
+          { status: 500 },
         );
       }
 
       savedForecast = retry.data ?? null;
     } else if (saveResult.error) {
-      return NextResponse.json({ ok: false, error: saveResult.error.message }, { status: 500 });
+      return NextResponse.json(
+        { ok: false, error: saveResult.error.message },
+        { status: 500 },
+      );
     } else {
       savedForecast = saveResult.data ?? null;
     }
 
     if (!savedForecast) {
-      return NextResponse.json({ ok: false, error: "Forecast save did not return a row.", schemaMode }, { status: 500 });
+      return NextResponse.json(
+        { ok: false, error: "Forecast save did not return a row.", schemaMode },
+        { status: 500 },
+      );
     }
 
     return NextResponse.json({ ok: true, forecast: savedForecast, schemaMode });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Could not save OI field forecast.";
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Could not save OI field forecast.";
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
 }
