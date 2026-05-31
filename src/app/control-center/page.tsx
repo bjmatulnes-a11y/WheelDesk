@@ -15,6 +15,7 @@ import ModelReadoutCard from "../../components/control-center/ModelReadoutCard";
 import IVSurfaceCard from "../../components/control-center/IVSurfaceCard";
 import PredictiveMatrixPanel from "../../components/control-center/PredictiveMatrixPanel";
 import PredictabilitySurfacePanel from "../../components/control-center/PredictabilitySurfacePanel";
+import OIWhatChangedCard from "../../components/control-center/OIWhatChangedCard";
 import OIFieldHorizonMatrix from "../../components/control-center/OIFieldHorizonMatrix";
 import OIFieldCaptureCard from "../../components/control-center/OIFieldCaptureCard";
 import ControlMatrixCard from "../../components/control-center/ControlMatrixCard";
@@ -29,6 +30,7 @@ import { buildOIFieldForecast } from "../../lib/oi-field-engine-v2";
 import { buildOIProjectionReport } from "../../lib/oi-projection-engine";
 import { buildPredictiveMatrix } from "../../lib/predictive-matrix-engine";
 import { buildPredictabilitySurface } from "../../lib/predictability-surface-engine";
+import { buildOIChangeRead } from "../../lib/oi-change-read-engine";
 import { buildIVSurfaceSummary } from "../../lib/iv-surface-engine";
 import { listPortfolioProfiles } from "../../lib/portfolio-store";
 import { type PortfolioProfile } from "../../lib/portfolio-types";
@@ -1042,6 +1044,21 @@ export default function ControlCenterPage() {
     effectivePredictabilityMaxDte,
   ]);
 
+  const oiChangeRead = useMemo(() => {
+    return buildOIChangeRead({
+      currentSurface: fullSurfaceForAnalysis,
+      priorSurface: priorFullSurface,
+      currentPrice: analysisPrice,
+      selectedExpiration,
+      maxDte: CLASSIC_OI_PATH_MAX_DTE,
+    });
+  }, [
+    fullSurfaceForAnalysis,
+    priorFullSurface,
+    analysisPrice,
+    selectedExpiration,
+  ]);
+
   const surfaceTraderEdge = useMemo(() => {
     if (!fullSurfaceForAnalysis) return null;
 
@@ -1776,6 +1793,8 @@ export default function ControlCenterPage() {
                     onMaxDteChange={setPredictabilityMaxDte}
                     onFullSurfaceChange={setPredictabilityFullSurface}
                   />
+
+                  <OIWhatChangedCard read={oiChangeRead} />
 
                   <div
                     style={{
