@@ -15,6 +15,7 @@ import {
 import { type CandleRecord } from "../../lib/wheeldesk-storage";
 import { type IVSurfaceSummary } from "../../lib/iv-surface-engine";
 import { type OIFieldForecastResult } from "../../lib/oi-field-engine-v2";
+import { type ExpirationMagnetPath } from "../../lib/expiration-magnet-engine";
 import { colors, cardStyle } from "./styles";
 
 type ChartMode = "field-v2" | "classic" | "both" | "candles";
@@ -30,6 +31,7 @@ type ForecastChartPanelProps = {
   ivSurface?: IVSurfaceSummary | null;
   flowOverlay?: any;
   fieldForecast?: OIFieldForecastResult | null;
+  expirationMagnetPath?: ExpirationMagnetPath | null;
   structureFocus?: boolean;
   isLoading?: boolean;
   chartHeight?: number;
@@ -909,6 +911,53 @@ function horizontalBand(
   return uniqueAscending(times.map((time) => ({ time, value })));
 }
 
+function futureTimeWindow(
+  lastTime: UTCTimestamp,
+  terminalSessions: number,
+): UTCTimestamp[] {
+  const terminal = Math.max(1, Math.min(90, Math.round(terminalSessions || 30)));
+  return [lastTime, addBusinessDays(lastTime, terminal)];
+}
+
+function scopedExpirationMagnetPoints(
+  path: ExpirationMagnetPath | null | undefined,
+  scopeDte: number,
+  fullSurface: boolean,
+) {
+  const points = Array.isArray(path?.points) ? path.points : [];
+  const sorted = [...points]
+    .filter((point) => Number.isFinite(Number(point.dte)) && Number(point.dte) >= 0)
+    .sort((a, b) => Number(a.dte) - Number(b.dte));
+
+  if (fullSurface) return sorted;
+
+  const scoped = sorted.filter((point) => Number(point.dte) <= scopeDte);
+  return scoped;
+}
+
+function makeExpirationMagnetSeries(
+  path: ExpirationMagnetPath | null | undefined,
+  scopeDte: number,
+  fullSurface: boolean,
+  lastTime?: UTCTimestamp | null,
+): ChartLinePoint[] {
+  const rows = scopedExpirationMagnetPoints(path, scopeDte, fullSurface)
+    .map((point) => {
+      const time = dateToTime(point.date ?? point.expiration);
+      const value = toNumber(point.magnet);
+      if (time == null || value == null) return null;
+      if (lastTime != null && Number(time) <= Number(lastTime)) return null;
+      return { time, value };
+    })
+    .filter((point: ChartLinePoint | null): point is ChartLinePoint => Boolean(point));
+
+  return uniqueAscending(rows);
+}
+
+function scopeLabel(scopeDte: number, fullSurface: boolean): string {
+  return fullSurface ? "Full" : `${Math.round(scopeDte)}D`;
+}
+
 function last<T>(rows: T[]): T | null {
   return rows.length ? rows[rows.length - 1] : null;
 }
@@ -956,6 +1005,7 @@ export default function ForecastChartPanel({
   ivSurface,
   flowOverlay,
   fieldForecast,
+  expirationMagnetPath,
   structureFocus = false,
   isLoading = false,
   chartHeight = 470,
@@ -979,6 +1029,8 @@ export default function ForecastChartPanel({
   const [capturedForecast, setCapturedForecast] =
     useState<CapturedForecastRow | null>(null);
   const [capturedForecastStatus, setCapturedForecastStatus] = useState("");
+  const [classicScopeDte, setClassicScopeDte] = useState(30);
+  const [classicFullSurface, setClassicFullSurface] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -1093,6 +1145,33 @@ export default function ForecastChartPanel({
     priceLinesRef.current = [];
   };
 
+
+  const classicAvailableMaxDte = Math.max(
+    30,
+    ...((expirationMagnetPath?.points ?? [])
+      .map((point) => Number(point.dte))
+      .filter((dte) => Number.isFinite(dte) && dte > 0) as number[]),
+  );
+  const effectiveClassicScopeDte = Math.max(
+    1,
+    Math.min(Math.round(classicScopeDte), classicAvailableMaxDte),
+  );
+  const scopedMagnetPoints = scopedExpirationMagnetPoints(
+    expirationMagnetPath,
+    effectiveClassicScopeDte,
+    classicFullSurface,
+  );
+  const mutedMagnetCount = Math.max(
+    0,
+    (expirationMagnetPath?.points?.length ?? 0) - scopedMagnetPoints.length,
+  );
+
+  useEffect(() => {
+    if (classicScopeDte > classicAvailableMaxDte) {
+      setClassicScopeDte(classicAvailableMaxDte);
+    }
+  }, [classicAvailableMaxDte, classicScopeDte]);
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -1139,9 +1218,9 @@ export default function ForecastChartPanel({
     });
 
     const baseSeries = chart.addSeries(LineSeries, {
-      color: "rgba(226,232,240,0.95)",
+      color: "rgba(34,211,238,0.94)",
       lineWidth: 2,
-      lineStyle: LineStyle.Dashed,
+      lineStyle: LineStyle.Solid,
       priceLineVisible: false,
       lastValueVisible: false,
     });
@@ -1211,15 +1290,15 @@ export default function ForecastChartPanel({
     });
 
     const fieldBase = chart.addSeries(LineSeries, {
-      color: "rgba(103,232,249,0.98)",
-      lineWidth: 4,
-      lineStyle: LineStyle.Solid,
+      color: "rgba(103,232,249,0.62)",
+      lineWidth: 2,
+      lineStyle: LineStyle.Dashed,
       priceLineVisible: false,
       lastValueVisible: false,
     });
 
     const fieldUpper = chart.addSeries(LineSeries, {
-      color: "rgba(34,197,94,0.75)",
+      color: "rgba(34,197,94,0.48)",
       lineWidth: 2,
       lineStyle: LineStyle.Dashed,
       priceLineVisible: false,
@@ -1227,7 +1306,7 @@ export default function ForecastChartPanel({
     });
 
     const fieldLower = chart.addSeries(LineSeries, {
-      color: "rgba(251,113,133,0.75)",
+      color: "rgba(251,113,133,0.48)",
       lineWidth: 2,
       lineStyle: LineStyle.Dashed,
       priceLineVisible: false,
@@ -1235,8 +1314,8 @@ export default function ForecastChartPanel({
     });
 
     const fieldWheel = chart.addSeries(LineSeries, {
-      color: "rgba(16,185,129,0.72)",
-      lineWidth: 2,
+      color: "rgba(16,185,129,0.42)",
+      lineWidth: 1,
       lineStyle: LineStyle.Dotted,
       priceLineVisible: false,
       lastValueVisible: false,
@@ -1374,12 +1453,22 @@ export default function ForecastChartPanel({
       rawFieldForecast &&
       (effectiveMode === "field-v2" || effectiveMode === "both");
     const showClassic = effectiveMode === "classic" || effectiveMode === "both";
-    const showPath = Boolean(path) && showClassic;
+    const magnetSeriesData = showClassic
+      ? makeExpirationMagnetSeries(
+          expirationMagnetPath,
+          effectiveClassicScopeDte,
+          classicFullSurface,
+          lastTime,
+        )
+      : [];
+    const showExpirationMagnetPath = magnetSeriesData.length > 0;
+    const showFallbackPath = Boolean(path) && showClassic && !showExpirationMagnetPath;
+    const showPath = showExpirationMagnetPath || showFallbackPath;
     const showIvSurface = Boolean(ivSurface) && showClassic;
     const showEdge = Boolean(edge) && showClassic;
     const showMatrix = Boolean(matrix) && showClassic;
     const showFlowOverlay = Boolean(flowOverlay) && showClassic;
-    const showFieldRails = showFieldForecast && Boolean(path);
+    const showFieldRails = false;
     const capturedMismatch = capturedContextMismatch(
       capturedForecast,
       candleData,
@@ -1390,74 +1479,52 @@ export default function ForecastChartPanel({
       !capturedMismatch &&
       effectiveMode !== "candles";
 
-    const baseData = showPath
-      ? makeAnchoredPath(path?.basePath, lastTime, lastClose)
-      : [];
-    const upperData = showPath
-      ? makeAnchoredPath(path?.upperBand, lastTime, lastClose)
-      : [];
-    const lowerData = showPath
-      ? makeAnchoredPath(path?.lowerBand, lastTime, lastClose)
-      : [];
-    const bullData = showPath
-      ? makeStandalonePath(path?.bullishUnlockPath, lastTime)
-      : [];
-    const bearData = showPath
-      ? makeStandalonePath(path?.bearishFailurePath, lastTime)
-      : [];
+    baseRef.current?.applyOptions({
+      color: showExpirationMagnetPath
+        ? "rgba(34,211,238,0.94)"
+        : "rgba(226,232,240,0.78)",
+      lineWidth: showExpirationMagnetPath ? 2 : 2,
+      lineStyle: showExpirationMagnetPath ? LineStyle.Solid : LineStyle.Dashed,
+    });
 
+    const baseData = showExpirationMagnetPath
+      ? magnetSeriesData
+      : showFallbackPath
+        ? makeAnchoredPath(path?.basePath, lastTime, lastClose)
+        : [];
+
+    // Classic mode is now a clean expiration-magnet path. Do not render
+    // upper/lower/scenario spaghetti here; OI Field v2 owns bands/rails.
     baseRef.current?.setData(baseData);
-    upperRef.current?.setData(upperData);
-    lowerRef.current?.setData(lowerData);
-    bullRef.current?.setData(bullData);
-    bearRef.current?.setData(bearData);
+    upperRef.current?.setData([]);
+    lowerRef.current?.setData([]);
+    bullRef.current?.setData([]);
+    bearRef.current?.setData([]);
 
     const terminalSessions = fieldTerminalSessionsForAxis(
       fieldForecast,
       forecastAxisMode,
     );
-    const includeExpirationHorizon = forecastAxisMode === "expiration";
-    const fieldBaseData = showFieldForecast
-      ? makeFieldForecastPath(
-          fieldForecast,
-          lastTime,
-          lastClose,
-          "baseTarget",
-          terminalSessions,
-          includeExpirationHorizon,
-        )
-      : [];
-    const fieldUpperData = showFieldForecast
-      ? makeFieldForecastPath(
-          fieldForecast,
-          lastTime,
-          lastClose,
-          "upperBand",
-          terminalSessions,
-          includeExpirationHorizon,
-        )
-      : [];
-    const fieldLowerData = showFieldForecast
-      ? makeFieldForecastPath(
-          fieldForecast,
-          lastTime,
-          lastClose,
-          "lowerBand",
-          terminalSessions,
-          includeExpirationHorizon,
-        )
-      : [];
     const wheel =
       fieldTerminalHorizonForAxis(fieldForecast, forecastAxisMode) ??
       wheelHorizon(fieldForecast);
     const wheelFloor = toNumber(wheel?.lowerBand ?? null);
-    const fieldTimes = fieldBaseData.length
-      ? fieldBaseData.map((point) => point.time)
+    const terminalTarget = toNumber(wheel?.baseTarget);
+    const band = activeFieldBandForAxis(fieldForecast, forecastAxisMode);
+    const fieldTimes = showFieldForecast
+      ? futureTimeWindow(lastTime, terminalSessions)
       : [];
 
-    fieldBaseRef.current?.setData(fieldBaseData);
-    fieldUpperRef.current?.setData(fieldUpperData);
-    fieldLowerRef.current?.setData(fieldLowerData);
+    // OI Field v2 is now a pressure/containment band, not a fake candle path.
+    fieldBaseRef.current?.setData(
+      showFieldForecast ? horizontalBand(fieldTimes, terminalTarget) : [],
+    );
+    fieldUpperRef.current?.setData(
+      showFieldForecast ? horizontalBand(fieldTimes, band.upper) : [],
+    );
+    fieldLowerRef.current?.setData(
+      showFieldForecast ? horizontalBand(fieldTimes, band.lower) : [],
+    );
     fieldWheelRef.current?.setData(
       showFieldForecast && wheelFloor != null
         ? horizontalBand(fieldTimes, wheelFloor)
@@ -1583,7 +1650,26 @@ export default function ForecastChartPanel({
       }
     }
 
-    if (showPath) {
+    if (showExpirationMagnetPath) {
+      const nextMagnet = scopedMagnetPoints[0];
+      const terminalMagnet = scopedMagnetPoints[scopedMagnetPoints.length - 1];
+      addPriceLine({
+        price: nextMagnet?.magnet,
+        color: "#67e8f9",
+        title: `Next exp magnet ${nextMagnet?.expiration ?? ""} ${fmt(nextMagnet?.magnet)}`,
+        dashed: false,
+        width: 2,
+      });
+      if (terminalMagnet && terminalMagnet.expiration !== nextMagnet?.expiration) {
+        addPriceLine({
+          price: terminalMagnet.magnet,
+          color: "rgba(34,211,238,0.65)",
+          title: `Scope end magnet ${terminalMagnet.expiration} ${fmt(terminalMagnet.magnet)}`,
+          dashed: true,
+          width: 1,
+        });
+      }
+    } else if (showFallbackPath) {
       addPriceLine({
         price: path?.magnet,
         color: "#fbbf24",
@@ -1598,18 +1684,6 @@ export default function ForecastChartPanel({
         price: path?.putWall ?? path?.invalidBelow,
         color: "#d946ef",
         title: `Put wall ${fmt(path?.putWall ?? path?.invalidBelow)}`,
-      });
-      addPriceLine({
-        price: path?.invalidAbove,
-        color: "#22c55e",
-        title: `▲ Bullish trigger ${fmt(path?.invalidAbove)}`,
-        width: 2,
-      });
-      addPriceLine({
-        price: path?.invalidBelow,
-        color: "#fb7185",
-        title: `▼ Bearish trigger ${fmt(path?.invalidBelow)}`,
-        width: 2,
       });
     }
 
@@ -1754,7 +1828,7 @@ export default function ForecastChartPanel({
       }
     }
 
-    if (showFieldForecast && fieldBaseData.length) {
+    if (showFieldForecast && fieldTimes.length) {
       const forecastEnd = addBusinessDays(
         lastTime,
         Math.max(terminalSessions + 2, 6),
@@ -1780,6 +1854,9 @@ export default function ForecastChartPanel({
     ivSurface,
     flowOverlay,
     fieldForecast,
+    expirationMagnetPath,
+    effectiveClassicScopeDte,
+    classicFullSurface,
     structureFocus,
     chartMode,
     forecastAxisMode,
@@ -1850,9 +1927,11 @@ export default function ForecastChartPanel({
             {ticker} Forecast Cone
           </h2>
           <div style={{ color: colors.muted, fontSize: 12, marginTop: 2 }}>
-            {fieldForecast
-              ? "OI Field v2 horizon path + active structure band"
-              : `Live candlestick chart + OI path + matched IV band over ${horizon || 14} sessions`}
+            {expirationMagnetPath?.points?.length
+              ? "Classic expiration magnets + optional OI Field v2 pressure band"
+              : fieldForecast
+                ? "OI Field v2 pressure band + active structure levels"
+                : `Live candlestick chart + OI path + matched IV band over ${horizon || 14} sessions`}
           </div>
           {expectedMove ? (
             <div
@@ -1880,8 +1959,7 @@ export default function ForecastChartPanel({
               }}
             >
               OI Field v2: {fieldForecast.baseBias.toUpperCase()} · confidence{" "}
-              {fieldForecast.confidenceScore} ·{" "}
-              {forecastAxisLabel(forecastAxisMode)} lane
+              {fieldForecast.confidenceScore} · {forecastAxisLabel(forecastAxisMode)} band
             </div>
           ) : null}
         </div>
@@ -2009,6 +2087,104 @@ export default function ForecastChartPanel({
                 )}
               </div>
             ) : null}
+            {expirationMagnetPath?.points?.length ? (
+              <div
+                style={{
+                  display: "grid",
+                  gap: "0.35rem",
+                  justifyItems: "end",
+                  width: "min(260px, 100%)",
+                }}
+                aria-label="Classic expiration magnet DTE scope"
+              >
+                <div
+                  style={{
+                    color: colors.teal,
+                    fontSize: 10,
+                    fontWeight: 950,
+                    letterSpacing: "0.05em",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  Magnet scope: {scopeLabel(effectiveClassicScopeDte, classicFullSurface)}
+                  {mutedMagnetCount ? ` · ${mutedMagnetCount} muted` : ""}
+                </div>
+                <input
+                  type="range"
+                  min={7}
+                  max={classicAvailableMaxDte}
+                  step={1}
+                  value={effectiveClassicScopeDte}
+                  disabled={classicFullSurface}
+                  onChange={(event) => {
+                    setClassicFullSurface(false);
+                    setClassicScopeDte(Number(event.target.value));
+                  }}
+                  style={{ width: "100%", accentColor: "#22d3ee" }}
+                  title="Controls which expiration chains are included in the classic magnet path. Longer-DTE chains stay muted until you extend the scope."
+                />
+                <div
+                  style={{
+                    display: "flex",
+                    gap: "0.35rem",
+                    flexWrap: "wrap",
+                    justifyContent: "flex-end",
+                  }}
+                >
+                  {[30, 60].map((scope) => (
+                    <button
+                      key={scope}
+                      type="button"
+                      onClick={() => {
+                        setClassicFullSurface(false);
+                        setClassicScopeDte(Math.min(scope, classicAvailableMaxDte));
+                      }}
+                      style={{
+                        border:
+                          !classicFullSurface && Math.round(effectiveClassicScopeDte) === Math.min(scope, classicAvailableMaxDte)
+                            ? "1px solid rgba(34,211,238,0.68)"
+                            : "1px solid rgba(148,163,184,0.22)",
+                        background:
+                          !classicFullSurface && Math.round(effectiveClassicScopeDte) === Math.min(scope, classicAvailableMaxDte)
+                            ? "rgba(34,211,238,0.14)"
+                            : "rgba(15,23,42,0.72)",
+                        color:
+                          !classicFullSurface && Math.round(effectiveClassicScopeDte) === Math.min(scope, classicAvailableMaxDte)
+                            ? colors.teal
+                            : colors.muted,
+                        borderRadius: 999,
+                        padding: "0.22rem 0.45rem",
+                        fontSize: 10,
+                        fontWeight: 950,
+                        cursor: "pointer",
+                      }}
+                    >
+                      {scope}D
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setClassicFullSurface((value) => !value)}
+                    style={{
+                      border: classicFullSurface
+                        ? "1px solid rgba(34,211,238,0.68)"
+                        : "1px solid rgba(148,163,184,0.22)",
+                      background: classicFullSurface
+                        ? "rgba(34,211,238,0.14)"
+                        : "rgba(15,23,42,0.72)",
+                      color: classicFullSurface ? colors.teal : colors.muted,
+                      borderRadius: 999,
+                      padding: "0.22rem 0.45rem",
+                      fontSize: 10,
+                      fontWeight: 950,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Full
+                  </button>
+                </div>
+              </div>
+            ) : null}
             <button
               type="button"
               onClick={() => setForecastDivergenceEnabled((value) => !value)}
@@ -2066,7 +2242,74 @@ export default function ForecastChartPanel({
           </div>
         ) : null}
 
-        {fieldForecast && chartMode !== "candles" ? (
+        {chartMode === "classic" && expirationMagnetPath?.points?.length ? (
+          <div
+            style={{
+              position: "absolute",
+              top: 10,
+              left: 12,
+              zIndex: 3,
+              display: "grid",
+              gap: 4,
+              minWidth: 250,
+              maxWidth: 410,
+              background: "rgba(7,17,31,0.82)",
+              border: "1px solid rgba(34,211,238,0.22)",
+              borderRadius: 12,
+              padding: "0.55rem 0.65rem",
+              boxShadow: "0 18px 42px rgba(0,0,0,0.28)",
+              pointerEvents: "none",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                gap: "0.75rem",
+                alignItems: "center",
+              }}
+            >
+              <strong
+                style={{
+                  color: colors.teal,
+                  fontSize: 11,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                }}
+              >
+                Expiration Magnet Path
+              </strong>
+              <span style={{ color: colors.amber, fontSize: 11, fontWeight: 950 }}>
+                {scopeLabel(effectiveClassicScopeDte, classicFullSurface)} scope
+              </span>
+            </div>
+            <div style={{ color: colors.text, fontSize: 12, fontWeight: 850 }}>
+              {scopedMagnetPoints.length ? (
+                <>
+                  {scopedMagnetPoints.length} chain
+                  {scopedMagnetPoints.length === 1 ? "" : "s"} · next{" "}
+                  <span style={{ color: colors.teal }}>
+                    {scopedMagnetPoints[0]?.expiration} @ {fmt(scopedMagnetPoints[0]?.magnet)}
+                  </span>
+                  {scopedMagnetPoints.length > 1 ? (
+                    <>
+                      {" "}→ {scopedMagnetPoints[scopedMagnetPoints.length - 1]?.expiration} @{" "}
+                      {fmt(scopedMagnetPoints[scopedMagnetPoints.length - 1]?.magnet)}
+                    </>
+                  ) : null}
+                </>
+              ) : (
+                <>No usable expiration magnets inside selected scope.</>
+              )}
+            </div>
+            <div style={{ color: colors.muted, fontSize: 11, fontWeight: 850 }}>
+              Solid cyan marks adjusted OI magnet at real expiration dates.
+              {mutedMagnetCount ? ` ${mutedMagnetCount} longer-DTE chain${mutedMagnetCount === 1 ? "" : "s"} muted.` : ""}
+            </div>
+          </div>
+        ) : null}
+
+        {fieldForecast && chartMode !== "classic" && chartMode !== "candles" ? (
           <div
             style={{
               position: "absolute",
@@ -2250,8 +2493,8 @@ export default function ForecastChartPanel({
         ) : null}
         {fieldForecast && chartMode !== "classic" && chartMode !== "candles" ? (
           <span>
-            <strong style={{ color: colors.teal }}>Thick cyan</strong> OI Field
-            v2 base path to {String(terminal?.label ?? terminal?.key ?? "30D")}
+            <strong style={{ color: colors.teal }}>Muted cyan</strong> OI Field
+            v2 base level to {String(terminal?.label ?? terminal?.key ?? "30D")}
           </span>
         ) : null}
         {fieldForecast && chartMode !== "classic" && chartMode !== "candles" ? (
@@ -2266,10 +2509,17 @@ export default function ForecastChartPanel({
             support floor
           </span>
         ) : null}
-        {path && (chartMode === "classic" || chartMode === "both") ? (
+        {expirationMagnetPath?.points?.length &&
+        (chartMode === "classic" || chartMode === "both") ? (
           <span>
-            <strong style={{ color: colors.text }}>Dashed white</strong> classic
-            30D OI path
+            <strong style={{ color: colors.teal }}>Solid cyan</strong> expiration
+            magnet path · {scopeLabel(effectiveClassicScopeDte, classicFullSurface)}
+            {mutedMagnetCount ? ` · ${mutedMagnetCount} muted` : ""}
+          </span>
+        ) : path && (chartMode === "classic" || chartMode === "both") ? (
+          <span>
+            <strong style={{ color: colors.text }}>Dashed white</strong> fallback
+            OI path
           </span>
         ) : null}
         {ivSurface && (chartMode === "classic" || chartMode === "both") ? (

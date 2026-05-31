@@ -22,6 +22,7 @@ import { buildOIImpliedPath } from "../../../lib/oi-implied-path-engine";
 import { buildOIFieldForecast } from "../../../lib/oi-field-engine-v2";
 import { buildOIIntelligenceView } from "../../../lib/oi-intelligence-view";
 import { buildOIProjectionReport } from "../../../lib/oi-projection-engine";
+import { buildExpirationMagnetPath } from "../../../lib/expiration-magnet-engine";
 import { buildPredictiveMatrix } from "../../../lib/predictive-matrix-engine";
 import { buildTraderEdgeSummary } from "../../../lib/trader-edge-engine";
 import {
@@ -515,7 +516,7 @@ function ChartOverlayControls({
         />
         <Toggle
           checked={overlays.selectedChainPath}
-          label="Classic 30D OI path"
+          label="Expiration magnet path"
           onChange={(checked) =>
             setOverlays((current) => ({
               ...current,
@@ -821,6 +822,18 @@ function ChartRoomContent() {
       ? surfaceClose
       : Number(lastClose ?? 0);
   }, [candles, selectedSurface]);
+
+  const fullSurfaceSnapshot = useMemo(
+    () => toChainSnapshot(selectedSurface),
+    [selectedSurface],
+  );
+
+  const expirationMagnetPath = useMemo(() => {
+    return buildExpirationMagnetPath({
+      snapshot: fullSurfaceSnapshot,
+      currentPrice: analysisPrice,
+    });
+  }, [fullSurfaceSnapshot, analysisPrice]);
 
   const surfaceTraderEdge = useMemo(() => {
     if (!selectedSurface) return null;
@@ -1388,6 +1401,9 @@ function ChartRoomContent() {
               flowOverlay={chartFlowOverlay}
               fieldForecast={
                 overlays.selectedChainPath ? oiFieldForecast : null
+              }
+              expirationMagnetPath={
+                overlays.selectedChainPath ? expirationMagnetPath : null
               }
               surfaceDate={selectedSurfaceDate}
               expiration={selectedExpiration}

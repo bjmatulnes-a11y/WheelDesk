@@ -29,6 +29,7 @@ import { buildAdaptivePositionControl } from "../../lib/nonlinear-mpc-engine";
 import { buildOIImpliedPath } from "../../lib/oi-implied-path-engine";
 import { buildOIFieldForecast } from "../../lib/oi-field-engine-v2";
 import { buildOIProjectionReport } from "../../lib/oi-projection-engine";
+import { buildExpirationMagnetPath } from "../../lib/expiration-magnet-engine";
 import { buildPredictiveMatrix } from "../../lib/predictive-matrix-engine";
 import { buildForecastCalibration } from "../../lib/forecast-calibration-engine";
 import {
@@ -659,7 +660,7 @@ function ChartOverlayControls({
         />
         <Toggle
           checked={overlays.selectedChainPath}
-          label="Classic 30D OI path"
+          label="Expiration magnet path"
           onChange={(checked) =>
             setOverlays((current) => ({
               ...current,
@@ -1061,6 +1062,12 @@ export default function ControlCenterPage() {
     () => toChainSnapshot(fullSurfaceForAnalysis),
     [fullSurfaceForAnalysis],
   );
+  const expirationMagnetPath = useMemo(() => {
+    return buildExpirationMagnetPath({
+      snapshot: fullSurfaceSnapshot,
+      currentPrice: analysisPrice,
+    });
+  }, [fullSurfaceSnapshot, analysisPrice]);
   const selectedChainSnapshot = useMemo(
     () => toChainSnapshot(selectedChainSurface),
     [selectedChainSurface],
@@ -1849,6 +1856,9 @@ export default function ControlCenterPage() {
                     fieldForecast={
                       overlays.selectedChainPath ? oiFieldForecast : null
                     }
+                    expirationMagnetPath={
+                      overlays.selectedChainPath ? expirationMagnetPath : null
+                    }
                     surfaceDate={selectedSurfaceDate}
                     expiration={selectedExpiration}
                     structureFocus
@@ -2174,6 +2184,9 @@ export default function ControlCenterPage() {
               flowOverlay={chartFlowOverlay}
               fieldForecast={
                 overlays.selectedChainPath ? oiFieldForecast : null
+              }
+              expirationMagnetPath={
+                overlays.selectedChainPath ? expirationMagnetPath : null
               }
               surfaceDate={selectedSurfaceDate}
               expiration={selectedExpiration}
