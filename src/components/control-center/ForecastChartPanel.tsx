@@ -445,6 +445,21 @@ function capturedForecastAt(
   return rows[rows.length - 1].value;
 }
 
+function capturedFieldLevel(
+  row: CapturedForecastRow | null | undefined,
+  side: "base" | "upper" | "lower",
+  axisMode: ForecastAxisMode,
+  terminalSessions: number,
+): number | null {
+  return capturedForecastAt(
+    row,
+    Math.max(1, Math.round(terminalSessions || 30)),
+    side,
+    axisMode,
+    terminalSessions,
+  );
+}
+
 function makeCapturedForecastPath(
   row: CapturedForecastRow | null | undefined,
   _lastTime: UTCTimestamp,
@@ -624,6 +639,27 @@ function capturedDivergenceReadout(
     normalizedDivergence,
     elapsedSessions,
   };
+}
+
+function fieldMigrationReadout(
+  currentBase: number | null,
+  capturedBase: number | null,
+): { label: string; color: string; delta: number | null; deltaPct: number | null } {
+  if (currentBase == null || capturedBase == null) {
+    return { label: "Saved field", color: "#f8fafc", delta: null, deltaPct: null };
+  }
+
+  const delta = currentBase - capturedBase;
+  const deltaPct = capturedBase !== 0 ? (delta / capturedBase) * 100 : null;
+  const threshold = Math.max(0.03, Math.abs(capturedBase) * 0.0025);
+
+  if (delta > threshold) {
+    return { label: "Saved field · live migrated higher", color: "#22c55e", delta, deltaPct };
+  }
+  if (delta < -threshold) {
+    return { label: "Saved field · live migrated lower", color: "#fb7185", delta, deltaPct };
+  }
+  return { label: "Saved field · stable", color: "#f8fafc", delta, deltaPct };
 }
 
 function futureTimesFromPath(
@@ -1322,9 +1358,9 @@ export default function ForecastChartPanel({
     });
 
     const divergenceBase = chart.addSeries(LineSeries, {
-      color: "rgba(250,250,250,0.95)",
-      lineWidth: 3,
-      lineStyle: LineStyle.Solid,
+      color: "rgba(248,250,252,0.78)",
+      lineWidth: 2,
+      lineStyle: LineStyle.Dashed,
       priceLineVisible: false,
       lastValueVisible: false,
     });
@@ -1531,39 +1567,58 @@ export default function ForecastChartPanel({
         : [],
     );
 
-    const divergenceBaseData = showCapturedDivergence
-      ? makeCapturedForecastPath(
+    const capturedBaseLevel = showCapturedDivergence
+      ? capturedFieldLevel(
           capturedForecast,
-          lastTime,
-          lastClose,
           "base",
           forecastAxisMode,
           terminalSessions,
         )
-      : [];
-    const divergenceUpperData = showCapturedDivergence
-      ? makeCapturedForecastPath(
+      : null;
+    const capturedUpperLevel = showCapturedDivergence
+      ? capturedFieldLevel(
           capturedForecast,
-          lastTime,
-          lastClose,
           "upper",
           forecastAxisMode,
           terminalSessions,
         )
-      : [];
-    const divergenceLowerData = showCapturedDivergence
-      ? makeCapturedForecastPath(
+      : null;
+    const capturedLowerLevel = showCapturedDivergence
+      ? capturedFieldLevel(
           capturedForecast,
-          lastTime,
-          lastClose,
           "lower",
           forecastAxisMode,
           terminalSessions,
         )
-      : [];
-    divergenceBaseRef.current?.setData(divergenceBaseData);
-    divergenceUpperRef.current?.setData(divergenceUpperData);
-    divergenceLowerRef.current?.setData(divergenceLowerData);
+      : null;
+    const savedFieldMigration = fieldMigrationReadout(
+      showCapturedDivergence ? terminalTarget : null,
+      capturedBaseLevel,
+    );
+
+    divergenceBaseRef.current?.applyOptions({
+      color: savedFieldMigration.color,
+      lineStyle: LineStyle.Dashed,
+      lineWidth: 2,
+    });
+
+    const divergenceTimes =
+      showCapturedDivergence && showFieldForecast && fieldTimes.length
+        ? fieldTimes
+        : [];
+
+    // Saved Forecast Overlay now uses the same visual grammar as OI Field v2:
+    // horizontal captured base / upper / lower field levels. It is a frozen
+    // receipt baseline, not another forward squiggle.
+    divergenceBaseRef.current?.setData(
+      divergenceTimes.length ? horizontalBand(divergenceTimes, capturedBaseLevel) : [],
+    );
+    divergenceUpperRef.current?.setData(
+      divergenceTimes.length ? horizontalBand(divergenceTimes, capturedUpperLevel) : [],
+    );
+    divergenceLowerRef.current?.setData(
+      divergenceTimes.length ? horizontalBand(divergenceTimes, capturedLowerLevel) : [],
+    );
 
     const horizon = Number(
       ivSurface?.horizonDays ??
@@ -1760,30 +1815,48 @@ export default function ForecastChartPanel({
     }
 
     if (showCapturedDivergence) {
-      const divReadout = capturedDivergenceReadout(
+      const capturedBaseLevel = capturedFieldLevel(
         capturedForecast,
-        candleData,
+        "base",
         forecastAxisMode,
         terminalSessions,
       );
+      const capturedUpperLevel = capturedFieldLevel(
+        capturedForecast,
+        "upper",
+        forecastAxisMode,
+        terminalSessions,
+      );
+      const capturedLowerLevel = capturedFieldLevel(
+        capturedForecast,
+        "lower",
+        forecastAxisMode,
+        terminalSessions,
+      );
+      const liveBase = toNumber(
+        fieldTerminalHorizonForAxis(fieldForecast, forecastAxisMode)?.baseTarget ??
+          null,
+      );
+      const migration = fieldMigrationReadout(liveBase, capturedBaseLevel);
+
       addPriceLine({
-        price: divReadout?.forecastBase,
-        color: "#f8fafc",
-        title: `Captured base ${fmt(divReadout?.forecastBase)}`,
-        dashed: false,
+        price: capturedBaseLevel,
+        color: migration.color,
+        title: `${migration.label} base ${fmt(capturedBaseLevel)}`,
+        dashed: true,
         width: 2,
       });
       addPriceLine({
-        price: divReadout?.forecastUpper,
-        color: "#22c55e",
-        title: `Captured upper ${fmt(divReadout?.forecastUpper)}`,
+        price: capturedUpperLevel,
+        color: "rgba(34,197,94,0.7)",
+        title: `Saved upper ${fmt(capturedUpperLevel)}`,
         dashed: true,
         width: 1,
       });
       addPriceLine({
-        price: divReadout?.forecastLower,
-        color: "#fb7185",
-        title: `Captured lower ${fmt(divReadout?.forecastLower)}`,
+        price: capturedLowerLevel,
+        color: "rgba(251,113,133,0.7)",
+        title: `Saved lower ${fmt(capturedLowerLevel)}`,
         dashed: true,
         width: 1,
       });
@@ -2204,10 +2277,10 @@ export default function ForecastChartPanel({
               }}
               title={
                 capturedForecastStatus ||
-                "Overlay the frozen saved forecast receipt; the existing candles after capture are the validation trace."
+                "Overlay the frozen saved OI Field receipt as horizontal base/upper/lower levels; candles validate it after capture."
               }
             >
-              Saved Forecast Overlay
+              Saved Field Overlay
             </button>
           </div>
         </div>
@@ -2529,7 +2602,7 @@ export default function ForecastChartPanel({
         ) : null}
         {forecastDivergenceEnabled ? (
           <span>
-            Saved forecast overlay:{" "}
+            Saved field overlay:{" "}
             <strong style={{ color: divergenceReadout?.tone ?? colors.text }}>
               {divergenceReadout?.label ??
                 (capturedForecastStatus || "No forecast receipt")}
