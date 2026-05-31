@@ -472,6 +472,9 @@ export function buildOIChangeRead(args: {
 
   const callItems: OIChangeItem[] = [];
   const putItems: OIChangeItem[] = [];
+  let comparedStrikeCount = 0;
+  let ignoredCurrentOnlyCount = 0;
+  let ignoredPriorOnlyCount = 0;
 
   for (const currentChain of comparable.current) {
     const priorChain = comparable.priorByExpiration.get(currentChain.expiration);
@@ -479,15 +482,28 @@ export function buildOIChangeRead(args: {
 
     const currentRows = mapRows(currentChain);
     const priorRows = mapRows(priorChain);
-    const strikes = new Set<number>([...currentRows.keys(), ...priorRows.keys()]);
+    const currentKeys = [...currentRows.keys()];
+    const priorKeys = new Set<number>(priorRows.keys());
 
-    for (const strike of strikes) {
+    // ΔOI must be an exact row-to-row comparison. Do not treat a missing
+    // prior row as zero OI because that creates false "new build" reads when
+    // the prior snapshot uses a slightly different chain/strike universe.
+    // True new-strike analysis can be added later, but it should be labeled
+    // separately from day-over-day ΔOI.
+    const matchedStrikes = currentKeys.filter((strike) => priorKeys.has(strike));
+    ignoredCurrentOnlyCount += currentKeys.length - matchedStrikes.length;
+    ignoredPriorOnlyCount += [...priorRows.keys()].filter((strike) => !currentRows.has(strike)).length;
+
+    for (const strike of matchedStrikes) {
+      comparedStrikeCount += 1;
       const currentRow = currentRows.get(strike);
       const priorRow = priorRows.get(strike);
-      const currentCall = currentRow?.callOi ?? 0;
-      const priorCall = priorRow?.callOi ?? 0;
-      const currentPut = currentRow?.putOi ?? 0;
-      const priorPut = priorRow?.putOi ?? 0;
+      if (!currentRow || !priorRow) continue;
+
+      const currentCall = currentRow.callOi;
+      const priorCall = priorRow.callOi;
+      const currentPut = currentRow.putOi;
+      const priorPut = priorRow.putOi;
       const callDelta = currentCall - priorCall;
       const putDelta = currentPut - priorPut;
 
@@ -521,7 +537,7 @@ export function buildOIChangeRead(args: {
     }
   }
 
-  return buildRead({
+  const read = buildRead({
     ticker: normalizeTicker(currentSurface.ticker),
     scopeLabel: comparable.scopeLabel,
     currentSnapshotDate: dateKey(currentSurface.snapshotDate),
@@ -533,6 +549,28 @@ export function buildOIChangeRead(args: {
     callItems,
     putItems,
   });
+
+  if (comparedStrikeCount === 0) {
+    return {
+      ...read,
+      ok: false,
+      reason: "no_comparable_chains",
+      headline: "No exact comparable strikes found",
+      summary: "The current and prior chain shared the expiration, but no strikes matched exactly. ΔOI was not calculated to avoid false build/thin reads.",
+      notes: [
+        ...read.notes,
+        "ΔOI uses exact strike matches only. Missing prior rows are not treated as zero OI.",
+      ],
+    };
+  }
+
+  if (ignoredCurrentOnlyCount > 0 || ignoredPriorOnlyCount > 0) {
+    read.notes.push(
+      `Ignored ${ignoredCurrentOnlyCount.toLocaleString()} current-only and ${ignoredPriorOnlyCount.toLocaleString()} prior-only strike rows so missing rows do not become false ΔOI.`,
+    );
+  }
+
+  return read;
 }
 
 function emptyRead(args: {
