@@ -63,24 +63,95 @@ function getStrike(row: any): number | null {
   );
 }
 
-function getOpenInterest(row: any): number {
-  return (
-    toNumber(row?.openInterest) ??
-    toNumber(row?.open_interest) ??
-    toNumber(row?.oi) ??
-    toNumber(row?.raw?.openInterest) ??
-    toNumber(row?.raw?.open_interest) ??
-    toNumber(row?.raw?.oi) ??
-    0
+function readNumber(...values: unknown[]): number | null {
+  for (const value of values) {
+    const n = toNumber(value);
+    if (n != null) return n;
+  }
+  return null;
+}
+
+function getGenericOpenInterest(row: any): number | null {
+  return readNumber(
+    row?.openInterest,
+    row?.open_interest,
+    row?.oi,
+    row?.raw?.openInterest,
+    row?.raw?.open_interest,
+    row?.raw?.oi
   );
 }
 
-function getVolume(row: any): number {
-  return (
-    toNumber(row?.volume) ??
-    toNumber(row?.raw?.volume) ??
-    0
+function getSideOpenInterest(row: any, side: Side): number | null {
+  if (side === "call") {
+    return readNumber(
+      row?.callOi,
+      row?.callOI,
+      row?.call_oi,
+      row?.callOpenInterest,
+      row?.call_open_interest,
+      row?.call?.openInterest,
+      row?.call?.open_interest,
+      row?.raw?.callOi,
+      row?.raw?.callOI,
+      row?.raw?.call_oi,
+      row?.raw?.callOpenInterest,
+      row?.raw?.call_open_interest,
+      row?.raw?.call?.openInterest,
+      row?.raw?.call?.open_interest
+    );
+  }
+
+  return readNumber(
+    row?.putOi,
+    row?.putOI,
+    row?.put_oi,
+    row?.putOpenInterest,
+    row?.put_open_interest,
+    row?.put?.openInterest,
+    row?.put?.open_interest,
+    row?.raw?.putOi,
+    row?.raw?.putOI,
+    row?.raw?.put_oi,
+    row?.raw?.putOpenInterest,
+    row?.raw?.put_open_interest,
+    row?.raw?.put?.openInterest,
+    row?.raw?.put?.open_interest
   );
+}
+
+function getOpenInterest(row: any, side: Side): number | null {
+  return getSideOpenInterest(row, side) ?? getGenericOpenInterest(row);
+}
+
+function getGenericVolume(row: any): number | null {
+  return readNumber(row?.volume, row?.raw?.volume);
+}
+
+function getSideVolume(row: any, side: Side): number | null {
+  if (side === "call") {
+    return readNumber(
+      row?.callVolume,
+      row?.call_volume,
+      row?.call?.volume,
+      row?.raw?.callVolume,
+      row?.raw?.call_volume,
+      row?.raw?.call?.volume
+    );
+  }
+
+  return readNumber(
+    row?.putVolume,
+    row?.put_volume,
+    row?.put?.volume,
+    row?.raw?.putVolume,
+    row?.raw?.put_volume,
+    row?.raw?.put?.volume
+  );
+}
+
+function getVolume(row: any, side: Side): number {
+  return getSideVolume(row, side) ?? getGenericVolume(row) ?? 0;
 }
 
 function normalizeRows(surface: OptionSurfaceSnapshot | null): NormalizedOptionRow[] {
@@ -89,18 +160,47 @@ function normalizeRows(surface: OptionSurfaceSnapshot | null): NormalizedOptionR
   for (const chain of surface?.chains ?? []) {
     for (const row of (chain as any)?.rows ?? []) {
       const strike = getStrike(row);
-      const side = getSide(row);
-      const oi = getOpenInterest(row);
-      const volume = getVolume(row);
+      if (strike == null) continue;
 
-      if (strike == null || !side || !Number.isFinite(oi)) continue;
+      const explicitSide = getSide(row);
 
-      rows.push({
-        strike,
-        side,
-        oi,
-        volume,
-      });
+      if (explicitSide) {
+        const oi = getOpenInterest(row, explicitSide);
+        if (oi == null || !Number.isFinite(oi)) continue;
+
+        rows.push({
+          strike,
+          side: explicitSide,
+          oi,
+          volume: getVolume(row, explicitSide),
+        });
+        continue;
+      }
+
+      // Supabase surfaces may be reconstructed into one wide row per strike
+      // ({ strike, callOi, putOi }) instead of one row per side. Treat those
+      // as two logical OI rows so the restored OI Intelligence card still sees
+      // the selected chain correctly.
+      const callOi = getSideOpenInterest(row, "call");
+      const putOi = getSideOpenInterest(row, "put");
+
+      if (callOi != null && Number.isFinite(callOi)) {
+        rows.push({
+          strike,
+          side: "call",
+          oi: callOi,
+          volume: getVolume(row, "call"),
+        });
+      }
+
+      if (putOi != null && Number.isFinite(putOi)) {
+        rows.push({
+          strike,
+          side: "put",
+          oi: putOi,
+          volume: getVolume(row, "put"),
+        });
+      }
     }
   }
 

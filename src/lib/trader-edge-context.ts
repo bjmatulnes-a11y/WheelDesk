@@ -26,10 +26,93 @@ export function edgeDteFromExpiration(expiration?: string, snapshotDate?: string
   return Math.max(0, Math.round((end - start) / 86_400_000));
 }
 
+function toFiniteNumber(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function firstNumber(...values: unknown[]): number | null {
+  for (const value of values) {
+    const n = toFiniteNumber(value);
+    if (n != null) return n;
+  }
+  return null;
+}
+
+function rowSide(row: any): "call" | "put" | null {
+  const side = String(
+    row?.side ??
+      row?.type ??
+      row?.optionType ??
+      row?.option_type ??
+      row?.raw?.side ??
+      row?.raw?.type ??
+      ""
+  ).toLowerCase();
+
+  if (side.includes("call")) return "call";
+  if (side.includes("put")) return "put";
+  return null;
+}
+
+function sideOpenInterest(row: any, side: "call" | "put"): number | null {
+  if (side === "call") {
+    return firstNumber(
+      row?.callOi,
+      row?.callOI,
+      row?.call_oi,
+      row?.callOpenInterest,
+      row?.call_open_interest,
+      row?.call?.openInterest,
+      row?.call?.open_interest,
+      row?.raw?.callOi,
+      row?.raw?.callOI,
+      row?.raw?.call_oi,
+      row?.raw?.callOpenInterest,
+      row?.raw?.call_open_interest,
+      row?.raw?.call?.openInterest,
+      row?.raw?.call?.open_interest
+    );
+  }
+
+  return firstNumber(
+    row?.putOi,
+    row?.putOI,
+    row?.put_oi,
+    row?.putOpenInterest,
+    row?.put_open_interest,
+    row?.put?.openInterest,
+    row?.put?.open_interest,
+    row?.raw?.putOi,
+    row?.raw?.putOI,
+    row?.raw?.put_oi,
+    row?.raw?.putOpenInterest,
+    row?.raw?.put_open_interest,
+    row?.raw?.put?.openInterest,
+    row?.raw?.put?.open_interest
+  );
+}
+
+function genericOpenInterest(row: any): number | null {
+  return firstNumber(
+    row?.openInterest,
+    row?.open_interest,
+    row?.oi,
+    row?.raw?.openInterest,
+    row?.raw?.open_interest,
+    row?.raw?.oi
+  );
+}
+
 function rowOi(row: any): number {
-  const callOi = Number(row?.callOpenInterest ?? row?.callOI ?? row?.call_oi ?? row?.call?.openInterest ?? 0);
-  const putOi = Number(row?.putOpenInterest ?? row?.putOI ?? row?.put_oi ?? row?.put?.openInterest ?? 0);
-  return (Number.isFinite(callOi) ? callOi : 0) + (Number.isFinite(putOi) ? putOi : 0);
+  const side = rowSide(row);
+  if (side) return sideOpenInterest(row, side) ?? genericOpenInterest(row) ?? 0;
+
+  const callOi = sideOpenInterest(row, "call") ?? 0;
+  const putOi = sideOpenInterest(row, "put") ?? 0;
+  const generic = genericOpenInterest(row) ?? 0;
+
+  return callOi + putOi + (callOi || putOi ? 0 : generic);
 }
 
 export function chainRows(chain: any): any[] {
