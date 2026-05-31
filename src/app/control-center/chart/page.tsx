@@ -791,6 +791,7 @@ function ChartRoomContent() {
       surfaceSnapshots,
       selectedSurface.ticker,
       selectedSurface.snapshotDate,
+      selectedSurface,
     );
   }, [selectedSurface, surfaceSnapshots]);
 

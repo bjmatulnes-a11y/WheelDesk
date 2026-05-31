@@ -111,6 +111,30 @@ type DivergenceReadout = {
   elapsedSessions: number | null;
 };
 
+
+type SavedFieldValidationReadout = {
+  label: string;
+  tone: string;
+  actualClose: number | null;
+  savedBase: number | null;
+  savedUpper: number | null;
+  savedLower: number | null;
+  liveBase: number | null;
+  liveUpper: number | null;
+  liveLower: number | null;
+  baseDelta: number | null;
+  baseDeltaPct: number | null;
+  upperDelta: number | null;
+  lowerDelta: number | null;
+  elapsedSessions: number | null;
+  daysAboveBase: number;
+  daysInsideBand: number;
+  evaluatedDays: number;
+  touchedUpper: boolean;
+  brokeLower: boolean;
+  bandMigrationLabel: string;
+};
+
 type CandleSeriesData = {
   time: UTCTimestamp;
   open: number;
@@ -660,6 +684,93 @@ function fieldMigrationReadout(
     return { label: "Saved field · live migrated lower", color: "#fb7185", delta, deltaPct };
   }
   return { label: "Saved field · stable", color: "#f8fafc", delta, deltaPct };
+}
+
+
+function savedFieldValidationReadout(args: {
+  row: CapturedForecastRow | null | undefined;
+  candleData: CandleSeriesData[];
+  axisMode: ForecastAxisMode;
+  terminalSessions: number;
+  liveBase: number | null;
+  liveUpper: number | null;
+  liveLower: number | null;
+}): SavedFieldValidationReadout | null {
+  const { row, candleData, axisMode, terminalSessions, liveBase, liveUpper, liveLower } = args;
+  if (!row || !candleData.length) return null;
+
+  const anchorTime = capturedAnchorTime(row);
+  if (!anchorTime) return null;
+
+  const savedBase = capturedFieldLevel(row, "base", axisMode, terminalSessions);
+  const savedUpper = capturedFieldLevel(row, "upper", axisMode, terminalSessions);
+  const savedLower = capturedFieldLevel(row, "lower", axisMode, terminalSessions);
+  if (savedBase == null && savedUpper == null && savedLower == null) return null;
+
+  const validationCandles = candleData.filter((candle) => Number(candle.time) >= Number(anchorTime));
+  const latest = validationCandles.length ? validationCandles[validationCandles.length - 1] : candleData[candleData.length - 1];
+  if (!latest) return null;
+
+  const evaluatedDays = validationCandles.length;
+  const daysAboveBase = savedBase == null ? 0 : validationCandles.filter((candle) => candle.close >= savedBase).length;
+  const daysInsideBand = savedUpper == null || savedLower == null
+    ? 0
+    : validationCandles.filter((candle) => candle.high <= savedUpper && candle.low >= savedLower).length;
+  const touchedUpper = savedUpper != null && validationCandles.some((candle) => candle.high >= savedUpper);
+  const brokeLower = savedLower != null && validationCandles.some((candle) => candle.low <= savedLower);
+
+  const baseDelta = liveBase != null && savedBase != null ? liveBase - savedBase : null;
+  const baseDeltaPct = baseDelta != null && savedBase != null && savedBase !== 0 ? (baseDelta / savedBase) * 100 : null;
+  const upperDelta = liveUpper != null && savedUpper != null ? liveUpper - savedUpper : null;
+  const lowerDelta = liveLower != null && savedLower != null ? liveLower - savedLower : null;
+
+  let bandMigrationLabel = "Saved/live field stable";
+  if (upperDelta != null && lowerDelta != null) {
+    const threshold = Math.max(0.03, Math.abs(savedBase ?? latest.close) * 0.0025);
+    if (upperDelta > threshold && lowerDelta < -threshold) bandMigrationLabel = "Live field widened around saved forecast";
+    else if (upperDelta > threshold && Math.abs(lowerDelta) <= threshold) bandMigrationLabel = "Upper field expanded higher";
+    else if (lowerDelta < -threshold && Math.abs(upperDelta) <= threshold) bandMigrationLabel = "Lower field expanded lower";
+    else if (upperDelta < -threshold && lowerDelta > threshold) bandMigrationLabel = "Live field compressed inside saved band";
+  }
+
+  let label = "Tracking saved field";
+  let tone = "#67e8f9";
+  if (savedUpper != null && latest.close > savedUpper) {
+    label = "Validating above saved field";
+    tone = "#22c55e";
+  } else if (savedLower != null && latest.close < savedLower) {
+    label = "Breaking below saved field";
+    tone = "#fb7185";
+  } else if (savedBase != null && latest.close >= savedBase) {
+    label = "Tracking above saved base";
+    tone = "#22c55e";
+  } else if (savedBase != null && latest.close < savedBase) {
+    label = "Tracking below saved base";
+    tone = "#fb7185";
+  }
+
+  return {
+    label,
+    tone,
+    actualClose: latest.close,
+    savedBase,
+    savedUpper,
+    savedLower,
+    liveBase,
+    liveUpper,
+    liveLower,
+    baseDelta,
+    baseDeltaPct,
+    upperDelta,
+    lowerDelta,
+    elapsedSessions: businessDaysBetween(anchorTime, latest.time),
+    daysAboveBase,
+    daysInsideBand,
+    evaluatedDays,
+    touchedUpper,
+    brokeLower,
+    bandMigrationLabel,
+  };
 }
 
 function futureTimesFromPath(
@@ -1961,13 +2072,25 @@ export default function ForecastChartPanel({
   const effectiveModeLabel = modeLabel(
     chartMode === "field-v2" && !fieldForecast ? "classic" : chartMode,
   );
+  const normalizedCandleReadout = normalizeCandles(candles ?? []);
   const divergenceReadout = forecastDivergenceEnabled
     ? capturedDivergenceReadout(
         capturedForecast,
-        normalizeCandles(candles ?? []),
+        normalizedCandleReadout,
         forecastAxisMode,
         terminalSessions,
       )
+    : null;
+  const savedFieldReadout = forecastDivergenceEnabled
+    ? savedFieldValidationReadout({
+        row: capturedForecast,
+        candleData: normalizedCandleReadout,
+        axisMode: forecastAxisMode,
+        terminalSessions,
+        liveBase: toNumber(terminal?.baseTarget),
+        liveUpper: fieldBand.upper,
+        liveLower: fieldBand.lower,
+      })
     : null;
 
   return (
@@ -2479,7 +2602,7 @@ export default function ForecastChartPanel({
                 <span>30D {fmt(toNumber(thirtyDay.baseTarget))}</span>
               ) : null}
             </div>
-            {forecastDivergenceEnabled && divergenceReadout ? (
+            {forecastDivergenceEnabled && (savedFieldReadout || divergenceReadout) ? (
               <div
                 style={{
                   borderTop: "1px solid rgba(148,163,184,0.16)",
@@ -2491,25 +2614,31 @@ export default function ForecastChartPanel({
               >
                 <strong
                   style={{
-                    color: divergenceReadout.tone,
+                    color: savedFieldReadout?.tone ?? divergenceReadout?.tone ?? colors.text,
                     fontSize: 11,
                     letterSpacing: "0.06em",
                     textTransform: "uppercase",
                   }}
                 >
-                  {divergenceReadout.label}
+                  {savedFieldReadout?.label ?? divergenceReadout?.label}
                 </strong>
-                <span
-                  style={{ color: colors.muted, fontSize: 11, fontWeight: 850 }}
-                >
-                  Actual {fmt(divergenceReadout.actualClose)} vs captured base{" "}
-                  {fmt(divergenceReadout.forecastBase)} · Δ{" "}
-                  {fmt(divergenceReadout.divergence)} (
-                  {divergenceReadout.divergencePct == null
-                    ? "N/A"
-                    : `${divergenceReadout.divergencePct.toFixed(1)}%`}
-                  ) · +{divergenceReadout.elapsedSessions ?? 0}D
-                </span>
+                {savedFieldReadout ? (
+                  <>
+                    <span style={{ color: colors.muted, fontSize: 11, fontWeight: 850 }}>
+                      Actual {fmt(savedFieldReadout.actualClose)} vs saved base {fmt(savedFieldReadout.savedBase)} · live base {fmt(savedFieldReadout.liveBase)} · Δ {fmt(savedFieldReadout.baseDelta)} ({savedFieldReadout.baseDeltaPct == null ? "N/A" : `${savedFieldReadout.baseDeltaPct.toFixed(1)}%`})
+                    </span>
+                    <span style={{ color: colors.muted, fontSize: 11, fontWeight: 850 }}>
+                      Saved band {fmt(savedFieldReadout.savedLower)}–{fmt(savedFieldReadout.savedUpper)} · live band {fmt(savedFieldReadout.liveLower)}–{fmt(savedFieldReadout.liveUpper)} · {savedFieldReadout.bandMigrationLabel}
+                    </span>
+                    <span style={{ color: colors.muted, fontSize: 11, fontWeight: 850 }}>
+                      Since capture: {savedFieldReadout.daysAboveBase}/{savedFieldReadout.evaluatedDays} closes above saved base · {savedFieldReadout.daysInsideBand}/{savedFieldReadout.evaluatedDays} candles fully inside saved band · +{savedFieldReadout.elapsedSessions ?? 0}D
+                    </span>
+                  </>
+                ) : divergenceReadout ? (
+                  <span style={{ color: colors.muted, fontSize: 11, fontWeight: 850 }}>
+                    Actual {fmt(divergenceReadout.actualClose)} vs captured base {fmt(divergenceReadout.forecastBase)} · Δ {fmt(divergenceReadout.divergence)} ({divergenceReadout.divergencePct == null ? "N/A" : `${divergenceReadout.divergencePct.toFixed(1)}%`}) · +{divergenceReadout.elapsedSessions ?? 0}D
+                  </span>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -2604,7 +2733,7 @@ export default function ForecastChartPanel({
           <span>
             Saved field overlay:{" "}
             <strong style={{ color: divergenceReadout?.tone ?? colors.text }}>
-              {divergenceReadout?.label ??
+              {savedFieldReadout?.label ?? divergenceReadout?.label ??
                 (capturedForecastStatus || "No forecast receipt")}
             </strong>
           </span>

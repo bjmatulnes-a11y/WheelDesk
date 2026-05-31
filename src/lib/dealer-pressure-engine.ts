@@ -32,6 +32,7 @@ export type DealerPressureSummary = {
   nearSpotBalanceScore: number;
   railProximityScore: number;
   wallMigrationScore: number;
+  wallMigrationIntensityScore: number;
   confidenceScore: number;
 
   callPressure: number;
@@ -131,19 +132,46 @@ function getSurfaceStructure(surface: OptionSurfaceSnapshot | null, edge?: Trade
   };
 }
 
+function rowSide(row: any): "call" | "put" | null {
+  const side = String(row?.side ?? row?.optionType ?? row?.type ?? row?.right ?? "").toLowerCase();
+  if (side === "call" || side === "c") return "call";
+  if (side === "put" || side === "p") return "put";
+  return null;
+}
+
+function getSideOpenInterest(row: any): number | null {
+  return safeNumber(row?.openInterest ?? row?.open_interest ?? row?.oi ?? row?.open_interest_contracts ?? row?.openInterestContracts);
+}
+
 function getCallOi(row: any): number {
+  const side = rowSide(row);
+  if (side === "call") return getSideOpenInterest(row) ?? 0;
+  if (side === "put") return 0;
   return safeNumber(row?.callOi ?? row?.callOpenInterest ?? row?.callsOpenInterest ?? row?.openInterestCall) ?? 0;
 }
 
 function getPutOi(row: any): number {
+  const side = rowSide(row);
+  if (side === "put") return getSideOpenInterest(row) ?? 0;
+  if (side === "call") return 0;
   return safeNumber(row?.putOi ?? row?.putOpenInterest ?? row?.putsOpenInterest ?? row?.openInterestPut) ?? 0;
 }
 
+function getSideVolume(row: any): number | null {
+  return safeNumber(row?.volume ?? row?.vol ?? row?.optionVolume);
+}
+
 function getCallVolume(row: any): number {
+  const side = rowSide(row);
+  if (side === "call") return getSideVolume(row) ?? 0;
+  if (side === "put") return 0;
   return safeNumber(row?.callVolume ?? row?.callVol ?? row?.callsVolume ?? row?.volumeCall) ?? 0;
 }
 
 function getPutVolume(row: any): number {
+  const side = rowSide(row);
+  if (side === "put") return getSideVolume(row) ?? 0;
+  if (side === "call") return 0;
   return safeNumber(row?.putVolume ?? row?.putVol ?? row?.putsVolume ?? row?.volumePut) ?? 0;
 }
 
@@ -248,6 +276,12 @@ function scoreWallMigration(migration?: WallMigrationSummary | null): number {
   return clampScore(migration.migrationScore ?? 50);
 }
 
+function scoreWallMigrationIntensity(migration?: WallMigrationSummary | null): number {
+  if (!migration) return 25;
+  if (!migration.hasPrior) return 25;
+  return clampScore((migration as any).migrationIntensityScore ?? Math.abs((migration.migrationScore ?? 50) - 50) * 1.6);
+}
+
 function inferHedgeFlowBias(args: {
   edge?: TraderEdgeSummary | null;
   migration?: WallMigrationSummary | null;
@@ -325,7 +359,7 @@ function describeRegime(args: {
   if (args.regime === "Stale / low confidence") {
     return "Dealer-pressure read is low confidence. Refresh the OI surface/candles before treating this as a trade input.";
   }
-  return `Dealer-pressure read is mixed. Use support, resistance, and the magnet as reference rails, but require price confirmation.`;
+  return `Dealer-pressure proxy is mixed. Use support, resistance, and the magnet as reference rails, but require price confirmation.`;
 }
 
 function buildTradeTranslation(args: {
@@ -412,6 +446,7 @@ export function buildDealerPressureSummary(args: {
   const nearSpotBalanceScore = scoreBalance(pressureRows, spot);
   const railProximityScore = scoreRailProximity(args.edge, spot, levels.support, levels.resistance);
   const wallMigrationScore = scoreWallMigration(args.wallMigration);
+  const wallMigrationIntensityScore = scoreWallMigrationIntensity(args.wallMigration);
   const confidenceScore = inferConfidence(args.edge, args.wallMigration, pressureRows);
 
   const rangeWidthPct = args.edge?.rangeWidthPct ?? (spot && levels.support != null && levels.resistance != null ? ((levels.resistance - levels.support) / spot) * 100 : null);
@@ -433,7 +468,7 @@ export function buildDealerPressureSummary(args: {
     compressionScore * 0.16 +
     thrustScore * 0.14 +
     atrScore * 0.12 +
-    wallMigrationScore * 0.12
+    wallMigrationIntensityScore * 0.12
   );
 
   const hedgeFlowBias = inferHedgeFlowBias({ edge: args.edge, migration: args.wallMigration, callShare, putShare });
@@ -456,6 +491,8 @@ export function buildDealerPressureSummary(args: {
   const dataQualityNotes: string[] = [];
   if (!pressureRows.length) dataQualityNotes.push("No usable option rows for pressure estimate.");
   if (!args.wallMigration?.hasPrior) dataQualityNotes.push("No prior surface comparison; wall migration input is limited.");
+  if ((args.wallMigration as any)?.priorQualityScore != null && (args.wallMigration as any).priorQualityScore < 70) dataQualityNotes.push("Prior surface quality is weak; dealer snap-risk migration input is muted.");
+  dataQualityNotes.push("Dealer Pressure is an OI/gamma pressure proxy, not confirmed dealer book positioning.");
   if (confidenceScore < 45) dataQualityNotes.push("Dealer-pressure confidence is low; use as context only.");
 
   return {
@@ -471,6 +508,7 @@ export function buildDealerPressureSummary(args: {
     nearSpotBalanceScore,
     railProximityScore,
     wallMigrationScore,
+    wallMigrationIntensityScore,
     confidenceScore,
     callPressure,
     putPressure,

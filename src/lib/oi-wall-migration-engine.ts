@@ -1,14 +1,14 @@
-import {
-  type OptionSurfaceSnapshot
-} from "./wheeldesk-storage";
-import {
-  getSnapshotSpot,
-  getSurfaceStructure,
-  type TraderBias
-} from "./trader-edge-engine";
+import { type OptionSurfaceSnapshot } from "./wheeldesk-storage";
+import { getSnapshotSpot, getSurfaceStructure } from "./trader-edge-engine";
 
 export type WallMigrationDirection = "up" | "down" | "flat" | "new" | "missing";
-export type WallMigrationBias = "bullish" | "bearish" | "neutral" | "compression" | "expansion" | "unknown";
+export type WallMigrationBias =
+  | "bullish"
+  | "bearish"
+  | "neutral"
+  | "compression"
+  | "expansion"
+  | "unknown";
 
 export type WallMigrationSummary = {
   ticker: string;
@@ -44,15 +44,28 @@ export type WallMigrationSummary = {
   spotChangePct: number | null;
 
   migrationBias: WallMigrationBias;
+  /** Directional score: higher is more bullish, lower is more bearish. */
   migrationScore: number;
+  /** Intensity score: wall movement magnitude regardless of bullish/bearish direction. */
+  migrationIntensityScore: number;
+  /** Data-quality score for the selected prior surface used in this comparison. */
+  priorQualityScore: number | null;
   label: string;
   interpretation: string;
   playbookNotes: string[];
   dataQualityNotes: string[];
 };
 
+type OiKey = `${string}|${string}|${"call" | "put"}`;
+
+type OiMapEntry = {
+  oi: number;
+  volume: number;
+};
+
 function safeNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
 }
 
 function dateKey(value: unknown): string {
@@ -64,7 +77,14 @@ function clampScore(value: number): number {
 }
 
 function pctChange(current: number | null, prior: number | null): number | null {
-  if (current == null || prior == null || !Number.isFinite(current) || !Number.isFinite(prior) || prior === 0) return null;
+  if (
+    current == null ||
+    prior == null ||
+    !Number.isFinite(current) ||
+    !Number.isFinite(prior) ||
+    prior === 0
+  )
+    return null;
   return ((current - prior) / prior) * 100;
 }
 
@@ -89,6 +109,132 @@ function rangeDirection(current: number | null, prior: number | null): "widening
   const change = current - prior;
   if (Math.abs(change) <= 1) return "flat";
   return change > 0 ? "widening" : "tightening";
+}
+
+function expirationOf(chain: any): string {
+  return String(chain?.expiration ?? chain?.expirationDate ?? chain?.expiry ?? "").slice(0, 10);
+}
+
+function strikeKey(strike: unknown): string | null {
+  const n = Number(strike);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n.toFixed(2);
+}
+
+function sideOf(row: any): "call" | "put" | null {
+  const side = String(row?.side ?? row?.optionType ?? row?.type ?? row?.right ?? "").toLowerCase();
+  if (side === "call" || side === "c") return "call";
+  if (side === "put" || side === "p") return "put";
+  return null;
+}
+
+function sideRowOi(row: any): number | null {
+  return safeNumber(row?.openInterest ?? row?.open_interest ?? row?.oi ?? row?.open_interest_contracts ?? row?.openInterestContracts);
+}
+
+function sideRowVolume(row: any): number | null {
+  return safeNumber(row?.volume ?? row?.vol ?? row?.optionVolume);
+}
+
+function addOi(map: Map<OiKey, OiMapEntry>, key: OiKey, oi: number, volume = 0): void {
+  const current = map.get(key) ?? { oi: 0, volume: 0 };
+  current.oi += Math.max(0, oi);
+  current.volume += Math.max(0, volume);
+  map.set(key, current);
+}
+
+function buildOiMap(surface: OptionSurfaceSnapshot | null): Map<OiKey, OiMapEntry> {
+  const map = new Map<OiKey, OiMapEntry>();
+  if (!surface?.chains?.length) return map;
+
+  for (const chain of surface.chains as any[]) {
+    const expiration = expirationOf(chain);
+    if (!expiration) continue;
+
+    for (const row of chain.rows ?? []) {
+      const strike = strikeKey(row?.strike);
+      if (!strike) continue;
+
+      const explicitSide = sideOf(row);
+      if (explicitSide) {
+        const oi = sideRowOi(row);
+        if (oi != null) {
+          addOi(map, `${expiration}|${strike}|${explicitSide}`, oi, sideRowVolume(row) ?? 0);
+          continue;
+        }
+      }
+
+      const callOi = safeNumber(row?.callOi ?? row?.callOpenInterest ?? row?.callsOpenInterest ?? row?.openInterestCall);
+      const putOi = safeNumber(row?.putOi ?? row?.putOpenInterest ?? row?.putsOpenInterest ?? row?.openInterestPut);
+      const callVolume = safeNumber(row?.callVolume ?? row?.callVol ?? row?.callsVolume ?? row?.volumeCall) ?? 0;
+      const putVolume = safeNumber(row?.putVolume ?? row?.putVol ?? row?.putsVolume ?? row?.volumePut) ?? 0;
+
+      if (callOi != null) addOi(map, `${expiration}|${strike}|call`, callOi, callVolume);
+      if (putOi != null) addOi(map, `${expiration}|${strike}|put`, putOi, putVolume);
+    }
+  }
+
+  return map;
+}
+
+function totalOi(map: Map<OiKey, OiMapEntry>): number {
+  let total = 0;
+  for (const row of map.values()) total += row.oi;
+  return total;
+}
+
+function priorSurfaceQuality(current: OptionSurfaceSnapshot | null, prior: OptionSurfaceSnapshot | null): {
+  score: number;
+  notes: string[];
+  suspectPriorZeroRows: number;
+  suspectPriorZeroOiShare: number;
+} {
+  const notes: string[] = [];
+  if (!prior) {
+    return { score: 0, notes: ["No prior surface."], suspectPriorZeroRows: 0, suspectPriorZeroOiShare: 0 };
+  }
+
+  const currentMap = buildOiMap(current);
+  const priorMap = buildOiMap(prior);
+  const currentTotal = totalOi(currentMap);
+  const priorTotal = totalOi(priorMap);
+  const minLargeOi = Math.max(750, currentTotal * 0.0025);
+
+  let matchedRows = 0;
+  let suspectPriorZeroRows = 0;
+  let suspectPriorZeroOi = 0;
+
+  for (const [key, currentRow] of currentMap.entries()) {
+    const priorRow = priorMap.get(key);
+    if (!priorRow) continue;
+    matchedRows += 1;
+    if (priorRow.oi === 0 && currentRow.oi >= minLargeOi) {
+      suspectPriorZeroRows += 1;
+      suspectPriorZeroOi += currentRow.oi;
+    }
+  }
+
+  const suspectPriorZeroOiShare = currentTotal > 0 ? suspectPriorZeroOi / currentTotal : 0;
+  let score = 100;
+  if ((prior.chains?.length ?? 0) === 0) score -= 45;
+  if (priorMap.size < 20) score -= 25;
+  if (priorTotal <= 0) score -= 45;
+  if (matchedRows < 15) score -= 20;
+  if (suspectPriorZeroRows > 0) score -= Math.min(45, suspectPriorZeroRows * 8 + suspectPriorZeroOiShare * 160);
+
+  if (suspectPriorZeroRows > 0) {
+    notes.push(`${suspectPriorZeroRows} matched OI rows were suspicious prior-zero jumps; prior may contain corrupted zero OI.`);
+  }
+  if (matchedRows < 15) notes.push(`Only ${matchedRows} matched OI rows between current/prior surfaces.`);
+  if (priorTotal <= 0) notes.push("Prior surface total OI is zero or unavailable.");
+  if (!notes.length) notes.push("Prior surface passed OI completeness checks.");
+
+  return {
+    score: clampScore(score),
+    notes,
+    suspectPriorZeroRows,
+    suspectPriorZeroOiShare
+  };
 }
 
 function summarizeBias(args: {
@@ -163,18 +309,46 @@ function summarizeBias(args: {
   };
 }
 
+function migrationIntensityScore(args: {
+  supportChangePct: number | null;
+  resistanceChangePct: number | null;
+  magnetChangePct: number | null;
+  rangeChangePct: number | null;
+  hasPrior: boolean;
+}): number {
+  if (!args.hasPrior) return 0;
+  const moves = [args.supportChangePct, args.resistanceChangePct, args.magnetChangePct]
+    .filter((value): value is number => value != null && Number.isFinite(value))
+    .map((value) => Math.abs(value));
+  const strongestLevelMove = moves.length ? Math.max(...moves) : 0;
+  const rangeMove = Math.abs(args.rangeChangePct ?? 0);
+  return clampScore(strongestLevelMove * 14 + rangeMove * 7);
+}
+
 export function findPriorSurfaceForTicker(
   surfaces: OptionSurfaceSnapshot[],
   ticker: string,
-  currentDate: string
+  currentDate: string,
+  currentSurface?: OptionSurfaceSnapshot | null
 ): OptionSurfaceSnapshot | null {
   const upper = String(ticker ?? "").toUpperCase();
   const currentKey = dateKey(currentDate);
 
-  return surfaces
+  const candidates = surfaces
     .filter((surface) => String(surface.ticker ?? "").toUpperCase() === upper)
     .filter((surface) => dateKey(surface.snapshotDate) < currentKey)
-    .sort((a, b) => dateKey(b.snapshotDate).localeCompare(dateKey(a.snapshotDate)))[0] ?? null;
+    .sort((a, b) => dateKey(b.snapshotDate).localeCompare(dateKey(a.snapshotDate)));
+
+  if (!candidates.length) return null;
+  if (!currentSurface) return candidates[0] ?? null;
+
+  const scored = candidates.map((surface) => ({
+    surface,
+    quality: priorSurfaceQuality(currentSurface, surface)
+  }));
+
+  const clean = scored.find((item) => item.quality.score >= 70);
+  return (clean ?? scored[0])?.surface ?? null;
 }
 
 export function buildWallMigrationSummary(args: {
@@ -206,6 +380,10 @@ export function buildWallMigrationSummary(args: {
   const magnetDirection = priorSurface ? directionFromChange(magnetChange, tolerance) : "new";
   const spotChangePct = pctChange(currentSpot, priorSpot);
 
+  const supportChangePct = pctChange(currentLevels.support, priorLevels.support);
+  const resistanceChangePct = pctChange(currentLevels.resistance, priorLevels.resistance);
+  const magnetChangePct = pctChange(currentLevels.magnet, priorLevels.magnet);
+
   const bias = summarizeBias({
     supportDirection,
     resistanceDirection,
@@ -214,8 +392,18 @@ export function buildWallMigrationSummary(args: {
     spotChangePct
   });
 
+  const quality = priorSurface ? priorSurfaceQuality(currentSurface, priorSurface) : null;
+  const intensity = migrationIntensityScore({
+    supportChangePct,
+    resistanceChangePct,
+    magnetChangePct,
+    rangeChangePct: rangeDelta,
+    hasPrior: Boolean(priorSurface)
+  });
+
   const dataQualityNotes: string[] = [];
   if (!priorSurface) dataQualityNotes.push("No prior saved surface for wall migration comparison.");
+  if (quality) dataQualityNotes.push(...quality.notes);
   if (currentLevels.support == null) dataQualityNotes.push("Current support unavailable.");
   if (currentLevels.resistance == null) dataQualityNotes.push("Current resistance unavailable.");
   if (currentLevels.magnet == null) dataQualityNotes.push("Current magnet unavailable.");
@@ -232,9 +420,10 @@ export function buildWallMigrationSummary(args: {
     if (supportDirection === "up") playbookNotes.push("Put wall moved higher: buyers may be accepting higher support; CSPs can be considered only below snapped support zones.");
     if (supportDirection === "down") playbookNotes.push("Put wall moved lower: do not chase CSP premium; move puts lower or wait for support confirmation.");
     if (magnetDirection === "up") playbookNotes.push("OI magnet shifted higher: upside mean-reversion pressure improved.");
-    if (magnetDirection === "down") playbookNotes.push("OI magnet shifted lower: upside pull weakened; watch for failed rallies.");
-    if (rangeDir === "tightening") playbookNotes.push("Active OI range tightened: expect chop/pin until a wall breaks.");
-    if (rangeDir === "widening") playbookNotes.push("Active OI range widened: use wider strikes and do not anchor to stale tight walls.");
+    if (magnetDirection === "down") playbookNotes.push("OI magnet shifted lower: downside magnet risk increased.");
+    if (rangeDir === "tightening") playbookNotes.push("OI range tightened: expect chop/pin until price accepts outside the compressed zone.");
+    if (rangeDir === "widening") playbookNotes.push("OI range widened: use wider strikes and do not anchor to stale tight walls.");
+    if (intensity >= 65) playbookNotes.push("Wall movement intensity is high; use migration direction as context but expect faster snap risk near rails.");
   }
 
   if (!playbookNotes.length) playbookNotes.push("No dominant wall migration edge; defer to current OI structure and price confirmation.");
@@ -247,17 +436,17 @@ export function buildWallMigrationSummary(args: {
     currentSupport: currentLevels.support,
     priorSupport: priorLevels.support,
     supportChange,
-    supportChangePct: pctChange(currentLevels.support, priorLevels.support),
+    supportChangePct,
     supportDirection,
     currentResistance: currentLevels.resistance,
     priorResistance: priorLevels.resistance,
     resistanceChange,
-    resistanceChangePct: pctChange(currentLevels.resistance, priorLevels.resistance),
+    resistanceChangePct,
     resistanceDirection,
     currentMagnet: currentLevels.magnet,
     priorMagnet: priorLevels.magnet,
     magnetChange,
-    magnetChangePct: pctChange(currentLevels.magnet, priorLevels.magnet),
+    magnetChangePct,
     magnetDirection,
     currentRangeWidthPct,
     priorRangeWidthPct,
@@ -268,6 +457,8 @@ export function buildWallMigrationSummary(args: {
     spotChangePct,
     migrationBias: bias.bias,
     migrationScore: bias.score,
+    migrationIntensityScore: intensity,
+    priorQualityScore: quality?.score ?? null,
     label: bias.label,
     interpretation: bias.interpretation,
     playbookNotes,

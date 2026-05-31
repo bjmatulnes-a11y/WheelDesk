@@ -1024,6 +1024,7 @@ export default function ControlCenterPage() {
       surfaceSnapshots,
       fullSurfaceForAnalysis.ticker,
       fullSurfaceForAnalysis.snapshotDate,
+      fullSurfaceForAnalysis,
     );
   }, [fullSurfaceForAnalysis, surfaceSnapshots]);
 
