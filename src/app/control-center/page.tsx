@@ -135,22 +135,68 @@ function expirationOf(chain: any): string {
   );
 }
 
+function readFiniteNumber(...values: unknown[]): number | null {
+  for (const value of values) {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+
+  return null;
+}
+
 function rowOpenInterest(row: any): number {
-  const candidates = [
+  // Side-row surfaces store one option side per row:
+  //   { side: "call", openInterest }
+  // Wide-row surfaces store both sides on one strike row:
+  //   { callOi, putOi }
+  // Dominance must count both shapes or the selected-chain score falls to N/A/0
+  // after Supabase rows are pivoted back into wide rows.
+  const explicitOi = readFiniteNumber(
     row?.openInterest,
     row?.open_interest,
     row?.oi,
     row?.raw?.openInterest,
     row?.raw?.open_interest,
     row?.raw?.oi,
-  ];
+  );
 
-  for (const candidate of candidates) {
-    const n = Number(candidate);
-    if (Number.isFinite(n)) return n;
-  }
+  if (explicitOi != null) return explicitOi;
 
-  return 0;
+  const callOi = readFiniteNumber(
+    row?.callOi,
+    row?.callOI,
+    row?.call_oi,
+    row?.callOpenInterest,
+    row?.call_open_interest,
+    row?.call?.openInterest,
+    row?.call?.open_interest,
+    row?.raw?.callOi,
+    row?.raw?.callOI,
+    row?.raw?.call_oi,
+    row?.raw?.callOpenInterest,
+    row?.raw?.call_open_interest,
+    row?.raw?.call?.openInterest,
+    row?.raw?.call?.open_interest,
+  ) ?? 0;
+
+  const putOi = readFiniteNumber(
+    row?.putOi,
+    row?.putOI,
+    row?.put_oi,
+    row?.putOpenInterest,
+    row?.put_open_interest,
+    row?.put?.openInterest,
+    row?.put?.open_interest,
+    row?.raw?.putOi,
+    row?.raw?.putOI,
+    row?.raw?.put_oi,
+    row?.raw?.putOpenInterest,
+    row?.raw?.put_open_interest,
+    row?.raw?.put?.openInterest,
+    row?.raw?.put?.open_interest,
+  ) ?? 0;
+
+  return callOi + putOi;
 }
 
 function totalChainOi(chain: any): number {

@@ -119,20 +119,58 @@ function expirationOf(chain: any): string {
   );
 }
 
+function readNumeric(...values: any[]): number | null {
+  for (const value of values) {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
 function rowOpenInterest(row: any): number {
-  const candidates = [
+  // Preserve existing side-row support:
+  // { side: "call", openInterest } / { side: "put", open_interest }
+  const sideRowOi = readNumeric(
     row?.openInterest,
     row?.open_interest,
     row?.oi,
     row?.raw?.openInterest,
     row?.raw?.open_interest,
     row?.raw?.oi,
-  ];
-  for (const candidate of candidates) {
-    const n = Number(candidate);
-    if (Number.isFinite(n)) return n;
-  }
-  return 0;
+  );
+  if (sideRowOi != null) return sideRowOi;
+
+  // Add wide-row support:
+  // { strike, callOi, putOi } reconstructed from Supabase.
+  const callOi =
+    readNumeric(
+      row?.callOi,
+      row?.call_oi,
+      row?.callOpenInterest,
+      row?.call_open_interest,
+      row?.callsOpenInterest,
+      row?.calls_open_interest,
+      row?.raw?.callOi,
+      row?.raw?.call_oi,
+      row?.raw?.callOpenInterest,
+      row?.raw?.call_open_interest,
+    ) ?? 0;
+
+  const putOi =
+    readNumeric(
+      row?.putOi,
+      row?.put_oi,
+      row?.putOpenInterest,
+      row?.put_open_interest,
+      row?.putsOpenInterest,
+      row?.puts_open_interest,
+      row?.raw?.putOi,
+      row?.raw?.put_oi,
+      row?.raw?.putOpenInterest,
+      row?.raw?.put_open_interest,
+    ) ?? 0;
+
+  return callOi + putOi;
 }
 
 function totalChainOi(chain: any): number {
