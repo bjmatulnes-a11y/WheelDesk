@@ -14,6 +14,7 @@ import ScenarioPlaybookCard from "../../components/control-center/ScenarioPlaybo
 import ModelReadoutCard from "../../components/control-center/ModelReadoutCard";
 import IVSurfaceCard from "../../components/control-center/IVSurfaceCard";
 import PredictiveMatrixPanel from "../../components/control-center/PredictiveMatrixPanel";
+import PredictabilitySurfacePanel from "../../components/control-center/PredictabilitySurfacePanel";
 import OIFieldHorizonMatrix from "../../components/control-center/OIFieldHorizonMatrix";
 import OIFieldCaptureCard from "../../components/control-center/OIFieldCaptureCard";
 import ControlMatrixCard from "../../components/control-center/ControlMatrixCard";
@@ -27,6 +28,7 @@ import { buildOIImpliedPath } from "../../lib/oi-implied-path-engine";
 import { buildOIFieldForecast } from "../../lib/oi-field-engine-v2";
 import { buildOIProjectionReport } from "../../lib/oi-projection-engine";
 import { buildPredictiveMatrix } from "../../lib/predictive-matrix-engine";
+import { buildPredictabilitySurface } from "../../lib/predictability-surface-engine";
 import { buildIVSurfaceSummary } from "../../lib/iv-surface-engine";
 import { listPortfolioProfiles } from "../../lib/portfolio-store";
 import { type PortfolioProfile } from "../../lib/portfolio-types";
@@ -729,6 +731,8 @@ export default function ControlCenterPage() {
   const [status, setStatus] = useState("");
   const [chartExpanded, setChartExpanded] = useState(false);
   const [overlays, setOverlays] = useState<OverlayFlags>(defaultOverlayFlags);
+  const [predictabilityMaxDte, setPredictabilityMaxDte] = useState(30);
+  const [predictabilityFullSurface, setPredictabilityFullSurface] = useState(false);
 
   useEffect(() => {
     setMounted(true);
@@ -1006,6 +1010,37 @@ export default function ControlCenterPage() {
     () => toChainSnapshot(selectedChainSurface),
     [selectedChainSurface],
   );
+
+  const predictabilityAvailableMaxDte = useMemo(() => {
+    if (!fullSurfaceForAnalysis?.chains?.length || !fullSurfaceForAnalysis.snapshotDate)
+      return 30;
+
+    const dtes = fullSurfaceForAnalysis.chains
+      .map((chain: any) =>
+        dteFromExpiration(expirationOf(chain), fullSurfaceForAnalysis.snapshotDate),
+      )
+      .filter((dte): dte is number => dte != null && Number.isFinite(dte) && dte > 0);
+
+    return Math.max(30, ...(dtes.length ? dtes : [30]));
+  }, [fullSurfaceForAnalysis]);
+
+  const effectivePredictabilityMaxDte = predictabilityFullSurface
+    ? null
+    : Math.max(7, Math.min(predictabilityMaxDte, predictabilityAvailableMaxDte));
+
+  const chainPredictabilitySurface = useMemo(() => {
+    return buildPredictabilitySurface({
+      snapshot: fullSurfaceSnapshot,
+      currentPrice: analysisPrice,
+      priorSnapshot: toChainSnapshot(priorFullSurface),
+      maxDte: effectivePredictabilityMaxDte,
+    });
+  }, [
+    fullSurfaceSnapshot,
+    analysisPrice,
+    priorFullSurface,
+    effectivePredictabilityMaxDte,
+  ]);
 
   const surfaceTraderEdge = useMemo(() => {
     if (!fullSurfaceForAnalysis) return null;
@@ -1731,6 +1766,15 @@ export default function ControlCenterPage() {
                         <ChartRoomButton href={chartRoomUrl} />
                       </div>
                     }
+                  />
+
+                  <PredictabilitySurfacePanel
+                    surface={chainPredictabilitySurface}
+                    maxDte={predictabilityMaxDte}
+                    availableMaxDte={predictabilityAvailableMaxDte}
+                    fullSurface={predictabilityFullSurface}
+                    onMaxDteChange={setPredictabilityMaxDte}
+                    onFullSurfaceChange={setPredictabilityFullSurface}
                   />
 
                   <div
