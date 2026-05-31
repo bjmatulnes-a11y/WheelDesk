@@ -14,6 +14,7 @@ import ScenarioPlaybookCard from "../../components/control-center/ScenarioPlaybo
 import ModelReadoutCard from "../../components/control-center/ModelReadoutCard";
 import IVSurfaceCard from "../../components/control-center/IVSurfaceCard";
 import PredictiveMatrixPanel from "../../components/control-center/PredictiveMatrixPanel";
+import CalibratedConfidenceCard from "../../components/control-center/CalibratedConfidenceCard";
 import PredictabilitySurfacePanel from "../../components/control-center/PredictabilitySurfacePanel";
 import OIWhatChangedCard from "../../components/control-center/OIWhatChangedCard";
 import OIFieldHorizonMatrix from "../../components/control-center/OIFieldHorizonMatrix";
@@ -29,6 +30,12 @@ import { buildOIImpliedPath } from "../../lib/oi-implied-path-engine";
 import { buildOIFieldForecast } from "../../lib/oi-field-engine-v2";
 import { buildOIProjectionReport } from "../../lib/oi-projection-engine";
 import { buildPredictiveMatrix } from "../../lib/predictive-matrix-engine";
+import { buildForecastCalibration } from "../../lib/forecast-calibration-engine";
+import {
+  buildEdgeValidationRecords,
+  summarizeEdgeValidation,
+  type EdgeValidationHorizon,
+} from "../../lib/edge-validation-engine";
 import { buildPredictabilitySurface } from "../../lib/predictability-surface-engine";
 import { buildOIChangeRead } from "../../lib/oi-change-read-engine";
 import { buildIVSurfaceSummary } from "../../lib/iv-surface-engine";
@@ -1243,6 +1250,38 @@ export default function ControlCenterPage() {
     });
   }, [chainOIPath, chainDealerPressure, chainTraderEdge, chainWallMigration]);
 
+  const forecastCalibration = useMemo(() => {
+    if (!predictiveMatrix) return null;
+
+    // Reuse the SAME validation builders the validation dashboard uses, against
+    // the surfaces already loaded for this ticker. No new validation logic here.
+    const horizons: EdgeValidationHorizon[] = [1, 3, 5, 10];
+    const target = Math.max(1, Math.round(forecastHorizonDays));
+    const horizon = horizons.reduce((best, h) =>
+      Math.abs(h - target) < Math.abs(best - target) ? h : best,
+    );
+
+    let validationSummary = null;
+    try {
+      const records = buildEdgeValidationRecords({
+        ticker,
+        surfaces: surfaceSnapshots,
+        candles,
+        horizons,
+      });
+      validationSummary = summarizeEdgeValidation(records, horizon);
+    } catch {
+      validationSummary = null;
+    }
+
+    return buildForecastCalibration({
+      matrix: predictiveMatrix,
+      validationSummary,
+      horizon,
+      requestedHorizon: target,
+    });
+  }, [predictiveMatrix, surfaceSnapshots, candles, ticker, forecastHorizonDays]);
+
   const oiFieldForecast = useMemo(() => {
     return buildOIFieldForecast({
       path: chainOIPath,
@@ -1806,6 +1845,7 @@ export default function ControlCenterPage() {
                     }}
                   >
                     <PredictiveMatrixPanel matrix={predictiveMatrix} />
+                    <CalibratedConfidenceCard calibration={forecastCalibration} />
                     <ControlMatrixCard control={adaptiveControl} />
                     <OIFieldHorizonMatrix forecast={oiFieldForecast} />
                     <OIFieldCaptureCard
