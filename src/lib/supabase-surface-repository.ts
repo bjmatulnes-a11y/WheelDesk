@@ -557,6 +557,12 @@ const selectedDte = firstFiniteNumber(
   };
 }
 
+function numOrUndef(value: unknown): number | undefined {
+  if (value === null || value === undefined) return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 function reconstructChains(rows: AnyRecord[]): AnyRecord[] {
   const chainMap = new Map<string, AnyRecord>();
 
@@ -572,69 +578,112 @@ function reconstructChains(rows: AnyRecord[]): AnyRecord[] {
         rows: [],
         calls: [],
         puts: [],
+        // strike -> wide row, used to pivot the long (per-side) DB rows back
+        // into one row per strike carrying both callOi and putOi.
+        _byStrike: new Map<number, AnyRecord>(),
       });
     }
 
     const chain = chainMap.get(key)!;
+    const side = row.side === "call" || row.side === "put" ? row.side : null;
+    const strike = row.strike === null ? undefined : Number(row.strike);
 
-    const reconstructedRow = {
+    // Per-side reconstructed row (kept for chain.calls / chain.puts consumers).
+    const sideRow = {
       ...(row.raw ?? {}),
       id: row.id,
       expiration: row.expiration,
       dte: row.dte,
-      strike: row.strike === null ? undefined : Number(row.strike),
+      strike,
       side: row.side,
-      openInterest:
-        row.open_interest === null || row.open_interest === undefined
-          ? undefined
-          : Number(row.open_interest),
-      volume:
-        row.volume === null || row.volume === undefined
-          ? undefined
-          : Number(row.volume),
-      iv:
-        row.iv === null || row.iv === undefined
-          ? undefined
-          : Number(row.iv),
-      delta:
-        row.delta === null || row.delta === undefined
-          ? undefined
-          : Number(row.delta),
-      gamma:
-        row.gamma === null || row.gamma === undefined
-          ? undefined
-          : Number(row.gamma),
-      theta:
-        row.theta === null || row.theta === undefined
-          ? undefined
-          : Number(row.theta),
-      vega:
-        row.vega === null || row.vega === undefined
-          ? undefined
-          : Number(row.vega),
-      bid:
-        row.bid === null || row.bid === undefined
-          ? undefined
-          : Number(row.bid),
-      ask:
-        row.ask === null || row.ask === undefined
-          ? undefined
-          : Number(row.ask),
-      last:
-        row.last === null || row.last === undefined
-          ? undefined
-          : Number(row.last),
+      openInterest: numOrUndef(row.open_interest),
+      volume: numOrUndef(row.volume),
+      iv: numOrUndef(row.iv),
+      delta: numOrUndef(row.delta),
+      gamma: numOrUndef(row.gamma),
+      theta: numOrUndef(row.theta),
+      vega: numOrUndef(row.vega),
+      bid: numOrUndef(row.bid),
+      ask: numOrUndef(row.ask),
+      last: numOrUndef(row.last),
     };
 
-    chain.rows.push(reconstructedRow);
+    if (row.side === "call") chain.calls.push(sideRow);
+    if (row.side === "put") chain.puts.push(sideRow);
 
-    if (row.side === "call") chain.calls.push(reconstructedRow);
-    if (row.side === "put") chain.puts.push(reconstructedRow);
+    // Pivot into a wide row keyed by strike. Every downstream engine
+    // (ΔOI, OI intelligence, projection, predictability) expects one row per
+    // strike with explicit callOi / putOi fields — NOT a generic openInterest
+    // plus a side discriminator. Without this pivot, callOi/putOi were always
+    // undefined on DB-reconstructed surfaces, so prior-day OI read as 0 and a
+    // flat strike produced a phantom ΔOI equal to its full current OI.
+    if (side === null || strike === undefined || !Number.isFinite(strike)) {
+      // No usable side/strike: fall back to emitting the raw side row so we
+      // never silently drop data.
+      chain.rows.push(sideRow);
+      continue;
+    }
+
+    const byStrike: Map<number, AnyRecord> = chain._byStrike;
+    let wide = byStrike.get(strike);
+    if (!wide) {
+      wide = {
+        expiration: row.expiration,
+        dte: row.dte,
+        strike,
+        callOi: undefined as number | undefined,
+        putOi: undefined as number | undefined,
+        callVolume: undefined as number | undefined,
+        putVolume: undefined as number | undefined,
+        callIv: undefined as number | undefined,
+        putIv: undefined as number | undefined,
+        callDelta: undefined as number | undefined,
+        putDelta: undefined as number | undefined,
+        callGamma: undefined as number | undefined,
+        putGamma: undefined as number | undefined,
+      };
+      byStrike.set(strike, wide);
+      chain.rows.push(wide);
+    }
+
+    const oi = numOrUndef(row.open_interest);
+    const vol = numOrUndef(row.volume);
+    const iv = numOrUndef(row.iv);
+    const delta = numOrUndef(row.delta);
+    const gamma = numOrUndef(row.gamma);
+
+    if (side === "call") {
+      wide.callOi = oi;
+      wide.callVolume = vol;
+      wide.callIv = iv;
+      wide.callDelta = delta;
+      wide.callGamma = gamma;
+    } else {
+      wide.putOi = oi;
+      wide.putVolume = vol;
+      wide.putIv = iv;
+      wide.putDelta = delta;
+      wide.putGamma = gamma;
+    }
   }
 
-  return Array.from(chainMap.values()).sort((a, b) =>
-    String(a.expiration).localeCompare(String(b.expiration))
-  );
+  return Array.from(chainMap.values())
+    .map((chain) => {
+      // Default missing sides to 0 ONLY for strikes that were genuinely present
+      // in the snapshot (i.e. one side reported). A strike with no row at all
+      // never appears here, so this does not fabricate strikes.
+      for (const row of chain.rows) {
+        if ("callOi" in row || "putOi" in row) {
+          if (row.callOi === undefined && row.putOi !== undefined) row.callOi = 0;
+          if (row.putOi === undefined && row.callOi !== undefined) row.putOi = 0;
+        }
+      }
+      delete chain._byStrike;
+      return chain;
+    })
+    .sort((a, b) =>
+      String(a.expiration).localeCompare(String(b.expiration))
+    );
 }
 
 function mapParentAndRowsToSnapshot(

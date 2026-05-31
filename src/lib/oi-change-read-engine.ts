@@ -61,6 +61,8 @@ type RowRecord = {
   strike: number;
   callOi: number;
   putOi: number;
+  callReadable: boolean;
+  putReadable: boolean;
 };
 
 function normalizeTicker(value: unknown): string {
@@ -123,6 +125,46 @@ function rowPutOi(row: any): number {
     row?.raw?.putOi,
     row?.raw?.putOI,
   );
+}
+
+// Returns the first defined OI field as a number, or null if NO recognized
+// field is present. This is the difference between "OI is genuinely 0" and
+// "we could not read OI for this row" — the latter must never become a delta.
+function readableOi(row: any, candidates: unknown[]): number | null {
+  for (const value of candidates) {
+    if (value === null || value === undefined) continue;
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function readableCallOi(row: any): number | null {
+  return readableOi(row, [
+    row?.callOi,
+    row?.callOI,
+    row?.call_oi,
+    row?.callOpenInterest,
+    row?.call_open_interest,
+    row?.call?.openInterest,
+    row?.call?.oi,
+    row?.raw?.callOi,
+    row?.raw?.callOI,
+  ]);
+}
+
+function readablePutOi(row: any): number | null {
+  return readableOi(row, [
+    row?.putOi,
+    row?.putOI,
+    row?.put_oi,
+    row?.putOpenInterest,
+    row?.put_open_interest,
+    row?.put?.openInterest,
+    row?.put?.oi,
+    row?.raw?.putOi,
+    row?.raw?.putOI,
+  ]);
 }
 
 function getChains(surface: OptionSurfaceSnapshot | null, maxDte: number): SurfaceChain[] {
@@ -198,11 +240,15 @@ function mapRows(chain: SurfaceChain): Map<number, RowRecord> {
   for (const row of chain.rows) {
     const strike = rowStrike(row);
     if (!Number.isFinite(strike) || strike <= 0) continue;
+    const callR = readableCallOi(row);
+    const putR = readablePutOi(row);
     out.set(strike, {
       expiration: chain.expiration,
       strike,
-      callOi: rowCallOi(row),
-      putOi: rowPutOi(row),
+      callOi: callR ?? 0,
+      putOi: putR ?? 0,
+      callReadable: callR !== null,
+      putReadable: putR !== null,
     });
   }
   return out;
@@ -475,6 +521,7 @@ export function buildOIChangeRead(args: {
   let comparedStrikeCount = 0;
   let ignoredCurrentOnlyCount = 0;
   let ignoredPriorOnlyCount = 0;
+  let unreadableSideCount = 0;
 
   for (const currentChain of comparable.current) {
     const priorChain = comparable.priorByExpiration.get(currentChain.expiration);
@@ -504,10 +551,20 @@ export function buildOIChangeRead(args: {
       const priorCall = priorRow.callOi;
       const currentPut = currentRow.putOi;
       const priorPut = priorRow.putOi;
-      const callDelta = currentCall - priorCall;
-      const putDelta = currentPut - priorPut;
 
-      if (callDelta !== 0) {
+      // Only compute a delta when BOTH days actually reported OI for that side.
+      // If either side's OI was unreadable (missing field, not a true 0), we
+      // emit no delta — never a phantom build equal to the full current OI.
+      const callComparable =
+        currentRow.callReadable && priorRow.callReadable;
+      const putComparable = currentRow.putReadable && priorRow.putReadable;
+      const callDelta = callComparable ? currentCall - priorCall : 0;
+      const putDelta = putComparable ? currentPut - priorPut : 0;
+
+      if (!callComparable) unreadableSideCount += 1;
+      if (!putComparable) unreadableSideCount += 1;
+
+      if (callComparable && callDelta !== 0) {
         callItems.push(
           makeItem({
             side: "call",
@@ -521,7 +578,7 @@ export function buildOIChangeRead(args: {
         );
       }
 
-      if (putDelta !== 0) {
+      if (putComparable && putDelta !== 0) {
         putItems.push(
           makeItem({
             side: "put",
@@ -567,6 +624,12 @@ export function buildOIChangeRead(args: {
   if (ignoredCurrentOnlyCount > 0 || ignoredPriorOnlyCount > 0) {
     read.notes.push(
       `Ignored ${ignoredCurrentOnlyCount.toLocaleString()} current-only and ${ignoredPriorOnlyCount.toLocaleString()} prior-only strike rows so missing rows do not become false ΔOI.`,
+    );
+  }
+
+  if (unreadableSideCount > 0) {
+    read.notes.push(
+      `Skipped ${unreadableSideCount.toLocaleString()} strike-side(s) where one day's OI was unreadable (likely a snapshot format change). These were excluded rather than shown as full-size phantom builds.`,
     );
   }
 
