@@ -1168,7 +1168,7 @@ function makeFieldHistorySeries(
   rows: CapturedForecastRow[],
   candleData: CandleSeriesData[],
   side: "base" | "upper" | "lower",
-  axisMode: ForecastAxisMode,
+  horizonKey: string,
 ): ChartLinePoint[] {
   if (!rows.length) return [];
 
@@ -1178,7 +1178,7 @@ function makeFieldHistorySeries(
   const sorted = [...rows]
     .map((row) => {
       const date = rowSnapshotDate(row);
-      const value = directForecastField(row, side, axisMode);
+      const value = horizonForecastField(row, side, horizonKey);
       const generated = String(row.generated_at ?? row.snapshot_date ?? "");
       return date && value != null ? { date, value, generated } : null;
     })
@@ -1271,17 +1271,73 @@ function makeHorizonHistorySeries(
   return uniqueAscending(points);
 }
 
+
+function fieldHorizonSuffix(horizonKey: string): string {
+  const norm = String(horizonKey || "30D")
+    .toLowerCase()
+    .replace(/[^0-9a-z]/g, "");
+  return norm.startsWith("exp") ? "exp" : norm || "30d";
+}
+
+function withCurrentFieldReceipt(
+  rows: CapturedForecastRow[],
+  horizonKey: string,
+  surfaceDateKey: string | null,
+  base: number | null,
+  upper: number | null,
+  lower: number | null,
+): CapturedForecastRow[] {
+  if (!surfaceDateKey || base == null || upper == null || lower == null) return rows;
+  const suffix = fieldHorizonSuffix(horizonKey);
+  const liveRow: CapturedForecastRow = {
+    id: `live-${surfaceDateKey}-${suffix}`,
+    symbol: undefined,
+    snapshot_date: surfaceDateKey,
+    generated_at: `${surfaceDateKey}T23:59:59.000Z`,
+  };
+  (liveRow as any)[`base_${suffix}`] = base;
+  (liveRow as any)[`upper_${suffix}`] = upper;
+  (liveRow as any)[`lower_${suffix}`] = lower;
+  return [...rows, liveRow];
+}
+
+function rightLimitedFieldTimes(
+  candleData: CandleSeriesData[],
+  anchorTime: UTCTimestamp,
+  terminalSessions: number,
+  extendToHorizon: boolean,
+): UTCTimestamp[] {
+  const byDate = candleTimesByDate(candleData);
+  const anchorDate = timeDateKey(anchorTime);
+  const sameDay = byDate.get(anchorDate) ?? [];
+
+  if (sameDay.length > 1) {
+    return [sameDay[0], sameDay[sameDay.length - 1]];
+  }
+
+  if (extendToHorizon) {
+    return [anchorTime, addBusinessDays(anchorTime, Math.max(1, terminalSessions))];
+  }
+
+  const allTimes = candleData
+    .map((candle) => Number(candle.time))
+    .filter((time) => Number.isFinite(time))
+    .sort((a, b) => a - b);
+  const next = allTimes.find((time) => time > Number(anchorTime));
+  return [anchorTime, (next ?? addBusinessDays(anchorTime, 1)) as UTCTimestamp];
+}
+
 function fieldHistoryReadout(
   rows: CapturedForecastRow[],
-  axisMode: ForecastAxisMode,
+  horizonKey: string,
 ): FieldHistoryReadout {
   const latestByDate = new Map<string, { date: string; base: number; upper: number; lower: number; width: number; generated: string }>();
 
   for (const row of rows) {
     const date = rowSnapshotDate(row);
-    const base = directForecastField(row, "base", axisMode);
-    const upper = directForecastField(row, "upper", axisMode);
-    const lower = directForecastField(row, "lower", axisMode);
+    const base = horizonForecastField(row, "base", horizonKey);
+    const upper = horizonForecastField(row, "upper", horizonKey);
+    const lower = horizonForecastField(row, "lower", horizonKey);
     if (!date || base == null || upper == null || lower == null) continue;
     const generated = String(row.generated_at ?? row.snapshot_date ?? "");
     const prev = latestByDate.get(date);
@@ -1804,21 +1860,21 @@ export default function ForecastChartPanel({
       lineWidth: 1,
       lineStyle: LineStyle.Dashed,
       priceLineVisible: false,
-      lastValueVisible: false,
+      lastValueVisible: true,
     });
     const trailBase = chart.addSeries(LineSeries, {
       color: "rgba(103,232,249,0.7)",
       lineWidth: 2,
       lineStyle: LineStyle.Solid,
       priceLineVisible: false,
-      lastValueVisible: false,
+      lastValueVisible: true,
     });
     const trailLower = chart.addSeries(LineSeries, {
       color: "rgba(251,113,133,0.5)",
       lineWidth: 1,
       lineStyle: LineStyle.Dashed,
       priceLineVisible: false,
-      lastValueVisible: false,
+      lastValueVisible: true,
     });
 
     const divergenceBase = chart.addSeries(LineSeries, {
@@ -2047,104 +2103,109 @@ export default function ForecastChartPanel({
     const wheelFloor = toNumber(wheel?.lowerBand ?? null);
     const terminalTarget = toNumber(wheel?.baseTarget);
     const band = activeFieldBandForAxis(fieldForecast, forecastAxisMode);
-    // A single point at the surface-date candle plots at the BAR CENTER (over the
-    // candle body), rather than extending rightward toward the wick/next bars.
-    const fieldTimes =
-      showFieldForecast && fieldAnchorTime != null ? [fieldAnchorTime] : [];
-
-    // The OI Field v2 band is driven by the SELECTED matrix horizon (default 30D),
-    // drawn as a flat filled channel across the time axis so it matches the
-    // horizon's published base/upper/lower exactly. Every horizon with valid math
-    // is selectable; nothing is suppressed.
+    // OI Field v2 is a snapshot band, not a diagonal forward forecast.
+    // A saved receipt defines one day's upper/base/lower levels. On intraday
+    // charts the same levels hold flat across that date's candles. On daily
+    // charts each receipt becomes the next band point, creating an OI-driven
+    // Bollinger-style history.
     const selectedBand = selectedFieldHorizonBand(
       fieldForecast,
       selectedFieldHorizon,
     );
+    const horizonKey = selectedBand?.key ?? selectedFieldHorizon;
     const bandBase = selectedBand?.base ?? terminalTarget;
     const bandUpperVal = selectedBand?.upper ?? band.upper;
     const bandLowerVal = selectedBand?.lower ?? band.lower;
 
-    // "No forward candle" = the anchor IS the latest candle (the live/current
-    // surface). In that case there's no candle to the right to center onto, so we
-    // render the band as extended full-width horizontal lines + price labels
-    // (item 1). Older surfaces (anchor before the last candle) stay centered.
     const anchorIsLatest =
       fieldAnchorTime != null && lastTime != null && Number(fieldAnchorTime) >= Number(lastTime);
-    const extendBand = showFieldForecast && anchorIsLatest;
+    const extendLiveToHorizon = showFieldForecast && anchorIsLatest;
+    const liveFieldTimes =
+      showFieldForecast && fieldAnchorTime != null
+        ? rightLimitedFieldTimes(
+            candleData,
+            fieldAnchorTime,
+            terminalSessions,
+            extendLiveToHorizon,
+          )
+        : [];
 
-    if (extendBand && fieldAnchorTime != null) {
-      // Extend flat lines from the anchor candle to the right edge + a couple
-      // forward business days, so they read as horizontal levels.
-      const extendTimes = [fieldAnchorTime, addBusinessDays(fieldAnchorTime, terminalSessions)];
-      fieldBaseRef.current?.setData(horizontalBand(extendTimes, bandBase));
+    const fieldRowsForHistory = withCurrentFieldReceipt(
+      fieldHistoryRows,
+      horizonKey,
+      surfaceDateKey,
+      Number.isFinite(bandBase as number) ? (bandBase as number) : null,
+      Number.isFinite(bandUpperVal as number) ? (bandUpperVal as number) : null,
+      Number.isFinite(bandLowerVal as number) ? (bandLowerVal as number) : null,
+    );
+
+    if (showFieldForecast && showAllSavedForecasts && fieldRowsForHistory.length) {
+      // Historical OI-field band: draw the saved captures as connected field
+      // history. No full-width price lines, no centered rectangles, no forward
+      // cone. This is the OI-field equivalent of a Bollinger band history.
+      const historyBase = makeFieldHistorySeries(
+        fieldRowsForHistory,
+        candleData,
+        "base",
+        horizonKey,
+      );
+      const historyUpper = makeFieldHistorySeries(
+        fieldRowsForHistory,
+        candleData,
+        "upper",
+        horizonKey,
+      );
+      const historyLower = makeFieldHistorySeries(
+        fieldRowsForHistory,
+        candleData,
+        "lower",
+        horizonKey,
+      );
+
+      fieldBaseRef.current?.setData([]);
+      fieldUpperRef.current?.setData([]);
+      fieldLowerRef.current?.setData([]);
+      centeredBandRef.current?.setPoints([]);
+      trailBaseRef.current?.setData(historyBase);
+      trailUpperRef.current?.setData(historyUpper);
+      trailLowerRef.current?.setData(historyLower);
+    } else {
+      // Single live/current field segment. Limit the segment to the surface date;
+      // if the surface is the latest candle, extend only to the right.
+      trailBaseRef.current?.setData([]);
+      trailUpperRef.current?.setData([]);
+      trailLowerRef.current?.setData([]);
+      centeredBandRef.current?.setPoints([]);
+
+      const liveBaseData = liveFieldTimes.length
+        ? horizontalBand(liveFieldTimes, bandBase)
+        : [];
+      fieldBaseRef.current?.setData(liveBaseData);
+
       const bandAnchor = Number.isFinite(bandBase as number)
         ? (bandBase as number)
         : Number(bandLowerVal ?? 0);
       if (Number.isFinite(bandAnchor)) {
-        fieldUpperRef.current?.applyOptions({ baseValue: { type: "price", price: bandAnchor } });
-        fieldLowerRef.current?.applyOptions({ baseValue: { type: "price", price: bandAnchor } });
+        fieldUpperRef.current?.applyOptions({
+          baseValue: { type: "price", price: bandAnchor },
+        });
+        fieldLowerRef.current?.applyOptions({
+          baseValue: { type: "price", price: bandAnchor },
+        });
       }
-      fieldUpperRef.current?.setData(horizontalBand(extendTimes, bandUpperVal));
-      fieldLowerRef.current?.setData(horizontalBand(extendTimes, bandLowerVal));
-      centeredBandRef.current?.setPoints([]);
-    } else {
-      // Centered band primitive for dated/historical surfaces.
-      fieldBaseRef.current?.setData([]);
-      fieldUpperRef.current?.setData([]);
-      fieldLowerRef.current?.setData([]);
-
-      // When "show all saved forecasts" is on, draw a centered band for EVERY
-      // saved capture at the selected horizon, each pinned to its own candle.
-      let centeredPoints: CenteredBandPoint[] = [];
-      if (showFieldForecast && showAllSavedForecasts && fieldHistoryRows.length) {
-        const byDate = candleTimesByDate(candleData);
-        const horizonKey = selectedBand?.key ?? selectedFieldHorizon;
-        const latestByDate = new Map<string, CenteredBandPoint>();
-        for (const row of fieldHistoryRows) {
-          const date = rowSnapshotDate(row);
-          if (!date) continue;
-          const times = byDate.get(date);
-          const t = times?.length ? times[0] : dateToTime(date);
-          if (t == null) continue;
-          latestByDate.set(date, {
-            time: t,
-            base: horizonForecastField(row, "base", horizonKey),
-            upper: horizonForecastField(row, "upper", horizonKey),
-            lower: horizonForecastField(row, "lower", horizonKey),
-          });
-        }
-        centeredPoints = Array.from(latestByDate.values()).sort(
-          (a, b) => Number(a.time) - Number(b.time),
-        );
-      } else if (showFieldForecast && fieldAnchorTime != null) {
-        centeredPoints = [
-          {
-            time: fieldAnchorTime,
-            base: Number.isFinite(bandBase as number) ? (bandBase as number) : null,
-            upper: Number.isFinite(bandUpperVal as number) ? (bandUpperVal as number) : null,
-            lower: Number.isFinite(bandLowerVal as number) ? (bandLowerVal as number) : null,
-          },
-        ];
-      }
-      centeredBandRef.current?.setPoints(centeredPoints);
+      fieldUpperRef.current?.setData(
+        liveFieldTimes.length ? horizontalBand(liveFieldTimes, bandUpperVal) : [],
+      );
+      fieldLowerRef.current?.setData(
+        liveFieldTimes.length ? horizontalBand(liveFieldTimes, bandLowerVal) : [],
+      );
     }
 
     fieldWheelRef.current?.setData(
-      showFieldForecast && wheelFloor != null && fieldAnchorTime != null
-        ? horizontalBand(
-            extendBand
-              ? [fieldAnchorTime, addBusinessDays(fieldAnchorTime, terminalSessions)]
-              : [fieldAnchorTime],
-            wheelFloor,
-          )
+      showFieldForecast && wheelFloor != null && liveFieldTimes.length
+        ? horizontalBand(liveFieldTimes, wheelFloor)
         : [],
     );
-
-    // Connecting captures day-to-day is deferred — keep the trail off for now so
-    // we can first verify each band lands on its correct surface-date candle.
-    trailUpperRef.current?.setData([]);
-    trailBaseRef.current?.setData([]);
-    trailLowerRef.current?.setData([]);
 
     const capturedBaseLevel = showCapturedDivergence
       ? capturedFieldLevel(
@@ -2182,8 +2243,8 @@ export default function ForecastChartPanel({
     });
 
     const divergenceTimes =
-      showCapturedDivergence && showFieldForecast && fieldTimes.length
-        ? fieldTimes
+      showCapturedDivergence && showFieldForecast && liveFieldTimes.length
+        ? liveFieldTimes
         : [];
 
     // Saved Forecast Overlay now uses the same visual grammar as OI Field v2:
@@ -2342,32 +2403,9 @@ export default function ForecastChartPanel({
     }
 
     if (showFieldForecast) {
-      // When the band is extended as horizontal lines (live surface, no forward
-      // candle), bring back the price-axis labels for upper/base/lower. For dated
-      // surfaces the centered band shows these without standalone lines.
-      if (extendBand) {
-        addPriceLine({
-          price: bandUpperVal,
-          color: "#22c55e",
-          title: `Field upper ${fmt(bandUpperVal)}`,
-          dashed: true,
-          width: 2,
-        });
-        addPriceLine({
-          price: bandBase,
-          color: "#67e8f9",
-          title: `Field base ${selectedBand?.key ?? ""} ${fmt(bandBase)}`,
-          dashed: false,
-          width: 2,
-        });
-        addPriceLine({
-          price: bandLowerVal,
-          color: "#fb7185",
-          title: `Field lower ${fmt(bandLowerVal)}`,
-          dashed: true,
-          width: 2,
-        });
-      }
+      // OI Field v2 now renders as bounded series segments, not full-width
+      // price lines. Avoid createPriceLine here because price lines extend left
+      // across the whole chart and make the field look backwards.
 
       if (showFieldRails) {
         const upperRail = toNumber(path?.invalidAbove ?? path?.callWall);
@@ -2390,51 +2428,8 @@ export default function ForecastChartPanel({
     }
 
     if (showCapturedDivergence) {
-      const capturedBaseLevel = capturedFieldLevel(
-        capturedForecast,
-        "base",
-        forecastAxisMode,
-        terminalSessions,
-      );
-      const capturedUpperLevel = capturedFieldLevel(
-        capturedForecast,
-        "upper",
-        forecastAxisMode,
-        terminalSessions,
-      );
-      const capturedLowerLevel = capturedFieldLevel(
-        capturedForecast,
-        "lower",
-        forecastAxisMode,
-        terminalSessions,
-      );
-      const liveBase = toNumber(
-        fieldTerminalHorizonForAxis(fieldForecast, forecastAxisMode)?.baseTarget ??
-          null,
-      );
-      const migration = fieldMigrationReadout(liveBase, capturedBaseLevel);
-
-      addPriceLine({
-        price: capturedBaseLevel,
-        color: migration.color,
-        title: `${migration.label} base ${fmt(capturedBaseLevel)}`,
-        dashed: true,
-        width: 2,
-      });
-      addPriceLine({
-        price: capturedUpperLevel,
-        color: "rgba(34,197,94,0.7)",
-        title: `Saved upper ${fmt(capturedUpperLevel)}`,
-        dashed: true,
-        width: 1,
-      });
-      addPriceLine({
-        price: capturedLowerLevel,
-        color: "rgba(251,113,133,0.7)",
-        title: `Saved lower ${fmt(capturedLowerLevel)}`,
-        dashed: true,
-        width: 1,
-      });
+      // Saved field overlay is drawn by divergenceBase/Upper/LowerRef using
+      // right-limited segments. Do not add full-width price lines here.
     }
 
     if (showIvSurface) {
@@ -2476,7 +2471,7 @@ export default function ForecastChartPanel({
       }
     }
 
-    if (showFieldForecast && fieldTimes.length) {
+    if (showFieldForecast && liveFieldTimes.length) {
       const forecastEnd = addBusinessDays(
         lastTime,
         Math.max(terminalSessions + 2, 6),
@@ -2537,9 +2532,19 @@ export default function ForecastChartPanel({
   const fourteenDay = horizonByKey(fieldForecast, "14D");
   const thirtyDay = horizonByKey(fieldForecast, "30D");
   const fieldBand = activeFieldBandForAxis(fieldForecast, forecastAxisMode);
+  const selectedReadoutHorizon =
+    selectedFieldHorizonBand(fieldForecast, selectedFieldHorizon)?.key ??
+    selectedFieldHorizon;
   const fieldBandHistoryReadout = fieldHistoryReadout(
-    fieldHistoryRows,
-    forecastAxisMode,
+    withCurrentFieldReceipt(
+      fieldHistoryRows,
+      selectedReadoutHorizon,
+      surfaceDate ? String(surfaceDate).slice(0, 10) : null,
+      toNumber(selectedFieldHorizonBand(fieldForecast, selectedFieldHorizon)?.base),
+      toNumber(selectedFieldHorizonBand(fieldForecast, selectedFieldHorizon)?.upper),
+      toNumber(selectedFieldHorizonBand(fieldForecast, selectedFieldHorizon)?.lower),
+    ),
+    selectedReadoutHorizon,
   );
   const effectiveModeLabel = modeLabel(
     chartMode === "field-v2" && !fieldForecast ? "classic" : chartMode,
