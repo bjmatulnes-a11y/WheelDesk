@@ -19,6 +19,111 @@ import { type OIFieldForecastResult } from "../../lib/oi-field-engine-v2";
 import { type ExpirationMagnetPath } from "../../lib/expiration-magnet-engine";
 import { colors, cardStyle } from "./styles";
 
+type CenteredBandPoint = {
+  time: UTCTimestamp;
+  base: number | null;
+  upper: number | null;
+  lower: number | null;
+};
+
+// A series primitive that draws a forecast band CENTERED on each anchor bar,
+// spanning the candle/bar width, instead of a time-series line that starts at
+// the bar edge. Draws in pixel space so it sits over the candle body.
+class CenteredBandPrimitive {
+  private _points: CenteredBandPoint[] = [];
+  private _chart: any = null;
+  private _series: any = null;
+  private _paneViews: CenteredBandPaneView[];
+
+  constructor() {
+    this._paneViews = [new CenteredBandPaneView(this)];
+  }
+  attached(param: any) {
+    this._chart = param.chart;
+    this._series = param.series;
+  }
+  detached() {
+    this._chart = null;
+    this._series = null;
+  }
+  setPoints(points: CenteredBandPoint[]) {
+    this._points = points;
+    this.updateAllViews();
+  }
+  updateAllViews() {
+    this._paneViews.forEach((v) => v.update());
+  }
+  paneViews() {
+    return this._paneViews;
+  }
+  get chart() {
+    return this._chart;
+  }
+  get series() {
+    return this._series;
+  }
+  get points() {
+    return this._points;
+  }
+}
+
+class CenteredBandPaneView {
+  private _source: CenteredBandPrimitive;
+  constructor(source: CenteredBandPrimitive) {
+    this._source = source;
+  }
+  update() {}
+  renderer() {
+    const source = this._source;
+    return {
+      draw: (target: any) => {
+        const chart = source.chart;
+        const series = source.series;
+        if (!chart || !series || !source.points.length) return;
+        target.useBitmapCoordinateSpace((scope: any) => {
+          const ctx: CanvasRenderingContext2D = scope.context;
+          const ratio = scope.horizontalPixelRatio;
+          const vRatio = scope.verticalPixelRatio;
+          const timeScale = chart.timeScale();
+          const barSpacing = timeScale.options().barSpacing ?? 6;
+          // Half the bar width, with a tiny inset so it matches the body.
+          const halfW = Math.max(2, (barSpacing * 0.42)) * ratio;
+
+          for (const pt of source.points) {
+            const x = timeScale.timeToCoordinate(pt.time);
+            if (x == null) continue;
+            const cx = x * ratio;
+            const drawLine = (price: number | null, color: string, w: number) => {
+              if (price == null || !Number.isFinite(price)) return;
+              const y = series.priceToCoordinate(price);
+              if (y == null) return;
+              const cy = y * vRatio;
+              ctx.beginPath();
+              ctx.strokeStyle = color;
+              ctx.lineWidth = w * vRatio;
+              ctx.moveTo(cx - halfW, cy);
+              ctx.lineTo(cx + halfW, cy);
+              ctx.stroke();
+            };
+            // faint fill between upper and lower
+            if (pt.upper != null && pt.lower != null) {
+              const yU = series.priceToCoordinate(pt.upper);
+              const yL = series.priceToCoordinate(pt.lower);
+              if (yU != null && yL != null) {
+                ctx.fillStyle = "rgba(34,211,238,0.12)";
+                ctx.fillRect(cx - halfW, yU * vRatio, halfW * 2, (yL - yU) * vRatio);
+              }
+            }
+            drawLine(pt.upper, "rgba(34,197,94,0.85)", 1.5);
+            drawLine(pt.base, "rgba(103,232,249,0.95)", 2);
+            drawLine(pt.lower, "rgba(251,113,133,0.85)", 1.5);
+          }
+        });
+      },
+    };
+  }
+}
+
 type ChartMode = "field-v2" | "classic" | "both" | "candles";
 type ForecastAxisMode = "compact" | "full" | "expiration";
 
@@ -1346,6 +1451,7 @@ export default function ForecastChartPanel({
   const trailBaseRef = useRef<ISeriesApi<"Line"> | null>(null);
   const trailUpperRef = useRef<ISeriesApi<"Line"> | null>(null);
   const trailLowerRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const centeredBandRef = useRef<CenteredBandPrimitive | null>(null);
   const fieldWheelRef = useRef<ISeriesApi<"Line"> | null>(null);
   const divergenceBaseRef = useRef<ISeriesApi<"Line"> | null>(null);
   const divergenceUpperRef = useRef<ISeriesApi<"Line"> | null>(null);
@@ -1740,6 +1846,13 @@ export default function ForecastChartPanel({
 
     chartRef.current = chart;
     candleRef.current = candlesSeries;
+    const centeredBand = new CenteredBandPrimitive();
+    try {
+      (candlesSeries as any).attachPrimitive(centeredBand);
+      centeredBandRef.current = centeredBand;
+    } catch {
+      centeredBandRef.current = null;
+    }
     baseRef.current = baseSeries;
     upperRef.current = upperSeries;
     lowerRef.current = lowerSeries;
@@ -1775,6 +1888,14 @@ export default function ForecastChartPanel({
       chart.remove();
       chartRef.current = null;
       candleRef.current = null;
+      if (centeredBandRef.current) {
+        try {
+          (candlesSeries as any).detachPrimitive(centeredBandRef.current);
+        } catch {
+          // ignore
+        }
+        centeredBandRef.current = null;
+      }
       baseRef.current = null;
       upperRef.current = null;
       lowerRef.current = null;
@@ -1925,12 +2046,10 @@ export default function ForecastChartPanel({
     const wheelFloor = toNumber(wheel?.lowerBand ?? null);
     const terminalTarget = toNumber(wheel?.baseTarget);
     const band = activeFieldBandForAxis(fieldForecast, forecastAxisMode);
-    // Mark the band AT the surface-date candle (a short flat segment there),
-    // rather than projecting forward from today. Connecting captures comes later.
+    // A single point at the surface-date candle plots at the BAR CENTER (over the
+    // candle body), rather than extending rightward toward the wick/next bars.
     const fieldTimes =
-      showFieldForecast && fieldAnchorTime != null
-        ? [fieldAnchorTime, addBusinessDays(fieldAnchorTime, 2)]
-        : [];
+      showFieldForecast && fieldAnchorTime != null ? [fieldAnchorTime] : [];
 
     // The OI Field v2 band is driven by the SELECTED matrix horizon (default 30D),
     // drawn as a flat filled channel across the time axis so it matches the
@@ -1944,33 +2063,27 @@ export default function ForecastChartPanel({
     const bandUpperVal = selectedBand?.upper ?? band.upper;
     const bandLowerVal = selectedBand?.lower ?? band.lower;
 
-    fieldBaseRef.current?.setData(
-      showFieldForecast ? horizontalBand(fieldTimes, bandBase) : [],
-    );
-
-    // Anchor both band halves at the selected base so the fills meet at the
-    // centerline: upper series fills base->upper, lower series fills base->lower.
-    const bandAnchor = Number.isFinite(bandBase as number)
-      ? (bandBase as number)
-      : Number(bandLowerVal ?? 0);
-    if (Number.isFinite(bandAnchor)) {
-      fieldUpperRef.current?.applyOptions({
-        baseValue: { type: "price", price: bandAnchor },
-      });
-      fieldLowerRef.current?.applyOptions({
-        baseValue: { type: "price", price: bandAnchor },
-      });
-    }
-
-    fieldUpperRef.current?.setData(
-      showFieldForecast ? horizontalBand(fieldTimes, bandUpperVal) : [],
-    );
-    fieldLowerRef.current?.setData(
-      showFieldForecast ? horizontalBand(fieldTimes, bandLowerVal) : [],
-    );
+    // The band is now drawn by the CenteredBandPrimitive (centered on the anchor
+    // candle, bar-width), so clear the old baseline/line band series.
+    fieldBaseRef.current?.setData([]);
+    fieldUpperRef.current?.setData([]);
+    fieldLowerRef.current?.setData([]);
     fieldWheelRef.current?.setData(
-      showFieldForecast && wheelFloor != null
-        ? horizontalBand(fieldTimes, wheelFloor)
+      showFieldForecast && wheelFloor != null && fieldAnchorTime != null
+        ? horizontalBand([fieldAnchorTime], wheelFloor)
+        : [],
+    );
+
+    centeredBandRef.current?.setPoints(
+      showFieldForecast && fieldAnchorTime != null
+        ? [
+            {
+              time: fieldAnchorTime,
+              base: Number.isFinite(bandBase as number) ? (bandBase as number) : null,
+              upper: Number.isFinite(bandUpperVal as number) ? (bandUpperVal as number) : null,
+              lower: Number.isFinite(bandLowerVal as number) ? (bandLowerVal as number) : null,
+            },
+          ]
         : [],
     );
 
