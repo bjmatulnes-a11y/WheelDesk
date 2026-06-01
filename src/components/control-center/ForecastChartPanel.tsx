@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  BaselineSeries,
   CandlestickSeries,
   ColorType,
   createChart,
@@ -1233,8 +1234,8 @@ export default function ForecastChartPanel({
   const ivHalfUpperRef = useRef<ISeriesApi<"Line"> | null>(null);
   const ivHalfLowerRef = useRef<ISeriesApi<"Line"> | null>(null);
   const fieldBaseRef = useRef<ISeriesApi<"Line"> | null>(null);
-  const fieldUpperRef = useRef<ISeriesApi<"Line"> | null>(null);
-  const fieldLowerRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const fieldUpperRef = useRef<ISeriesApi<"Baseline"> | null>(null);
+  const fieldLowerRef = useRef<ISeriesApi<"Baseline"> | null>(null);
   const fieldWheelRef = useRef<ISeriesApi<"Line"> | null>(null);
   const divergenceBaseRef = useRef<ISeriesApi<"Line"> | null>(null);
   const divergenceUpperRef = useRef<ISeriesApi<"Line"> | null>(null);
@@ -1532,25 +1533,41 @@ export default function ForecastChartPanel({
     });
 
     const fieldBase = chart.addSeries(LineSeries, {
-      color: "rgba(103,232,249,0.62)",
+      color: "rgba(103,232,249,0.9)",
       lineWidth: 2,
-      lineStyle: LineStyle.Dashed,
+      lineStyle: LineStyle.Solid,
       priceLineVisible: false,
       lastValueVisible: false,
     });
 
-    const fieldUpper = chart.addSeries(LineSeries, {
-      color: "rgba(34,197,94,0.48)",
-      lineWidth: 2,
-      lineStyle: LineStyle.Dashed,
+    // Upper half of the band: Baseline series whose baseValue is set to the live
+    // field base at data time (applyOptions below). Fill tints base->upper.
+    // Two baseline series (this + lower) together render a filled Bollinger-style
+    // channel instead of three separate stroked lines.
+    const fieldUpper = chart.addSeries(BaselineSeries, {
+      baseValue: { type: "price", price: 0 },
+      topFillColor1: "rgba(34,211,238,0.16)",
+      topFillColor2: "rgba(34,211,238,0.06)",
+      topLineColor: "rgba(34,197,94,0.6)",
+      bottomFillColor1: "rgba(0,0,0,0)",
+      bottomFillColor2: "rgba(0,0,0,0)",
+      bottomLineColor: "rgba(0,0,0,0)",
+      lineWidth: 1,
       priceLineVisible: false,
       lastValueVisible: false,
     });
 
-    const fieldLower = chart.addSeries(LineSeries, {
-      color: "rgba(251,113,133,0.48)",
-      lineWidth: 2,
-      lineStyle: LineStyle.Dashed,
+    // Lower half: Baseline whose baseValue is the live field base; fill tints
+    // base->lower (drawn as the baseline's "bottom" region).
+    const fieldLower = chart.addSeries(BaselineSeries, {
+      baseValue: { type: "price", price: 0 },
+      topFillColor1: "rgba(0,0,0,0)",
+      topFillColor2: "rgba(0,0,0,0)",
+      topLineColor: "rgba(0,0,0,0)",
+      bottomFillColor1: "rgba(34,211,238,0.06)",
+      bottomFillColor2: "rgba(34,211,238,0.16)",
+      bottomLineColor: "rgba(251,113,133,0.6)",
+      lineWidth: 1,
       priceLineVisible: false,
       lastValueVisible: false,
     });
@@ -1795,6 +1812,21 @@ export default function ForecastChartPanel({
           : horizontalBand(fieldTimes, terminalTarget)
         : [],
     );
+
+    // Anchor both band halves at the live field base so the fills meet at the
+    // centerline: upper series fills base->upper, lower series fills base->lower.
+    const bandAnchor = Number.isFinite(terminalTarget as number)
+      ? (terminalTarget as number)
+      : Number(band.lower ?? 0);
+    if (Number.isFinite(bandAnchor)) {
+      fieldUpperRef.current?.applyOptions({
+        baseValue: { type: "price", price: bandAnchor },
+      });
+      fieldLowerRef.current?.applyOptions({
+        baseValue: { type: "price", price: bandAnchor },
+      });
+    }
+
     fieldUpperRef.current?.setData(
       showFieldForecast
         ? hasFieldHistoryBand
