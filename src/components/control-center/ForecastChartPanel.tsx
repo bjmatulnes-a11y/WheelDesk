@@ -760,6 +760,46 @@ function expirationHorizon(forecast: OIFieldForecastResult | null | undefined) {
   );
 }
 
+// Every horizon whose math is available (has a finite base/upper/lower) is
+// renderable and selectable. No suppression — the selector simply offers what
+// the matrix actually computed.
+function renderableFieldHorizons(
+  forecast: OIFieldForecastResult | null | undefined,
+) {
+  if (!forecast?.horizons?.length) return [];
+  return forecast.horizons
+    .filter(
+      (horizon) =>
+        toNumber(horizon.baseTarget) != null &&
+        toNumber(horizon.upperBand) != null &&
+        toNumber(horizon.lowerBand) != null,
+    )
+    .sort((a, b) => Number(a.sessions ?? 0) - Number(b.sessions ?? 0));
+}
+
+// Resolve the horizon the user selected (by key), falling back to 30D, then to
+// the last available horizon, so the band always has a valid source.
+function selectedFieldHorizonBand(
+  forecast: OIFieldForecastResult | null | undefined,
+  selectedKey: string,
+) {
+  const rows = renderableFieldHorizons(forecast);
+  if (!rows.length) return null;
+  const match =
+    rows.find((h) => String(h.key) === selectedKey) ??
+    rows.find((h) => String(h.key) === "30D") ??
+    rows[rows.length - 1];
+  if (!match) return null;
+  return {
+    key: String(match.key),
+    label: String(match.label ?? match.key),
+    sessions: Number(match.sessions ?? 0),
+    base: toNumber(match.baseTarget),
+    upper: toNumber(match.upperBand),
+    lower: toNumber(match.lowerBand),
+  };
+}
+
 function forecastAxisLabel(mode: ForecastAxisMode): string {
   switch (mode) {
     case "compact":
@@ -1211,6 +1251,9 @@ export default function ForecastChartPanel({
   const [forecastAxisMode, setForecastAxisMode] = useState<ForecastAxisMode>(
     defaultForecastAxisMode ?? (chartHeight >= 620 ? "full" : "compact"),
   );
+  // Which matrix horizon drives the OI Field v2 band. Defaults to 30D (matching
+  // OI Classic), but every horizon that has math is selectable/renderable.
+  const [selectedFieldHorizon, setSelectedFieldHorizon] = useState<string>("30D");
   const [forecastDivergenceEnabled, setForecastDivergenceEnabled] = useState(
     defaultForecastDivergence ?? false,
   );
@@ -1537,7 +1580,7 @@ export default function ForecastChartPanel({
       lineWidth: 2,
       lineStyle: LineStyle.Solid,
       priceLineVisible: false,
-      lastValueVisible: false,
+      lastValueVisible: true,
     });
 
     // Upper half of the band: Baseline series whose baseValue is set to the live
@@ -1554,7 +1597,7 @@ export default function ForecastChartPanel({
       bottomLineColor: "rgba(0,0,0,0)",
       lineWidth: 1,
       priceLineVisible: false,
-      lastValueVisible: false,
+      lastValueVisible: true,
     });
 
     // Lower half: Baseline whose baseValue is the live field base; fill tints
@@ -1569,7 +1612,7 @@ export default function ForecastChartPanel({
       bottomLineColor: "rgba(251,113,133,0.6)",
       lineWidth: 1,
       priceLineVisible: false,
-      lastValueVisible: false,
+      lastValueVisible: true,
     });
 
     const fieldWheel = chart.addSeries(LineSeries, {
@@ -1773,51 +1816,28 @@ export default function ForecastChartPanel({
     const fieldTimes = showFieldForecast
       ? futureTimeWindow(lastTime, terminalSessions)
       : [];
-    const fieldHistoryBase = showFieldForecast
-      ? makeFieldHistorySeries(
-          fieldHistoryRows,
-          candleData,
-          "base",
-          forecastAxisMode,
-        )
-      : [];
-    const fieldHistoryUpper = showFieldForecast
-      ? makeFieldHistorySeries(
-          fieldHistoryRows,
-          candleData,
-          "upper",
-          forecastAxisMode,
-        )
-      : [];
-    const fieldHistoryLower = showFieldForecast
-      ? makeFieldHistorySeries(
-          fieldHistoryRows,
-          candleData,
-          "lower",
-          forecastAxisMode,
-        )
-      : [];
-    const hasFieldHistoryBand =
-      fieldHistoryBase.length > 0 &&
-      fieldHistoryUpper.length > 0 &&
-      fieldHistoryLower.length > 0;
 
-    // OI Field v2 is now a saved field-band time series. Each receipt owns
-    // that day's upper/base/lower levels. Intraday candles hold the same level
-    // flat during that date; the next receipt creates the next segment.
+    // The OI Field v2 band is driven by the SELECTED matrix horizon (default 30D),
+    // drawn as a flat filled channel across the time axis so it matches the
+    // horizon's published base/upper/lower exactly. Every horizon with valid math
+    // is selectable; nothing is suppressed.
+    const selectedBand = selectedFieldHorizonBand(
+      fieldForecast,
+      selectedFieldHorizon,
+    );
+    const bandBase = selectedBand?.base ?? terminalTarget;
+    const bandUpperVal = selectedBand?.upper ?? band.upper;
+    const bandLowerVal = selectedBand?.lower ?? band.lower;
+
     fieldBaseRef.current?.setData(
-      showFieldForecast
-        ? hasFieldHistoryBand
-          ? fieldHistoryBase
-          : horizontalBand(fieldTimes, terminalTarget)
-        : [],
+      showFieldForecast ? horizontalBand(fieldTimes, bandBase) : [],
     );
 
-    // Anchor both band halves at the live field base so the fills meet at the
+    // Anchor both band halves at the selected base so the fills meet at the
     // centerline: upper series fills base->upper, lower series fills base->lower.
-    const bandAnchor = Number.isFinite(terminalTarget as number)
-      ? (terminalTarget as number)
-      : Number(band.lower ?? 0);
+    const bandAnchor = Number.isFinite(bandBase as number)
+      ? (bandBase as number)
+      : Number(bandLowerVal ?? 0);
     if (Number.isFinite(bandAnchor)) {
       fieldUpperRef.current?.applyOptions({
         baseValue: { type: "price", price: bandAnchor },
@@ -1828,18 +1848,10 @@ export default function ForecastChartPanel({
     }
 
     fieldUpperRef.current?.setData(
-      showFieldForecast
-        ? hasFieldHistoryBand
-          ? fieldHistoryUpper
-          : horizontalBand(fieldTimes, band.upper)
-        : [],
+      showFieldForecast ? horizontalBand(fieldTimes, bandUpperVal) : [],
     );
     fieldLowerRef.current?.setData(
-      showFieldForecast
-        ? hasFieldHistoryBand
-          ? fieldHistoryLower
-          : horizontalBand(fieldTimes, band.lower)
-        : [],
+      showFieldForecast ? horizontalBand(fieldTimes, bandLowerVal) : [],
     );
     fieldWheelRef.current?.setData(
       showFieldForecast && wheelFloor != null
@@ -2043,36 +2055,9 @@ export default function ForecastChartPanel({
     }
 
     if (showFieldForecast) {
-      const band = activeFieldBandForAxis(fieldForecast, forecastAxisMode);
-      const terminal =
-        fieldTerminalHorizonForAxis(fieldForecast, forecastAxisMode) ??
-        wheelHorizon(fieldForecast);
-      const terminalLabel = String(
-        terminal?.label ?? terminal?.key ?? forecastAxisLabel(forecastAxisMode),
-      );
-      const terminalTarget = toNumber(terminal?.baseTarget);
-
-      addPriceLine({
-        price: band.upper,
-        color: "#22c55e",
-        title: `Field upper ${fmt(band.upper)}`,
-        dashed: true,
-        width: 2,
-      });
-      addPriceLine({
-        price: terminalTarget,
-        color: "#67e8f9",
-        title: `Field base ${terminalLabel} ${fmt(terminalTarget)}`,
-        dashed: false,
-        width: 2,
-      });
-      addPriceLine({
-        price: band.lower,
-        color: "#fb7185",
-        title: `Field lower ${fmt(band.lower)}`,
-        dashed: true,
-        width: 2,
-      });
+      // The filled OI Field v2 band (upper/base/lower baseline series) now shows
+      // these levels directly with right-edge axis tags, so the three standalone
+      // horizontal field lines are no longer drawn (they were redundant wiring).
 
       if (showFieldRails) {
         const upperRail = toNumber(path?.invalidAbove ?? path?.callWall);
@@ -2443,6 +2428,59 @@ export default function ForecastChartPanel({
                     </button>
                   ),
                 )}
+              </div>
+            ) : null}
+            {fieldForecast &&
+            (chartMode === "field-v2" || chartMode === "both") &&
+            renderableFieldHorizons(fieldForecast).length ? (
+              <div
+                style={{
+                  display: "flex",
+                  gap: "0.3rem",
+                  flexWrap: "wrap",
+                  justifyContent: "flex-end",
+                  alignItems: "center",
+                }}
+                aria-label="OI Field v2 band horizon"
+              >
+                <span
+                  style={{
+                    color: colors.teal,
+                    fontSize: 10,
+                    fontWeight: 950,
+                    marginRight: "0.15rem",
+                  }}
+                >
+                  FIELD BAND
+                </span>
+                {renderableFieldHorizons(fieldForecast).map((h) => {
+                  const key = String(h.key);
+                  const active = key === selectedFieldHorizon;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setSelectedFieldHorizon(key)}
+                      style={{
+                        border: active
+                          ? "1px solid rgba(34,211,238,0.7)"
+                          : "1px solid rgba(148,163,184,0.22)",
+                        background: active
+                          ? "rgba(34,211,238,0.14)"
+                          : "rgba(15,23,42,0.72)",
+                        color: active ? colors.teal : colors.muted,
+                        borderRadius: 999,
+                        padding: "0.22rem 0.46rem",
+                        fontSize: 10,
+                        fontWeight: 950,
+                        cursor: "pointer",
+                      }}
+                      title={`Draw the OI Field v2 band at the ${key} horizon (${fmt(toNumber(h.lowerBand))}–${fmt(toNumber(h.upperBand))}).`}
+                    >
+                      {key}
+                    </button>
+                  );
+                })}
               </div>
             ) : null}
             {expirationMagnetPath?.points?.length ? (
