@@ -1826,6 +1826,18 @@ export default function ForecastChartPanel({
     const lastTime = latest?.time;
     const lastClose = latest?.close;
 
+    // Anchor the OI Field v2 band to the CANDLE of the loaded surface date
+    // (e.g. 5/22), not the latest candle (today). A surface captured on 5/22
+    // describes that day, so its band must sit on the 5/22 candle.
+    const surfaceDateKey = surfaceDate ? String(surfaceDate).slice(0, 10) : null;
+    const surfaceCandleTimes = surfaceDateKey
+      ? candleTimesByDate(candleData).get(surfaceDateKey)
+      : null;
+    const fieldAnchorTime: UTCTimestamp | null =
+      surfaceCandleTimes && surfaceCandleTimes.length
+        ? surfaceCandleTimes[0]
+        : (lastTime ?? null);
+
     if (!latest || lastTime == null || lastClose == null) {
       baseRef.current?.setData([]);
       upperRef.current?.setData([]);
@@ -1913,9 +1925,12 @@ export default function ForecastChartPanel({
     const wheelFloor = toNumber(wheel?.lowerBand ?? null);
     const terminalTarget = toNumber(wheel?.baseTarget);
     const band = activeFieldBandForAxis(fieldForecast, forecastAxisMode);
-    const fieldTimes = showFieldForecast
-      ? futureTimeWindow(lastTime, terminalSessions)
-      : [];
+    // Mark the band AT the surface-date candle (a short flat segment there),
+    // rather than projecting forward from today. Connecting captures comes later.
+    const fieldTimes =
+      showFieldForecast && fieldAnchorTime != null
+        ? [fieldAnchorTime, addBusinessDays(fieldAnchorTime, 2)]
+        : [];
 
     // The OI Field v2 band is driven by the SELECTED matrix horizon (default 30D),
     // drawn as a flat filled channel across the time axis so it matches the
@@ -1959,24 +1974,11 @@ export default function ForecastChartPanel({
         : [],
     );
 
-    // Capture-history trail: prior saved forecasts at the selected horizon,
-    // each pinned to its real capture date and connected day-to-day.
-    const trailKey = selectedBand?.key ?? selectedFieldHorizon;
-    trailUpperRef.current?.setData(
-      showFieldForecast
-        ? makeHorizonHistorySeries(fieldHistoryRows, candleData, "upper", trailKey)
-        : [],
-    );
-    trailBaseRef.current?.setData(
-      showFieldForecast
-        ? makeHorizonHistorySeries(fieldHistoryRows, candleData, "base", trailKey)
-        : [],
-    );
-    trailLowerRef.current?.setData(
-      showFieldForecast
-        ? makeHorizonHistorySeries(fieldHistoryRows, candleData, "lower", trailKey)
-        : [],
-    );
+    // Connecting captures day-to-day is deferred — keep the trail off for now so
+    // we can first verify each band lands on its correct surface-date candle.
+    trailUpperRef.current?.setData([]);
+    trailBaseRef.current?.setData([]);
+    trailLowerRef.current?.setData([]);
 
     const capturedBaseLevel = showCapturedDivergence
       ? capturedFieldLevel(
