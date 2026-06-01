@@ -54,6 +54,14 @@ type LinePoint = {
 };
 type ChartLinePoint = { time: UTCTimestamp; value: number };
 
+type ValidationShadeState = {
+  x: number;
+  width: number;
+  tone: "bullish" | "bearish" | "neutral";
+  label: string;
+  detail: string;
+};
+
 type CapturedForecastRow = {
   id?: string;
   symbol?: string;
@@ -1198,6 +1206,7 @@ export default function ForecastChartPanel({
   const divergenceUpperRef = useRef<ISeriesApi<"Line"> | null>(null);
   const divergenceLowerRef = useRef<ISeriesApi<"Line"> | null>(null);
   const priceLinesRef = useRef<IPriceLine[]>([]);
+  const [validationShade, setValidationShade] = useState<ValidationShadeState | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1591,6 +1600,7 @@ export default function ForecastChartPanel({
       divergenceBaseRef.current?.setData([]);
       divergenceUpperRef.current?.setData([]);
       divergenceLowerRef.current?.setData([]);
+      setValidationShade(null);
       return;
     }
 
@@ -2028,6 +2038,66 @@ export default function ForecastChartPanel({
     } else {
       chart.timeScale().fitContent();
       chart.timeScale().scrollToPosition(8, false);
+    }
+
+    // Make saved-field validation visible on the chart, not just in the readout.
+    // The shaded region begins at the frozen forecast capture date and extends
+    // through the current/right side of the chart. Green means actual price is
+    // validating above the saved base/field; red means it is breaking below.
+    if (showCapturedDivergence && forecastDivergenceEnabled) {
+      const anchorTime = capturedAnchorTime(capturedForecast);
+      const savedBase = capturedFieldLevel(
+        capturedForecast,
+        "base",
+        forecastAxisMode,
+        terminalSessions,
+      );
+      const savedUpper = capturedFieldLevel(
+        capturedForecast,
+        "upper",
+        forecastAxisMode,
+        terminalSessions,
+      );
+      const savedLower = capturedFieldLevel(
+        capturedForecast,
+        "lower",
+        forecastAxisMode,
+        terminalSessions,
+      );
+      const x = anchorTime ? chart.timeScale().timeToCoordinate(anchorTime) : null;
+      const containerWidth = containerRef.current?.clientWidth ?? 0;
+      if (x != null && Number.isFinite(x) && containerWidth > 0) {
+        let tone: ValidationShadeState["tone"] = "neutral";
+        let label = "VALIDATION WINDOW";
+        if (savedUpper != null && latest.close > savedUpper) {
+          tone = "bullish";
+          label = "VALIDATING ABOVE SAVED FIELD";
+        } else if (savedLower != null && latest.close < savedLower) {
+          tone = "bearish";
+          label = "BREAKING BELOW SAVED FIELD";
+        } else if (savedBase != null && latest.close >= savedBase) {
+          tone = "bullish";
+          label = "TRACKING ABOVE SAVED BASE";
+        } else if (savedBase != null && latest.close < savedBase) {
+          tone = "bearish";
+          label = "TRACKING BELOW SAVED BASE";
+        }
+        const delta = savedBase != null ? latest.close - savedBase : null;
+        const detail = savedBase != null
+          ? `Actual ${fmt(latest.close)} vs saved base ${fmt(savedBase)} · Δ ${fmt(delta)}`
+          : `Actual ${fmt(latest.close)} · saved field active`;
+        setValidationShade({
+          x: Math.max(0, x),
+          width: Math.max(24, containerWidth - Math.max(0, x)),
+          tone,
+          label,
+          detail,
+        });
+      } else {
+        setValidationShade(null);
+      }
+    } else {
+      setValidationShade(null);
     }
   }, [
     candles,
@@ -2648,6 +2718,74 @@ export default function ForecastChartPanel({
           ref={containerRef}
           style={{ width: "100%", height: chartHeight }}
         />
+
+        {forecastDivergenceEnabled && validationShade ? (
+          <div
+            aria-hidden="true"
+            style={{
+              position: "absolute",
+              top: 0,
+              bottom: 0,
+              left: validationShade.x,
+              width: validationShade.width,
+              zIndex: 1,
+              pointerEvents: "none",
+              borderLeft: `1px dashed ${
+                validationShade.tone === "bullish"
+                  ? "rgba(34,197,94,0.78)"
+                  : validationShade.tone === "bearish"
+                    ? "rgba(251,113,133,0.78)"
+                    : "rgba(248,250,252,0.55)"
+              }`,
+              background:
+                validationShade.tone === "bullish"
+                  ? "linear-gradient(90deg, rgba(34,197,94,0.13), rgba(34,197,94,0.025))"
+                  : validationShade.tone === "bearish"
+                    ? "linear-gradient(90deg, rgba(251,113,133,0.13), rgba(251,113,133,0.025))"
+                    : "linear-gradient(90deg, rgba(248,250,252,0.08), rgba(248,250,252,0.015))",
+            }}
+          >
+            <div
+              style={{
+                position: "absolute",
+                top: 8,
+                left: 8,
+                maxWidth: 260,
+                borderRadius: 10,
+                padding: "0.42rem 0.55rem",
+                background: "rgba(7,17,31,0.76)",
+                border: `1px solid ${
+                  validationShade.tone === "bullish"
+                    ? "rgba(34,197,94,0.32)"
+                    : validationShade.tone === "bearish"
+                      ? "rgba(251,113,133,0.32)"
+                      : "rgba(248,250,252,0.22)"
+                }`,
+                boxShadow: "0 14px 32px rgba(0,0,0,0.26)",
+              }}
+            >
+              <div
+                style={{
+                  color:
+                    validationShade.tone === "bullish"
+                      ? colors.green
+                      : validationShade.tone === "bearish"
+                        ? colors.red
+                        : colors.text,
+                  fontSize: 10,
+                  fontWeight: 950,
+                  letterSpacing: "0.07em",
+                  textTransform: "uppercase",
+                }}
+              >
+                {validationShade.label}
+              </div>
+              <div style={{ color: colors.muted, fontSize: 10, fontWeight: 850, marginTop: 2 }}>
+                {validationShade.detail}
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         {!isLoading && (!candles || candles.length === 0) ? (
           <div
