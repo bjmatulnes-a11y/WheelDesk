@@ -1423,6 +1423,7 @@ export default function ForecastChartPanel({
   // Which matrix horizon drives the OI Field v2 band. Defaults to 30D (matching
   // OI Classic), but every horizon that has math is selectable/renderable.
   const [selectedFieldHorizon, setSelectedFieldHorizon] = useState<string>("30D");
+  const [showAllSavedForecasts, setShowAllSavedForecasts] = useState(false);
   const [forecastDivergenceEnabled, setForecastDivergenceEnabled] = useState(
     defaultForecastDivergence ?? false,
   );
@@ -2063,27 +2064,79 @@ export default function ForecastChartPanel({
     const bandUpperVal = selectedBand?.upper ?? band.upper;
     const bandLowerVal = selectedBand?.lower ?? band.lower;
 
-    // The band is now drawn by the CenteredBandPrimitive (centered on the anchor
-    // candle, bar-width), so clear the old baseline/line band series.
-    fieldBaseRef.current?.setData([]);
-    fieldUpperRef.current?.setData([]);
-    fieldLowerRef.current?.setData([]);
+    // "No forward candle" = the anchor IS the latest candle (the live/current
+    // surface). In that case there's no candle to the right to center onto, so we
+    // render the band as extended full-width horizontal lines + price labels
+    // (item 1). Older surfaces (anchor before the last candle) stay centered.
+    const anchorIsLatest =
+      fieldAnchorTime != null && lastTime != null && Number(fieldAnchorTime) >= Number(lastTime);
+    const extendBand = showFieldForecast && anchorIsLatest;
+
+    if (extendBand && fieldAnchorTime != null) {
+      // Extend flat lines from the anchor candle to the right edge + a couple
+      // forward business days, so they read as horizontal levels.
+      const extendTimes = [fieldAnchorTime, addBusinessDays(fieldAnchorTime, terminalSessions)];
+      fieldBaseRef.current?.setData(horizontalBand(extendTimes, bandBase));
+      const bandAnchor = Number.isFinite(bandBase as number)
+        ? (bandBase as number)
+        : Number(bandLowerVal ?? 0);
+      if (Number.isFinite(bandAnchor)) {
+        fieldUpperRef.current?.applyOptions({ baseValue: { type: "price", price: bandAnchor } });
+        fieldLowerRef.current?.applyOptions({ baseValue: { type: "price", price: bandAnchor } });
+      }
+      fieldUpperRef.current?.setData(horizontalBand(extendTimes, bandUpperVal));
+      fieldLowerRef.current?.setData(horizontalBand(extendTimes, bandLowerVal));
+      centeredBandRef.current?.setPoints([]);
+    } else {
+      // Centered band primitive for dated/historical surfaces.
+      fieldBaseRef.current?.setData([]);
+      fieldUpperRef.current?.setData([]);
+      fieldLowerRef.current?.setData([]);
+
+      // When "show all saved forecasts" is on, draw a centered band for EVERY
+      // saved capture at the selected horizon, each pinned to its own candle.
+      let centeredPoints: CenteredBandPoint[] = [];
+      if (showFieldForecast && showAllSavedForecasts && fieldHistoryRows.length) {
+        const byDate = candleTimesByDate(candleData);
+        const horizonKey = selectedBand?.key ?? selectedFieldHorizon;
+        const latestByDate = new Map<string, CenteredBandPoint>();
+        for (const row of fieldHistoryRows) {
+          const date = rowSnapshotDate(row);
+          if (!date) continue;
+          const times = byDate.get(date);
+          const t = times?.length ? times[0] : dateToTime(date);
+          if (t == null) continue;
+          latestByDate.set(date, {
+            time: t,
+            base: horizonForecastField(row, "base", horizonKey),
+            upper: horizonForecastField(row, "upper", horizonKey),
+            lower: horizonForecastField(row, "lower", horizonKey),
+          });
+        }
+        centeredPoints = Array.from(latestByDate.values()).sort(
+          (a, b) => Number(a.time) - Number(b.time),
+        );
+      } else if (showFieldForecast && fieldAnchorTime != null) {
+        centeredPoints = [
+          {
+            time: fieldAnchorTime,
+            base: Number.isFinite(bandBase as number) ? (bandBase as number) : null,
+            upper: Number.isFinite(bandUpperVal as number) ? (bandUpperVal as number) : null,
+            lower: Number.isFinite(bandLowerVal as number) ? (bandLowerVal as number) : null,
+          },
+        ];
+      }
+      centeredBandRef.current?.setPoints(centeredPoints);
+    }
+
     fieldWheelRef.current?.setData(
       showFieldForecast && wheelFloor != null && fieldAnchorTime != null
-        ? horizontalBand([fieldAnchorTime], wheelFloor)
-        : [],
-    );
-
-    centeredBandRef.current?.setPoints(
-      showFieldForecast && fieldAnchorTime != null
-        ? [
-            {
-              time: fieldAnchorTime,
-              base: Number.isFinite(bandBase as number) ? (bandBase as number) : null,
-              upper: Number.isFinite(bandUpperVal as number) ? (bandUpperVal as number) : null,
-              lower: Number.isFinite(bandLowerVal as number) ? (bandLowerVal as number) : null,
-            },
-          ]
+        ? horizontalBand(
+            extendBand
+              ? [fieldAnchorTime, addBusinessDays(fieldAnchorTime, terminalSessions)]
+              : [fieldAnchorTime],
+            wheelFloor,
+          )
         : [],
     );
 
@@ -2289,9 +2342,32 @@ export default function ForecastChartPanel({
     }
 
     if (showFieldForecast) {
-      // The filled OI Field v2 band (upper/base/lower baseline series) now shows
-      // these levels directly with right-edge axis tags, so the three standalone
-      // horizontal field lines are no longer drawn (they were redundant wiring).
+      // When the band is extended as horizontal lines (live surface, no forward
+      // candle), bring back the price-axis labels for upper/base/lower. For dated
+      // surfaces the centered band shows these without standalone lines.
+      if (extendBand) {
+        addPriceLine({
+          price: bandUpperVal,
+          color: "#22c55e",
+          title: `Field upper ${fmt(bandUpperVal)}`,
+          dashed: true,
+          width: 2,
+        });
+        addPriceLine({
+          price: bandBase,
+          color: "#67e8f9",
+          title: `Field base ${selectedBand?.key ?? ""} ${fmt(bandBase)}`,
+          dashed: false,
+          width: 2,
+        });
+        addPriceLine({
+          price: bandLowerVal,
+          color: "#fb7185",
+          title: `Field lower ${fmt(bandLowerVal)}`,
+          dashed: true,
+          width: 2,
+        });
+      }
 
       if (showFieldRails) {
         const upperRail = toNumber(path?.invalidAbove ?? path?.callWall);
@@ -2433,6 +2509,9 @@ export default function ForecastChartPanel({
     structureFocus,
     chartMode,
     forecastAxisMode,
+    selectedFieldHorizon,
+    showAllSavedForecasts,
+    surfaceDate,
     capturedForecast,
     forecastDivergenceEnabled,
   ]);
@@ -2839,6 +2918,30 @@ export default function ForecastChartPanel({
             >
               Saved Field Overlay
             </button>
+            {fieldForecast &&
+            (chartMode === "field-v2" || chartMode === "both") ? (
+              <button
+                type="button"
+                onClick={() => setShowAllSavedForecasts((value) => !value)}
+                style={{
+                  border: showAllSavedForecasts
+                    ? "1px solid rgba(34,211,238,0.7)"
+                    : "1px solid rgba(148,163,184,0.22)",
+                  background: showAllSavedForecasts
+                    ? "rgba(34,211,238,0.14)"
+                    : "rgba(15,23,42,0.72)",
+                  color: showAllSavedForecasts ? colors.teal : colors.muted,
+                  borderRadius: 999,
+                  padding: "0.25rem 0.48rem",
+                  fontSize: 10,
+                  fontWeight: 950,
+                  cursor: "pointer",
+                }}
+                title="Show every saved OI Field forecast at once, each centered on its own capture-date candle."
+              >
+                All Saved Forecasts
+              </button>
+            ) : null}
           </div>
         </div>
       </div>
