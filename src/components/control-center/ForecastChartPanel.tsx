@@ -1102,6 +1102,70 @@ function makeFieldHistorySeries(
   return uniqueAscending(points);
 }
 
+// Read a capture row's band value for a SPECIFIC horizon key (e.g. "30D" ->
+// base_30d). Falls back across nearby horizons so a sparse capture still plots.
+function horizonForecastField(
+  row: CapturedForecastRow | null | undefined,
+  side: "base" | "upper" | "lower",
+  horizonKey: string,
+): number | null {
+  if (!row) return null;
+  const norm = String(horizonKey).toLowerCase().replace(/[^0-9a-z]/g, "");
+  const suffix = norm.startsWith("exp") ? "exp" : norm; // "30d","14d","exp",...
+  const primary = toNumber((row as any)[`${side}_${suffix}`]);
+  if (primary != null) return primary;
+  const fallback = ["30d", "14d", "10d", "5d", "3d", "1d", "exp"];
+  for (const key of fallback) {
+    const v = toNumber((row as any)[`${side}_${key}`]);
+    if (v != null) return v;
+  }
+  return null;
+}
+
+// Build a capture-history trail for one band edge: each saved capture pinned to
+// its REAL snapshot date (matched to that date's candle), latest-per-date, then
+// connected in date order. This is the "5/22 -> 5/25 -> 5/28 ..." migrating band.
+function makeHorizonHistorySeries(
+  rows: CapturedForecastRow[],
+  candleData: CandleSeriesData[],
+  side: "base" | "upper" | "lower",
+  horizonKey: string,
+): ChartLinePoint[] {
+  if (!rows.length) return [];
+  const byDate = candleTimesByDate(candleData);
+  const latestByDate = new Map<string, number>();
+  const sorted = [...rows]
+    .map((row) => {
+      const date = rowSnapshotDate(row);
+      const value = horizonForecastField(row, side, horizonKey);
+      const generated = String(row.generated_at ?? row.snapshot_date ?? "");
+      return date && value != null ? { date, value, generated } : null;
+    })
+    .filter(
+      (r): r is { date: string; value: number; generated: string } => Boolean(r),
+    )
+    .sort((a, b) => {
+      const d = a.date.localeCompare(b.date);
+      return d !== 0 ? d : a.generated.localeCompare(b.generated);
+    });
+  for (const item of sorted) latestByDate.set(item.date, item.value);
+
+  const points: ChartLinePoint[] = [];
+  for (const [date, value] of Array.from(latestByDate.entries()).sort((a, b) =>
+    a[0].localeCompare(b[0]),
+  )) {
+    const times = byDate.get(date);
+    if (times?.length) {
+      // pin to the actual candle for that capture date
+      points.push({ time: times[0], value });
+    } else {
+      const time = dateToTime(date);
+      if (time != null) points.push({ time, value });
+    }
+  }
+  return uniqueAscending(points);
+}
+
 function fieldHistoryReadout(
   rows: CapturedForecastRow[],
   axisMode: ForecastAxisMode,
@@ -1279,6 +1343,9 @@ export default function ForecastChartPanel({
   const fieldBaseRef = useRef<ISeriesApi<"Line"> | null>(null);
   const fieldUpperRef = useRef<ISeriesApi<"Baseline"> | null>(null);
   const fieldLowerRef = useRef<ISeriesApi<"Baseline"> | null>(null);
+  const trailBaseRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const trailUpperRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const trailLowerRef = useRef<ISeriesApi<"Line"> | null>(null);
   const fieldWheelRef = useRef<ISeriesApi<"Line"> | null>(null);
   const divergenceBaseRef = useRef<ISeriesApi<"Line"> | null>(null);
   const divergenceUpperRef = useRef<ISeriesApi<"Line"> | null>(null);
@@ -1623,6 +1690,30 @@ export default function ForecastChartPanel({
       lastValueVisible: false,
     });
 
+    // Capture-history trail: each saved forecast's band edges pinned to their
+    // real capture dates and connected day-to-day (5/22 -> 5/25 -> ...).
+    const trailUpper = chart.addSeries(LineSeries, {
+      color: "rgba(34,197,94,0.5)",
+      lineWidth: 1,
+      lineStyle: LineStyle.Dashed,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+    const trailBase = chart.addSeries(LineSeries, {
+      color: "rgba(103,232,249,0.7)",
+      lineWidth: 2,
+      lineStyle: LineStyle.Solid,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+    const trailLower = chart.addSeries(LineSeries, {
+      color: "rgba(251,113,133,0.5)",
+      lineWidth: 1,
+      lineStyle: LineStyle.Dashed,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+
     const divergenceBase = chart.addSeries(LineSeries, {
       color: "rgba(248,250,252,0.78)",
       lineWidth: 2,
@@ -1662,6 +1753,9 @@ export default function ForecastChartPanel({
     fieldUpperRef.current = fieldUpper;
     fieldLowerRef.current = fieldLower;
     fieldWheelRef.current = fieldWheel;
+    trailUpperRef.current = trailUpper;
+    trailBaseRef.current = trailBase;
+    trailLowerRef.current = trailLower;
     divergenceBaseRef.current = divergenceBase;
     divergenceUpperRef.current = divergenceUpper;
     divergenceLowerRef.current = divergenceLower;
@@ -1694,6 +1788,9 @@ export default function ForecastChartPanel({
       fieldUpperRef.current = null;
       fieldLowerRef.current = null;
       fieldWheelRef.current = null;
+      trailUpperRef.current = null;
+      trailBaseRef.current = null;
+      trailLowerRef.current = null;
       divergenceBaseRef.current = null;
       divergenceUpperRef.current = null;
       divergenceLowerRef.current = null;
@@ -1743,6 +1840,9 @@ export default function ForecastChartPanel({
       fieldUpperRef.current?.setData([]);
       fieldLowerRef.current?.setData([]);
       fieldWheelRef.current?.setData([]);
+      trailUpperRef.current?.setData([]);
+      trailBaseRef.current?.setData([]);
+      trailLowerRef.current?.setData([]);
       divergenceBaseRef.current?.setData([]);
       divergenceUpperRef.current?.setData([]);
       divergenceLowerRef.current?.setData([]);
@@ -1856,6 +1956,25 @@ export default function ForecastChartPanel({
     fieldWheelRef.current?.setData(
       showFieldForecast && wheelFloor != null
         ? horizontalBand(fieldTimes, wheelFloor)
+        : [],
+    );
+
+    // Capture-history trail: prior saved forecasts at the selected horizon,
+    // each pinned to its real capture date and connected day-to-day.
+    const trailKey = selectedBand?.key ?? selectedFieldHorizon;
+    trailUpperRef.current?.setData(
+      showFieldForecast
+        ? makeHorizonHistorySeries(fieldHistoryRows, candleData, "upper", trailKey)
+        : [],
+    );
+    trailBaseRef.current?.setData(
+      showFieldForecast
+        ? makeHorizonHistorySeries(fieldHistoryRows, candleData, "base", trailKey)
+        : [],
+    );
+    trailLowerRef.current?.setData(
+      showFieldForecast
+        ? makeHorizonHistorySeries(fieldHistoryRows, candleData, "lower", trailKey)
         : [],
     );
 
