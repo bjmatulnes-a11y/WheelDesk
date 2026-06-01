@@ -20,8 +20,6 @@ import { colors, cardStyle } from "./styles";
 
 type ChartMode = "field-v2" | "classic" | "both" | "candles";
 type ForecastAxisMode = "compact" | "full" | "expiration";
-const FIELD_BAND_KEYS = ["1D", "3D", "5D", "10D", "14D", "EXP", "30D"] as const;
-type FieldBandKey = (typeof FIELD_BAND_KEYS)[number];
 
 type ForecastChartPanelProps = {
   ticker: string;
@@ -167,168 +165,6 @@ function fmt(value?: number | null): string {
 function pct(value?: number | null): string {
   if (value == null || !Number.isFinite(value)) return "N/A";
   return `${value.toFixed(1)}%`;
-}
-
-
-function fieldBandKeyFromAxis(mode: ForecastAxisMode): FieldBandKey {
-  switch (mode) {
-    case "compact":
-      return "14D";
-    case "expiration":
-      return "EXP";
-    case "full":
-    default:
-      return "30D";
-  }
-}
-
-function fieldBandLabel(key: FieldBandKey): string {
-  return key === "EXP" ? "EXP" : key;
-}
-
-function fieldBandColumn(
-  side: "base" | "upper" | "lower",
-  key: FieldBandKey,
-): keyof CapturedForecastRow {
-  const suffix = key === "EXP" ? "exp" : key.toLowerCase();
-  return `${side}_${suffix}` as keyof CapturedForecastRow;
-}
-
-function nestedForecastValue(
-  row: CapturedForecastRow | null | undefined,
-  side: "base" | "upper" | "lower",
-  key: FieldBandKey,
-): number | null {
-  if (!row) return null;
-  const candidates = [
-    row.forecast,
-    row.baseline_forecast,
-    row.final_forecast,
-    row.final_forecast?.baseline,
-    row.final_forecast?.forecast,
-    row.inputs?.forecast,
-    row.inputs?.baselineForecast,
-  ];
-  for (const candidate of candidates) {
-    const horizons = Array.isArray(candidate?.horizons)
-      ? candidate.horizons
-      : [];
-    const horizon = horizons.find((item: any) => String(item?.key ?? item?.horizon ?? "").toUpperCase() === key);
-    if (!horizon) continue;
-    const value =
-      side === "base"
-        ? toNumber(horizon.base ?? horizon.baseTarget ?? horizon.target)
-        : side === "upper"
-          ? toNumber(horizon.upper ?? horizon.upperBand ?? horizon.fieldUpper)
-          : toNumber(horizon.lower ?? horizon.lowerBand ?? horizon.fieldLower);
-    if (value != null) return value;
-  }
-  return null;
-}
-
-function capturedBandValue(
-  row: CapturedForecastRow | null | undefined,
-  side: "base" | "upper" | "lower",
-  key: FieldBandKey,
-): number | null {
-  if (!row) return null;
-  const direct = toNumber((row as any)[fieldBandColumn(side, key)]);
-  return direct ?? nestedForecastValue(row, side, key);
-}
-
-function generatedTime(row: CapturedForecastRow): number {
-  const raw = row.generated_at ? Date.parse(row.generated_at) : NaN;
-  return Number.isFinite(raw) ? raw : 0;
-}
-
-function normalizeForecastHistory(
-  rows: CapturedForecastRow[],
-  selectedExpiration?: string | null,
-): CapturedForecastRow[] {
-  const cleaned = (rows ?? []).filter((row) => dateToTime(row.snapshot_date ?? row.generated_at));
-  const exp = String(selectedExpiration ?? "").slice(0, 10);
-  const sameExpiration = exp
-    ? cleaned.filter((row) => String(row.expiration ?? "").slice(0, 10) === exp)
-    : [];
-  const sourceRows = sameExpiration.length >= 2 ? sameExpiration : cleaned;
-  const byDate = new Map<string, CapturedForecastRow>();
-  for (const row of sourceRows) {
-    const key = String(row.snapshot_date ?? row.generated_at ?? "").slice(0, 10);
-    if (!key) continue;
-    const prev = byDate.get(key);
-    if (!prev || generatedTime(row) >= generatedTime(prev)) byDate.set(key, row);
-  }
-  return Array.from(byDate.values()).sort(
-    (a, b) => Number(dateToTime(a.snapshot_date ?? a.generated_at) ?? 0) - Number(dateToTime(b.snapshot_date ?? b.generated_at) ?? 0),
-  );
-}
-
-function buildFieldBandHistory(
-  rows: CapturedForecastRow[],
-  bandKey: FieldBandKey,
-  selectedExpiration: string | null | undefined,
-  liveForecast: OIFieldForecastResult | null | undefined,
-  lastTime: UTCTimestamp,
-): {
-  base: ChartLinePoint[];
-  upper: ChartLinePoint[];
-  lower: ChartLinePoint[];
-  count: number;
-  startDate: string | null;
-  endDate: string | null;
-} {
-  const normalized = normalizeForecastHistory(rows, selectedExpiration);
-  const base: ChartLinePoint[] = [];
-  const upper: ChartLinePoint[] = [];
-  const lower: ChartLinePoint[] = [];
-
-  for (const row of normalized) {
-    const time = dateToTime(row.snapshot_date ?? row.generated_at);
-    if (time == null) continue;
-    const baseValue = capturedBandValue(row, "base", bandKey);
-    const upperValue = capturedBandValue(row, "upper", bandKey);
-    const lowerValue = capturedBandValue(row, "lower", bandKey);
-    if (baseValue != null) base.push({ time, value: baseValue });
-    if (upperValue != null) upper.push({ time, value: upperValue });
-    if (lowerValue != null) lower.push({ time, value: lowerValue });
-  }
-
-  const live = liveHorizonForBand(liveForecast, bandKey);
-  if (live) {
-    const liveBase = toNumber(live.baseTarget);
-    const liveUpper = toNumber(live.upperBand);
-    const liveLower = toNumber(live.lowerBand);
-    if (liveBase != null) base.push({ time: lastTime, value: liveBase });
-    if (liveUpper != null) upper.push({ time: lastTime, value: liveUpper });
-    if (liveLower != null) lower.push({ time: lastTime, value: liveLower });
-  }
-
-  const baseSeries = uniqueAscending(base);
-  const upperSeries = uniqueAscending(upper);
-  const lowerSeries = uniqueAscending(lower);
-  const allTimes = [...baseSeries, ...upperSeries, ...lowerSeries]
-    .map((point) => Number(point.time))
-    .filter((time) => Number.isFinite(time))
-    .sort((a, b) => a - b);
-  const startDate = allTimes.length ? new Date(allTimes[0] * 1000).toISOString().slice(0, 10) : null;
-  const endDate = allTimes.length ? new Date(allTimes[allTimes.length - 1] * 1000).toISOString().slice(0, 10) : null;
-  return {
-    base: baseSeries,
-    upper: upperSeries,
-    lower: lowerSeries,
-    count: Math.max(baseSeries.length, upperSeries.length, lowerSeries.length),
-    startDate,
-    endDate,
-  };
-}
-
-function liveHorizonForBand(
-  forecast: OIFieldForecastResult | null | undefined,
-  bandKey: FieldBandKey,
-): any | null {
-  if (!forecast?.horizons?.length) return null;
-  if (bandKey === "EXP") return expirationHorizon(forecast);
-  return forecast.horizons.find((horizon) => String(horizon.key) === bandKey) ?? null;
 }
 
 function dateToTime(value: unknown): UTCTimestamp | null {
@@ -646,12 +482,7 @@ function capturedFieldLevel(
   side: "base" | "upper" | "lower",
   axisMode: ForecastAxisMode,
   terminalSessions: number,
-  bandKey?: FieldBandKey,
 ): number | null {
-  if (bandKey) {
-    const direct = capturedBandValue(row, side, bandKey);
-    if (direct != null) return direct;
-  }
   return capturedForecastAt(
     row,
     Math.max(1, Math.round(terminalSessions || 30)),
@@ -869,20 +700,19 @@ function savedFieldValidationReadout(args: {
   candleData: CandleSeriesData[];
   axisMode: ForecastAxisMode;
   terminalSessions: number;
-  bandKey?: FieldBandKey;
   liveBase: number | null;
   liveUpper: number | null;
   liveLower: number | null;
 }): SavedFieldValidationReadout | null {
-  const { row, candleData, axisMode, terminalSessions, bandKey, liveBase, liveUpper, liveLower } = args;
+  const { row, candleData, axisMode, terminalSessions, liveBase, liveUpper, liveLower } = args;
   if (!row || !candleData.length) return null;
 
   const anchorTime = capturedAnchorTime(row);
   if (!anchorTime) return null;
 
-  const savedBase = capturedFieldLevel(row, "base", axisMode, terminalSessions, bandKey);
-  const savedUpper = capturedFieldLevel(row, "upper", axisMode, terminalSessions, bandKey);
-  const savedLower = capturedFieldLevel(row, "lower", axisMode, terminalSessions, bandKey);
+  const savedBase = capturedFieldLevel(row, "base", axisMode, terminalSessions);
+  const savedUpper = capturedFieldLevel(row, "upper", axisMode, terminalSessions);
+  const savedLower = capturedFieldLevel(row, "lower", axisMode, terminalSessions);
   if (savedBase == null && savedUpper == null && savedLower == null) return null;
 
   const validationCandles = candleData.filter((candle) => Number(candle.time) >= Number(anchorTime));
@@ -1354,11 +1184,6 @@ export default function ForecastChartPanel({
   const [capturedForecast, setCapturedForecast] =
     useState<CapturedForecastRow | null>(null);
   const [capturedForecastStatus, setCapturedForecastStatus] = useState("");
-  const [fieldBandKey, setFieldBandKey] = useState<FieldBandKey>(
-    fieldBandKeyFromAxis(defaultForecastAxisMode ?? (chartHeight >= 620 ? "full" : "compact")),
-  );
-  const [fieldBandHistoryRows, setFieldBandHistoryRows] = useState<CapturedForecastRow[]>([]);
-  const [fieldBandHistoryStatus, setFieldBandHistoryStatus] = useState("");
   const [classicScopeDte, setClassicScopeDte] = useState(30);
   const [classicFullSurface, setClassicFullSurface] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1382,45 +1207,6 @@ export default function ForecastChartPanel({
   const divergenceLowerRef = useRef<ISeriesApi<"Line"> | null>(null);
   const priceLinesRef = useRef<IPriceLine[]>([]);
   const [validationShade, setValidationShade] = useState<ValidationShadeState | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    const symbol = String(ticker ?? "")
-      .trim()
-      .toUpperCase();
-    if (!symbol) {
-      setFieldBandHistoryRows([]);
-      setFieldBandHistoryStatus("");
-      return;
-    }
-
-    async function loadFieldBandHistory() {
-      try {
-        setFieldBandHistoryStatus("Loading OI Field band history…");
-        const params = new URLSearchParams({ symbol, limit: "160" });
-        const response = await fetch(`/api/forecasts/oi-field?${params.toString()}`, {
-          cache: "no-store",
-        });
-        const payload = await response.json().catch(() => null);
-        if (cancelled) return;
-        if (!response.ok || !payload?.ok)
-          throw new Error(payload?.error ?? `Forecast history request failed: ${response.status}`);
-        const rows = Array.isArray(payload.forecasts) ? payload.forecasts : [];
-        setFieldBandHistoryRows(rows);
-        setFieldBandHistoryStatus(rows.length ? `${rows.length} saved field receipt(s)` : "No saved field band history yet");
-      } catch (error) {
-        if (!cancelled) {
-          setFieldBandHistoryRows([]);
-          setFieldBandHistoryStatus(error instanceof Error ? error.message : "Could not load OI Field band history.");
-        }
-      }
-    }
-
-    loadFieldBandHistory();
-    return () => {
-      cancelled = true;
-    };
-  }, [ticker]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1882,48 +1668,22 @@ export default function ForecastChartPanel({
     const wheelFloor = toNumber(wheel?.lowerBand ?? null);
     const terminalTarget = toNumber(wheel?.baseTarget);
     const band = activeFieldBandForAxis(fieldForecast, forecastAxisMode);
-    const fieldBandHistory = showFieldForecast
-      ? buildFieldBandHistory(
-          fieldBandHistoryRows,
-          fieldBandKey,
-          expiration,
-          fieldForecast,
-          lastTime,
-        )
-      : { base: [], upper: [], lower: [], count: 0, startDate: null, endDate: null };
-    const hasFieldBandHistory = fieldBandHistory.count >= 2;
     const fieldTimes = showFieldForecast
-      ? hasFieldBandHistory
-        ? uniqueAscending([...fieldBandHistory.base, ...fieldBandHistory.upper, ...fieldBandHistory.lower]).map((point) => point.time)
-        : futureTimeWindow(lastTime, terminalSessions)
+      ? futureTimeWindow(lastTime, terminalSessions)
       : [];
 
-    // OI Field v2 is now an OI-driven Bollinger-style field band.
-    // When saved receipts exist, connect the selected horizon through time.
-    // If history is still thin, fall back to today's horizontal snapshot band.
+    // OI Field v2 is now a pressure/containment band, not a fake candle path.
     fieldBaseRef.current?.setData(
-      showFieldForecast
-        ? hasFieldBandHistory
-          ? fieldBandHistory.base
-          : horizontalBand(fieldTimes, terminalTarget)
-        : [],
+      showFieldForecast ? horizontalBand(fieldTimes, terminalTarget) : [],
     );
     fieldUpperRef.current?.setData(
-      showFieldForecast
-        ? hasFieldBandHistory
-          ? fieldBandHistory.upper
-          : horizontalBand(fieldTimes, band.upper)
-        : [],
+      showFieldForecast ? horizontalBand(fieldTimes, band.upper) : [],
     );
     fieldLowerRef.current?.setData(
-      showFieldForecast
-        ? hasFieldBandHistory
-          ? fieldBandHistory.lower
-          : horizontalBand(fieldTimes, band.lower)
-        : [],
+      showFieldForecast ? horizontalBand(fieldTimes, band.lower) : [],
     );
     fieldWheelRef.current?.setData(
-      showFieldForecast && wheelFloor != null && !hasFieldBandHistory
+      showFieldForecast && wheelFloor != null
         ? horizontalBand(fieldTimes, wheelFloor)
         : [],
     );
@@ -1934,7 +1694,6 @@ export default function ForecastChartPanel({
           "base",
           forecastAxisMode,
           terminalSessions,
-          fieldBandKey,
         )
       : null;
     const capturedUpperLevel = showCapturedDivergence
@@ -1943,7 +1702,6 @@ export default function ForecastChartPanel({
           "upper",
           forecastAxisMode,
           terminalSessions,
-          fieldBandKey,
         )
       : null;
     const capturedLowerLevel = showCapturedDivergence
@@ -1952,7 +1710,6 @@ export default function ForecastChartPanel({
           "lower",
           forecastAxisMode,
           terminalSessions,
-          fieldBandKey,
         )
       : null;
     const savedFieldMigration = fieldMigrationReadout(
@@ -2184,23 +1941,23 @@ export default function ForecastChartPanel({
         "base",
         forecastAxisMode,
         terminalSessions,
-        fieldBandKey,
       );
       const capturedUpperLevel = capturedFieldLevel(
         capturedForecast,
         "upper",
         forecastAxisMode,
         terminalSessions,
-        fieldBandKey,
       );
       const capturedLowerLevel = capturedFieldLevel(
         capturedForecast,
         "lower",
         forecastAxisMode,
         terminalSessions,
-        fieldBandKey,
       );
-      const liveBase = toNumber(liveHorizonForBand(fieldForecast, fieldBandKey)?.baseTarget ?? null);
+      const liveBase = toNumber(
+        fieldTerminalHorizonForAxis(fieldForecast, forecastAxisMode)?.baseTarget ??
+          null,
+      );
       const migration = fieldMigrationReadout(liveBase, capturedBaseLevel);
 
       addPriceLine({
@@ -2294,21 +2051,18 @@ export default function ForecastChartPanel({
         "base",
         forecastAxisMode,
         terminalSessions,
-        fieldBandKey,
       );
       const savedUpper = capturedFieldLevel(
         capturedForecast,
         "upper",
         forecastAxisMode,
         terminalSessions,
-        fieldBandKey,
       );
       const savedLower = capturedFieldLevel(
         capturedForecast,
         "lower",
         forecastAxisMode,
         terminalSessions,
-        fieldBandKey,
       );
       const x = anchorTime ? chart.timeScale().timeToCoordinate(anchorTime) : null;
       const containerWidth = containerRef.current?.clientWidth ?? 0;
@@ -2354,9 +2108,6 @@ export default function ForecastChartPanel({
     ivSurface,
     flowOverlay,
     fieldForecast,
-    fieldBandHistoryRows,
-    fieldBandKey,
-    expiration,
     expirationMagnetPath,
     effectiveClassicScopeDte,
     classicFullSurface,
@@ -2388,15 +2139,6 @@ export default function ForecastChartPanel({
   const fourteenDay = horizonByKey(fieldForecast, "14D");
   const thirtyDay = horizonByKey(fieldForecast, "30D");
   const fieldBand = activeFieldBandForAxis(fieldForecast, forecastAxisMode);
-  const fieldBandHistoryReadout = candles?.length
-    ? buildFieldBandHistory(
-        fieldBandHistoryRows,
-        fieldBandKey,
-        expiration,
-        fieldForecast,
-        (dateToTime(candles[candles.length - 1]?.date) ?? Math.floor(Date.now() / 1000)) as UTCTimestamp,
-      )
-    : { base: [], upper: [], lower: [], count: 0, startDate: null, endDate: null };
   const effectiveModeLabel = modeLabel(
     chartMode === "field-v2" && !fieldForecast ? "classic" : chartMode,
   );
@@ -2415,10 +2157,9 @@ export default function ForecastChartPanel({
         candleData: normalizedCandleReadout,
         axisMode: forecastAxisMode,
         terminalSessions,
-        bandKey: fieldBandKey,
-        liveBase: toNumber(liveHorizonForBand(fieldForecast, fieldBandKey)?.baseTarget),
-        liveUpper: toNumber(liveHorizonForBand(fieldForecast, fieldBandKey)?.upperBand),
-        liveLower: toNumber(liveHorizonForBand(fieldForecast, fieldBandKey)?.lowerBand),
+        liveBase: toNumber(terminal?.baseTarget),
+        liveUpper: fieldBand.upper,
+        liveLower: fieldBand.lower,
       })
     : null;
 
@@ -2455,7 +2196,7 @@ export default function ForecastChartPanel({
             {expirationMagnetPath?.points?.length
               ? "Classic expiration magnets + optional OI Field v2 pressure band"
               : fieldForecast
-                ? "OI Field v2 historical band + active structure levels"
+                ? "OI Field v2 pressure band + active structure levels"
                 : `Live candlestick chart + OI path + matched IV band over ${horizon || 14} sessions`}
           </div>
           {expectedMove ? (
@@ -2604,7 +2345,7 @@ export default function ForecastChartPanel({
                         fontWeight: 950,
                         cursor: "pointer",
                       }}
-                      title="Controls the fallback live OI Field lane when there is not enough saved band history."
+                      title="Controls how much forward forecast lane is shown on the time axis."
                     >
                       {forecastAxisLabel(mode)}
                     </button>
@@ -2710,45 +2451,6 @@ export default function ForecastChartPanel({
                 </div>
               </div>
             ) : null}
-            {fieldForecast ? (
-              <div
-                style={{
-                  display: "flex",
-                  gap: "0.35rem",
-                  flexWrap: "wrap",
-                  justifyContent: "flex-end",
-                  maxWidth: 360,
-                }}
-                aria-label="OI Field historical band"
-              >
-                {FIELD_BAND_KEYS.map((key) => (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => setFieldBandKey(key)}
-                    style={{
-                      border:
-                        fieldBandKey === key
-                          ? "1px solid rgba(103,232,249,0.75)"
-                          : "1px solid rgba(148,163,184,0.22)",
-                      background:
-                        fieldBandKey === key
-                          ? "rgba(34,211,238,0.14)"
-                          : "rgba(15,23,42,0.72)",
-                      color: fieldBandKey === key ? colors.teal : colors.muted,
-                      borderRadius: 999,
-                      padding: "0.22rem 0.42rem",
-                      fontSize: 10,
-                      fontWeight: 950,
-                      cursor: "pointer",
-                    }}
-                    title="Select which saved OI Field v2 horizon band is connected over time."
-                  >
-                    {fieldBandLabel(key)}
-                  </button>
-                ))}
-              </div>
-            ) : null}
             <button
               type="button"
               onClick={() => setForecastDivergenceEnabled((value) => !value)}
@@ -2771,7 +2473,7 @@ export default function ForecastChartPanel({
                 "Overlay the frozen saved OI Field receipt as horizontal base/upper/lower levels; candles validate it after capture."
               }
             >
-              Receipt Validation
+              Saved Field Overlay
             </button>
           </div>
         </div>
@@ -2944,7 +2646,8 @@ export default function ForecastChartPanel({
               </span>
             </div>
             <div style={{ color: colors.amber, fontSize: 11, fontWeight: 900 }}>
-              Field band: {fieldBandLabel(fieldBandKey)} · {fieldBandHistoryReadout.count >= 2 ? `${fieldBandHistoryReadout.count} captures ${fieldBandHistoryReadout.startDate ?? ""} → ${fieldBandHistoryReadout.endDate ?? ""}` : fieldBandHistoryStatus || "live snapshot only"}
+              Forecast lane: {lookbackBars} bars back → +{terminalSessions}{" "}
+              trading bars forward
             </div>
             <div
               style={{
@@ -3121,28 +2824,29 @@ export default function ForecastChartPanel({
         </span>
         {fieldForecast ? (
           <span>
-            OI Field band:{" "}
+            Forecast axis:{" "}
             <strong style={{ color: colors.amber }}>
-              {fieldBandLabel(fieldBandKey)}
+              {forecastAxisLabel(forecastAxisMode)}
             </strong>{" "}
-            · {fieldBandHistoryReadout.count >= 2
-              ? `${fieldBandHistoryReadout.count} saved capture points`
-              : "live snapshot only"}
+            · {lookbackBars} back / +{terminalSessions} forward
           </span>
         ) : null}
         {fieldForecast && chartMode !== "classic" && chartMode !== "candles" ? (
           <span>
-            <strong style={{ color: colors.teal }}>Cyan</strong> OI Field v2 {fieldBandLabel(fieldBandKey)} base band
+            <strong style={{ color: colors.teal }}>Muted cyan</strong> OI Field
+            v2 base level to {String(terminal?.label ?? terminal?.key ?? "30D")}
           </span>
         ) : null}
         {fieldForecast && chartMode !== "classic" && chartMode !== "candles" ? (
           <span>
-            <strong style={{ color: colors.green }}>Green/red</strong> connected upper/lower field band
+            <strong style={{ color: colors.green }}>Green/red dashed</strong>{" "}
+            upper/lower field band
           </span>
         ) : null}
         {fieldForecast && chartMode !== "classic" && chartMode !== "candles" ? (
           <span>
-            <strong style={{ color: "#10b981" }}>Dotted green</strong> current wheel floor when history is thin
+            <strong style={{ color: "#10b981" }}>Dotted green</strong> wheel
+            support floor
           </span>
         ) : null}
         {expirationMagnetPath?.points?.length &&
