@@ -1,657 +1,388 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  createZeroDTESpread,
-  defaultZeroDTEInternals,
-  defaultZeroDTEProfile,
-  ZeroDTEInternals,
-  ZeroDTEPressureInputs,
-  ZeroDTEProfile,
-  ZeroDTESide,
-  ZeroDTESpread,
-  ZeroDTEStrategyType
-} from "../../../lib/zero-dte-profile";
-import { evaluateZeroDTEPortfolio, ZeroDTESpreadReport } from "../../../lib/zero-dte-manager";
+import { WheelDeskSideNav, SIDENAV_WIDTH } from "../../../components/WheelDeskSideNav";
+import type { ZeroDteChainRow, ZeroDteRecommendation } from "../../../lib/zeroDteOiIntelligence";
 
-const STORAGE_KEY = "wheelDesk.zeroDTE.state.v1";
-
-function num(value: string): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function money(value: number): string {
-  return `$${value.toFixed(0)}`;
-}
-
-function money2(value: number): string {
-  return `$${value.toFixed(2)}`;
-}
-
-function statusColor(status: string): string {
-  if (status === "urgent") return "#991b1b";
-  if (status === "defend") return "#b91c1c";
-  if (status === "pressure") return "#c2410c";
-  if (status === "watch") return "#92400e";
-  return "#15803d";
-}
-
-function actionLabel(action: string): string {
-  return action.replaceAll("_", " ").toUpperCase();
-}
-
-type SavedState = {
-  profile: ZeroDTEProfile;
-  spot: number;
-  priorSpot: number;
-  internals: ZeroDTEInternals;
-  spreads: ZeroDTESpread[];
+type HarvestSymbolResult = {
+  symbol: "SPX" | "SPY";
+  yahooOptionSymbol: string;
+  yahooQuoteSymbol: string;
+  price: number;
+  expirationTimestamp: number;
+  expirationDate: string;
+  rows: ZeroDteChainRow[];
+  source: "yahoo";
 };
 
-function loadState(): SavedState {
-  if (typeof window === "undefined") {
-    return {
-      profile: defaultZeroDTEProfile,
-      spot: 0,
-      priorSpot: 0,
-      internals: defaultZeroDTEInternals,
-      spreads: []
-    };
-  }
+type HarvestResponse = {
+  tradeDate: string;
+  generatedAt: string;
+  status: "ok" | "partial" | "error";
+  spx?: HarvestSymbolResult;
+  spy?: HarvestSymbolResult;
+  recommendation?: ZeroDteRecommendation;
+  errors: string[];
+};
 
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) throw new Error("missing");
+export default function ZeroDteCommandPage() {
+  const [data, setData] = useState<HarvestResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [expectedMove, setExpectedMove] = useState("");
+  const [rangePct, setRangePct] = useState("0.045");
 
-    const parsed = JSON.parse(raw) as SavedState;
+  async function load() {
+    setLoading(true);
+    setError(null);
 
-    return {
-      profile: { ...defaultZeroDTEProfile, ...parsed.profile },
-      spot: parsed.spot ?? 0,
-      priorSpot: parsed.priorSpot ?? 0,
-      internals: { ...defaultZeroDTEInternals, ...parsed.internals },
-      spreads: parsed.spreads ?? []
-    };
-  } catch {
-    return {
-      profile: defaultZeroDTEProfile,
-      spot: 0,
-      priorSpot: 0,
-      internals: defaultZeroDTEInternals,
-      spreads: []
-    };
-  }
-}
+    try {
+      const params = new URLSearchParams();
+      if (Number(expectedMove) > 0) params.set("expectedMove", expectedMove);
+      if (Number(rangePct) > 0) params.set("rangePct", rangePct);
 
-function saveState(state: SavedState) {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-}
+      const res = await fetch(`/api/zero-dte/harvest?${params.toString()}`, {
+        cache: "no-store",
+      });
 
-function Card({
-  title,
-  children,
-  border = "#d1d5db"
-}: {
-  title: string;
-  children: React.ReactNode;
-  border?: string;
-}) {
-  return (
-    <section style={{ border: `1px solid ${border}`, borderRadius: 8, background: "#fff", padding: "1rem" }}>
-      <h3 style={{ marginTop: 0 }}>{title}</h3>
-      {children}
-    </section>
-  );
-}
+      const json = (await res.json()) as HarvestResponse;
+      setData(json);
 
-function Field({
-  label,
-  value,
-  onChange,
-  type = "number",
-  step = "any"
-}: {
-  label: string;
-  value: string | number;
-  onChange: (value: string) => void;
-  type?: string;
-  step?: string;
-}) {
-  return (
-    <label style={{ display: "grid", gap: 4 }}>
-      <span style={{ fontSize: 12, fontWeight: 700 }}>{label}</span>
-      <input
-        type={type}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        style={{ padding: "0.35rem", border: "1px solid #9ca3af", borderRadius: 4 }}
-      />
-    </label>
-  );
-}
-
-function ProfilePanel({
-  profile,
-  setProfile,
-  spot,
-  setSpot,
-  priorSpot,
-  setPriorSpot
-}: {
-  profile: ZeroDTEProfile;
-  setProfile: (p: ZeroDTEProfile) => void;
-  spot: number;
-  setSpot: (n: number) => void;
-  priorSpot: number;
-  setPriorSpot: (n: number) => void;
-}) {
-  return (
-    <Card title="0DTE Profile / TOS Mirror">
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(6,minmax(0,1fr))", gap: "0.75rem" }}>
-        <Field label="Ticker" type="text" value={profile.ticker} onChange={(v) => setProfile({ ...profile, ticker: v.toUpperCase() })} />
-        <Field label="Expiration" type="date" value={profile.expiration} onChange={(v) => setProfile({ ...profile, expiration: v })} />
-        <Field label="Spot" value={spot} onChange={(v) => setSpot(num(v))} />
-        <Field label="Prior Spot" value={priorSpot} onChange={(v) => setPriorSpot(num(v))} />
-        <Field label="Cash Available" value={profile.cashAvailable} onChange={(v) => setProfile({ ...profile, cashAvailable: num(v) })} />
-        <Field label="Max Total Risk" value={profile.maxTotalRisk} onChange={(v) => setProfile({ ...profile, maxTotalRisk: num(v) })} />
-
-        <Field label="Max Daily Loss" value={profile.maxDailyLoss} onChange={(v) => setProfile({ ...profile, maxDailyLoss: num(v) })} />
-        <Field label="Max Risk / Trade" value={profile.maxRiskPerTrade} onChange={(v) => setProfile({ ...profile, maxRiskPerTrade: num(v) })} />
-        <Field label="Default Width" value={profile.defaultWidth} onChange={(v) => setProfile({ ...profile, defaultWidth: num(v) })} />
-        <Field label="Max Contracts" value={profile.maxContracts} onChange={(v) => setProfile({ ...profile, maxContracts: num(v) })} />
-        <Field label="3x Trigger" value={profile.shortLegTriggerMultiple} onChange={(v) => setProfile({ ...profile, shortLegTriggerMultiple: num(v) })} />
-
-        <div style={{ display: "grid", gap: 4 }}>
-          <span style={{ fontSize: 12, fontWeight: 700 }}>Rules</span>
-          <label>
-            <input
-              type="checkbox"
-              checked={profile.allowShortLegOnlyClose}
-              onChange={(e) => setProfile({ ...profile, allowShortLegOnlyClose: e.target.checked })}
-            />{" "}
-            close short only
-          </label>
-        </div>
-      </div>
-
-      <div style={{ display: "flex", gap: "1.5rem", marginTop: "0.75rem", flexWrap: "wrap" }}>
-        <label>
-          <input
-            type="checkbox"
-            checked={profile.allowLongLegRunner}
-            onChange={(e) => setProfile({ ...profile, allowLongLegRunner: e.target.checked })}
-          />{" "}
-          allow long-leg runner
-        </label>
-
-        <label>
-          <input
-            type="checkbox"
-            checked={profile.allowRecenter}
-            onChange={(e) => setProfile({ ...profile, allowRecenter: e.target.checked })}
-          />{" "}
-          allow recenter / reduce width
-        </label>
-
-        <label>
-          <input
-            type="checkbox"
-            checked={profile.allowHedge}
-            onChange={(e) => setProfile({ ...profile, allowHedge: e.target.checked })}
-          />{" "}
-          allow hedge
-        </label>
-      </div>
-    </Card>
-  );
-}
-
-function InternalsPanel({
-  internals,
-  setInternals
-}: {
-  internals: ZeroDTEInternals;
-  setInternals: (i: ZeroDTEInternals) => void;
-}) {
-  return (
-    <Card title="Market Internals Multiplier">
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: "0.75rem" }}>
-        <Field label="ADD" value={internals.add} onChange={(v) => setInternals({ ...internals, add: num(v) })} />
-        <Field label="TICK" value={internals.tick} onChange={(v) => setInternals({ ...internals, tick: num(v) })} />
-        <Field label="VIX % Change" value={internals.vixChangePct} onChange={(v) => setInternals({ ...internals, vixChangePct: num(v) })} />
-        <Field label="Top 10 Breadth 0-1" value={internals.top10Breadth} onChange={(v) => setInternals({ ...internals, top10Breadth: num(v) })} />
-        <Field label="UVOL/DVOL" value={internals.uvolDvolRatio} onChange={(v) => setInternals({ ...internals, uvolDvolRatio: num(v) })} />
-      </div>
-
-      <p style={{ marginBottom: 0, color: "#4b5563", fontSize: 13 }}>
-        Internals do not replace strike pressure. They multiply it. Bearish internals amplify put-side risk; bullish internals amplify call-side risk.
-      </p>
-    </Card>
-  );
-}
-
-function NewSpreadForm({
-  profile,
-  onAdd
-}: {
-  profile: ZeroDTEProfile;
-  onAdd: (spread: ZeroDTESpread) => void;
-}) {
-  const [side, setSide] = useState<ZeroDTESide>("put");
-  const [strategyType, setStrategyType] = useState<ZeroDTEStrategyType>("put_credit_spread");
-  const [shortStrike, setShortStrike] = useState("6200");
-  const [longStrike, setLongStrike] = useState("6180");
-  const [quantity, setQuantity] = useState("1");
-  const [entryCredit, setEntryCredit] = useState("2.00");
-  const [currentShortMark, setCurrentShortMark] = useState("2.00");
-  const [entryDelta, setEntryDelta] = useState("10");
-
-  return (
-    <Card title="Add / Mirror TOS Spread">
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(8,minmax(0,1fr))", gap: "0.75rem", alignItems: "end" }}>
-        <label style={{ display: "grid", gap: 4 }}>
-          <span style={{ fontSize: 12, fontWeight: 700 }}>Side</span>
-          <select
-            value={side}
-            onChange={(e) => {
-              const next = e.target.value as ZeroDTESide;
-              setSide(next);
-              setStrategyType(next === "put" ? "put_credit_spread" : "call_credit_spread");
-            }}
-            style={{ padding: "0.35rem" }}
-          >
-            <option value="put">Put</option>
-            <option value="call">Call</option>
-          </select>
-        </label>
-
-        <label style={{ display: "grid", gap: 4 }}>
-          <span style={{ fontSize: 12, fontWeight: 700 }}>Type</span>
-          <select
-            value={strategyType}
-            onChange={(e) => setStrategyType(e.target.value as ZeroDTEStrategyType)}
-            style={{ padding: "0.35rem" }}
-          >
-            <option value="put_credit_spread">Put Credit Spread</option>
-            <option value="call_credit_spread">Call Credit Spread</option>
-            <option value="iron_condor">Iron Condor Leg</option>
-            <option value="iron_fly">Iron Fly Leg</option>
-            <option value="hedge">Hedge</option>
-          </select>
-        </label>
-
-        <Field label="Short" value={shortStrike} onChange={setShortStrike} />
-        <Field label="Long" value={longStrike} onChange={setLongStrike} />
-        <Field label="Qty" value={quantity} onChange={setQuantity} />
-        <Field label="Entry Credit" value={entryCredit} onChange={setEntryCredit} />
-        <Field label="Short Mark" value={currentShortMark} onChange={setCurrentShortMark} />
-        <Field label="Entry Δ" value={entryDelta} onChange={setEntryDelta} />
-
-        <button
-          style={{ gridColumn: "1 / -1", padding: "0.5rem", fontWeight: 700 }}
-          onClick={() => {
-            onAdd(
-              createZeroDTESpread({
-                ticker: profile.ticker,
-                expiration: profile.expiration,
-                strategyType,
-                side,
-                shortStrike: num(shortStrike),
-                longStrike: num(longStrike),
-                quantity: Math.max(1, Math.floor(num(quantity))),
-                entryCredit: num(entryCredit),
-                currentShortMark: num(currentShortMark),
-                entryShortDelta: num(entryDelta)
-              })
-            );
-          }}
-        >
-          Add Spread
-        </button>
-      </div>
-    </Card>
-  );
-}
-
-function PortfolioRiskBar({ report }: { report: ReturnType<typeof evaluateZeroDTEPortfolio> }) {
-  return (
-    <Card title="0DTE Risk Guardrails" border={report.overLeverage === "high" ? "#b91c1c" : report.overLeverage === "moderate" ? "#c2410c" : "#15803d"}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: "0.75rem" }}>
-        <div>
-          <strong>Gross Width Risk</strong>
-          <div style={{ fontSize: 20, fontWeight: 800 }}>{money(report.totalGrossWidthRisk)}</div>
-        </div>
-
-        <div>
-          <strong>Max Risk</strong>
-          <div style={{ fontSize: 20, fontWeight: 800 }}>{money(report.totalMaxRisk)}</div>
-        </div>
-
-        <div>
-          <strong>Credit Received</strong>
-          <div style={{ fontSize: 20, fontWeight: 800 }}>{money(report.totalCreditReceived)}</div>
-        </div>
-
-        <div>
-          <strong>Risk Usage</strong>
-          <div style={{ fontSize: 20, fontWeight: 800 }}>{(report.riskUtilizationPct * 100).toFixed(0)}%</div>
-        </div>
-
-        <div>
-          <strong>Overleverage</strong>
-          <div style={{ fontSize: 20, fontWeight: 800, color: report.overLeverage === "high" ? "#b91c1c" : "#111827" }}>
-            {report.overLeverage.toUpperCase()}
-          </div>
-        </div>
-      </div>
-
-      {report.portfolioWarnings.length > 0 && (
-        <ul style={{ color: "#b91c1c", fontWeight: 600 }}>
-          {report.portfolioWarnings.map((w) => (
-            <li key={w}>{w}</li>
-          ))}
-        </ul>
-      )}
-    </Card>
-  );
-}
-
-function updatePressureInput(
-  spread: ZeroDTESpread,
-  patch: Partial<ZeroDTEPressureInputs>
-): ZeroDTESpread {
-  return {
-    ...spread,
-    pressureInputs: {
-      sideVolumeNearStrike: 0,
-      totalSideVolumeWindow: 0,
-      sideOiAtStrike: 0,
-      sideVolumeAcceleration: 1,
-      skewScoreRaw: 0,
-      priceVelocityRaw: 0,
-      ...(spread.pressureInputs ?? {}),
-      ...patch
+      if (!res.ok) {
+        setError(json.errors?.join(" ") || "0DTE harvest failed.");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unknown 0DTE harvest failure.");
+    } finally {
+      setLoading(false);
     }
-  };
-}
-
-function SpreadReportCard({
-  report,
-  onUpdate,
-  onDelete
-}: {
-  report: ZeroDTESpreadReport;
-  onUpdate: (spread: ZeroDTESpread) => void;
-  onDelete: (id: string) => void;
-}) {
-  const spread = report.spread;
-  const p = spread.pressureInputs ?? {
-    sideVolumeNearStrike: 0,
-    totalSideVolumeWindow: 0,
-    sideOiAtStrike: 0,
-    sideVolumeAcceleration: 1,
-    skewScoreRaw: 0,
-    priceVelocityRaw: 0
-  };
-
-  return (
-    <section
-      style={{
-        border: `2px solid ${statusColor(report.status)}`,
-        borderRadius: 8,
-        background: "#fff",
-        padding: "1rem",
-        display: "grid",
-        gap: "0.75rem"
-      }}
-    >
-      <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", alignItems: "start" }}>
-        <div>
-          <h3 style={{ margin: 0 }}>
-            {spread.side.toUpperCase()} {spread.shortStrike}/{spread.longStrike}
-          </h3>
-          <div style={{ color: "#4b5563" }}>
-            {spread.strategyType.replaceAll("_", " ")} · Qty {spread.quantity} · Width {spread.width}
-          </div>
-        </div>
-
-        <button onClick={() => onDelete(spread.id)}>Delete</button>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(6,minmax(0,1fr))", gap: "0.75rem" }}>
-        <div>
-          <strong>Status</strong>
-          <div style={{ fontSize: 20, fontWeight: 800, color: statusColor(report.status) }}>
-            {report.status.toUpperCase()}
-          </div>
-        </div>
-
-        <div>
-          <strong>Action</strong>
-          <div>{actionLabel(report.action)}</div>
-        </div>
-
-        <div>
-          <strong>Attack Score</strong>
-          <div>{report.adjustedAttackScore.toFixed(0)} / 100</div>
-        </div>
-
-        <div>
-          <strong>Short Mark</strong>
-          <div>{money2(spread.currentShortMark)}</div>
-        </div>
-
-        <div>
-          <strong>3x Trigger</strong>
-          <div>{money2(report.shortLegTrigger)}</div>
-        </div>
-
-        <div>
-          <strong>Mark Multiple</strong>
-          <div>{report.shortMarkMultiple.toFixed(2)}x</div>
-        </div>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(6,minmax(0,1fr))", gap: "0.75rem" }}>
-        <Field
-          label="Current Short Mark"
-          value={spread.currentShortMark}
-          onChange={(v) => onUpdate({ ...spread, currentShortMark: num(v) })}
-        />
-        <Field
-          label="Vol Near Strike"
-          value={p.sideVolumeNearStrike}
-          onChange={(v) => onUpdate(updatePressureInput(spread, { sideVolumeNearStrike: num(v) }))}
-        />
-        <Field
-          label="Total Side Vol Window"
-          value={p.totalSideVolumeWindow}
-          onChange={(v) => onUpdate(updatePressureInput(spread, { totalSideVolumeWindow: num(v) }))}
-        />
-        <Field
-          label="OI At Strike"
-          value={p.sideOiAtStrike}
-          onChange={(v) => onUpdate(updatePressureInput(spread, { sideOiAtStrike: num(v) }))}
-        />
-        <Field
-          label="Vol Accel x"
-          value={p.sideVolumeAcceleration}
-          onChange={(v) => onUpdate(updatePressureInput(spread, { sideVolumeAcceleration: num(v) }))}
-        />
-        <Field
-          label="Price Velocity Pts"
-          value={p.priceVelocityRaw}
-          onChange={(v) => onUpdate(updatePressureInput(spread, { priceVelocityRaw: num(v) }))}
-        />
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: "0.75rem" }}>
-        <div>
-          <strong>Max Risk</strong>
-          <div>{money(report.maxRisk)}</div>
-        </div>
-        <div>
-          <strong>Breakeven</strong>
-          <div>{report.breakeven.toFixed(2)}</div>
-        </div>
-        <div>
-          <strong>Distance</strong>
-          <div>{report.distanceToShort.toFixed(1)} pts</div>
-        </div>
-        <div>
-          <strong>Internals Mult.</strong>
-          <div>{report.internalsMultiplier.toFixed(2)}x</div>
-        </div>
-        <div>
-          <strong>Weak Side</strong>
-          <div>{report.weakSide.toUpperCase()}</div>
-        </div>
-      </div>
-
-      {report.riskWarnings.length > 0 && (
-        <div style={{ color: "#b91c1c" }}>
-          <strong>Risk Warnings</strong>
-          <ul>
-            {report.riskWarnings.map((w) => (
-              <li key={w}>{w}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      <details open>
-        <summary style={{ cursor: "pointer", fontWeight: 700 }}>Why</summary>
-        <ul>
-          {report.reasons.map((r) => (
-            <li key={r}>{r}</li>
-          ))}
-        </ul>
-      </details>
-
-      <details open>
-        <summary style={{ cursor: "pointer", fontWeight: 700 }}>Management Plan</summary>
-        <ul>
-          {report.managementPlan.map((r) => (
-            <li key={r}>{r}</li>
-          ))}
-        </ul>
-      </details>
-
-      <details>
-        <summary style={{ cursor: "pointer", fontWeight: 700 }}>Expiration Theoretical</summary>
-        <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 8 }}>
-          <thead>
-            <tr style={{ textAlign: "left", borderBottom: "1px solid #e5e7eb" }}>
-              <th style={{ padding: 6 }}>Underlying</th>
-              <th style={{ padding: 6 }}>Expiration P/L</th>
-            </tr>
-          </thead>
-          <tbody>
-            {report.expirationSlices.map((s) => (
-              <tr key={s.price} style={{ borderBottom: "1px solid #f3f4f6" }}>
-                <td style={{ padding: 6 }}>{s.price.toFixed(2)}</td>
-                <td style={{ padding: 6, color: s.pnl < 0 ? "#b91c1c" : "#15803d", fontWeight: 700 }}>
-                  {money(s.pnl)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </details>
-    </section>
-  );
-}
-
-export default function ZeroDTEPage() {
-  const [mounted, setMounted] = useState(false);
-  const [profile, setProfile] = useState<ZeroDTEProfile>(defaultZeroDTEProfile);
-  const [spot, setSpot] = useState(0);
-  const [priorSpot, setPriorSpot] = useState(0);
-  const [internals, setInternals] = useState<ZeroDTEInternals>(defaultZeroDTEInternals);
-  const [spreads, setSpreads] = useState<ZeroDTESpread[]>([]);
+  }
 
   useEffect(() => {
-    const state = loadState();
-    setProfile(state.profile);
-    setSpot(state.spot);
-    setPriorSpot(state.priorSpot);
-    setInternals(state.internals);
-    setSpreads(state.spreads);
-    setMounted(true);
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    if (!mounted) return;
-    saveState({ profile, spot, priorSpot, internals, spreads });
-  }, [mounted, profile, spot, priorSpot, internals, spreads]);
-
-  const report = useMemo(() => {
-    return evaluateZeroDTEPortfolio({
-      spreads,
-      profile,
-      spot,
-      internals
-    });
-  }, [spreads, profile, spot, internals]);
-
-  const updateSpread = (updated: ZeroDTESpread) => {
-    setSpreads((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
-  };
-
-  const deleteSpread = (id: string) => {
-    setSpreads((prev) => prev.filter((s) => s.id !== id));
-  };
-
-  if (!mounted) return null;
+  const rec = data?.recommendation;
+  const rows = useMemo(() => rec?.composite.clusters.slice(0, 18) ?? [], [rec]);
 
   return (
-    <main style={{ maxWidth: 1300, margin: "0 auto", padding: "1rem", display: "grid", gap: "1rem" }}>
-      <h1 style={{ marginBottom: 0 }}>SPX 0DTE Workspace</h1>
+    <div style={styles.shell}>
+      <WheelDeskSideNav active="zero-dte" />
 
-      <p style={{ marginTop: 0, color: "#4b5563" }}>
-        TOS remains the execution platform. This page mirrors the position and enforces sizing, 3x short-leg triggers,
-        strike pressure, internals, and adjustment discipline.
-      </p>
-
-      <ProfilePanel
-        profile={profile}
-        setProfile={setProfile}
-        spot={spot}
-        setSpot={setSpot}
-        priorSpot={priorSpot}
-        setPriorSpot={setPriorSpot}
-      />
-
-      <InternalsPanel internals={internals} setInternals={setInternals} />
-
-      <PortfolioRiskBar report={report} />
-
-      <NewSpreadForm
-        profile={profile}
-        onAdd={(spread) => setSpreads((prev) => [spread, ...prev])}
-      />
-
-      <div style={{ display: "grid", gap: "1rem" }}>
-        {report.reports.length === 0 ? (
-          <Card title="Open 0DTE Spreads">
-            <p style={{ marginBottom: 0, color: "#6b7280" }}>
-              Add a TOS spread above to begin monitoring short-leg trigger, strike attack score, and adjustment guidance.
+      <main style={styles.main}>
+        <header style={styles.header}>
+          <div>
+            <div style={styles.kicker}>Personal Trading Lab</div>
+            <h1 style={styles.title}>0DTE SPX / SPY Iron Fly Command</h1>
+            <p style={styles.subtitle}>
+              Real Yahoo harvest only. SPX and SPY are pulled server-side, SPY strikes are converted into SPX-equivalent levels, and the page calculates OI gravity, alignment, dealer pressure, expected move, and suggested IF center.
             </p>
-          </Card>
-        ) : (
-          report.reports.map((r) => (
-            <SpreadReportCard
-              key={r.spread.id}
-              report={r}
-              onUpdate={updateSpread}
-              onDelete={deleteSpread}
+          </div>
+
+          <button type="button" onClick={load} disabled={loading} style={styles.refreshButton}>
+            {loading ? "Harvesting..." : "Harvest 0DTE"}
+          </button>
+        </header>
+
+        <section style={styles.controls}>
+          <label style={styles.controlLabel}>
+            <span style={styles.controlText}>Manual expected move override</span>
+            <input
+              value={expectedMove}
+              onChange={(e) => setExpectedMove(e.target.value)}
+              placeholder="optional, e.g. 66"
+              type="number"
+              step="any"
+              style={styles.input}
             />
-          ))
+          </label>
+
+          <label style={styles.controlLabel}>
+            <span style={styles.controlText}>Chain range pct</span>
+            <input
+              value={rangePct}
+              onChange={(e) => setRangePct(e.target.value)}
+              type="number"
+              step="0.005"
+              style={styles.input}
+            />
+          </label>
+
+          <div style={styles.statusBox}>
+            <div style={styles.statusTitle}>Harvest Status</div>
+            <div style={statusStyle(data?.status)}>{data?.status?.toUpperCase() ?? "NOT LOADED"}</div>
+            {data?.generatedAt ? <div style={styles.timestamp}>{new Date(data.generatedAt).toLocaleString()}</div> : null}
+          </div>
+        </section>
+
+        {error ? <ErrorPanel errors={[error, ...(data?.errors ?? [])]} /> : null}
+        {!error && data?.errors?.length ? <ErrorPanel errors={data.errors} warning /> : null}
+
+        {!rec ? (
+          <section style={styles.emptyCard}>
+            <h2 style={styles.sectionTitle}>No live 0DTE recommendation yet</h2>
+            <p style={styles.muted}>
+              This page does not use mock data. If today has no listed 0DTE expiration, or Yahoo does not return SPX options for your configured symbol, it will stay blank and show the harvest error.
+            </p>
+          </section>
+        ) : (
+          <>
+            <section style={styles.grid4}>
+              <MetricCard title="SPX" value={fmt(rec.spxPrice)} />
+              <MetricCard title="SPY" value={fmt(rec.spyPrice)} />
+              <MetricCard title="Expected Move" value={`±${fmt(rec.expectedMove)}`} />
+              <MetricCard title="Alignment" value={`${rec.alignmentScore}%`} tone={scoreTone(rec.alignmentScore)} />
+            </section>
+
+            <section style={styles.heroGrid}>
+              <div style={styles.heroCard}>
+                <div style={styles.cardHeaderRow}>
+                  <div>
+                    <h2 style={styles.sectionTitle}>Iron Fly Placement</h2>
+                    <p style={styles.muted}>Center comes from composite OI gravity/pin with dealer-pressure adjustment.</p>
+                  </div>
+                  <ScoreBadge label="Confidence" score={rec.confidenceScore} />
+                </div>
+
+                <div style={styles.flyGrid}>
+                  <SetupBox label="Lower Wing" value={fmt(rec.lowerWing)} sub="long put" />
+                  <SetupBox label="Center" value={fmt(rec.suggestedCenter)} sub="short call / short put" highlight />
+                  <SetupBox label="Upper Wing" value={fmt(rec.upperWing)} sub="long call" />
+                </div>
+
+                <div style={styles.structureBox}>
+                  <div style={styles.smallCaps}>SPX Iron Fly</div>
+                  <div style={styles.structureText}>{fmt(rec.lowerWing)} / {fmt(rec.suggestedCenter)} / {fmt(rec.upperWing)}</div>
+                  <div style={styles.muted}>Suggested wing width: ±{fmt(rec.suggestedWingWidth)}</div>
+                </div>
+              </div>
+
+              <div style={styles.panelCard}>
+                <h2 style={styles.sectionTitle}>Management Read</h2>
+                <p style={styles.muted}>This is entry/monitoring logic. It is not an auto-trade instruction.</p>
+                <div style={styles.managementBox}>{rec.management}</div>
+                <div style={styles.notesList}>
+                  {rec.notes.map((note, idx) => <div key={idx}>• {note}</div>)}
+                </div>
+              </div>
+            </section>
+
+            <section style={styles.grid3}>
+              <MetricCard title="Composite Gravity" value={fmt(rec.composite.gravity)} />
+              <MetricCard title="Composite Pin" value={fmt(rec.composite.strongestPin)} />
+              <MetricCard title="Dealer Pressure" value={`${rec.dealerPressure > 0 ? "+" : ""}${rec.dealerPressure}`} tone={pressureTone(rec.dealerPressure)} />
+            </section>
+
+            <section style={styles.grid3}>
+              <OiCard title="SPX OI Intelligence" data={rec.spx} />
+              <OiCard title="SPY as SPX Equivalent" data={rec.spyEquivalent} />
+              <OiCard title="Composite Footprint" data={rec.composite} />
+            </section>
+
+            <section style={styles.tableCard}>
+              <div style={styles.cardHeaderRow}>
+                <div>
+                  <h2 style={styles.sectionTitle}>Top Composite Clusters</h2>
+                  <p style={styles.muted}>SPX + SPY-equivalent levels sorted by footprint score.</p>
+                </div>
+                <div style={styles.sourceText}>
+                  SPX rows: {data?.spx?.rows.length ?? 0} | SPY rows: {data?.spy?.rows.length ?? 0}
+                </div>
+              </div>
+
+              <div style={styles.tableWrap}>
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <Th>Strike</Th>
+                      <Th>Call OI</Th>
+                      <Th>Put OI</Th>
+                      <Th>Total OI</Th>
+                      <Th>Volume</Th>
+                      <Th>Gamma Weight</Th>
+                      <Th>Score</Th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((cluster) => (
+                      <tr key={cluster.strike} style={styles.tr}>
+                        <Td accent>{fmt(cluster.strike)}</Td>
+                        <Td>{fmt(cluster.callOi)}</Td>
+                        <Td>{fmt(cluster.putOi)}</Td>
+                        <Td>{fmt(cluster.totalOi)}</Td>
+                        <Td>{fmt(cluster.totalVolume)}</Td>
+                        <Td>{fmt(cluster.gammaWeight)}</Td>
+                        <Td>{fmt(cluster.score)}</Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </>
         )}
-      </div>
-    </main>
+      </main>
+    </div>
   );
 }
+
+function ErrorPanel({ errors, warning }: { errors: string[]; warning?: boolean }) {
+  const unique = Array.from(new Set(errors.filter(Boolean)));
+  return (
+    <section style={{ ...styles.errorCard, borderColor: warning ? "#92400e" : "#7f1d1d" }}>
+      <h2 style={styles.sectionTitle}>{warning ? "Harvest Warning" : "Harvest Error"}</h2>
+      {unique.map((e, idx) => <p key={idx} style={styles.errorText}>{e}</p>)}
+    </section>
+  );
+}
+
+function MetricCard({ title, value, tone }: { title: string; value: string | number; tone?: string }) {
+  return (
+    <div style={styles.metricCard}>
+      <div style={styles.smallCaps}>{title}</div>
+      <div style={{ ...styles.metricValue, color: tone ?? "#f8fbff" }}>{value}</div>
+    </div>
+  );
+}
+
+function ScoreBadge({ label, score }: { label: string; score: number }) {
+  return (
+    <div style={styles.scoreBadge}>
+      <div style={styles.smallCaps}>{label}</div>
+      <div style={{ ...styles.scoreNumber, color: scoreTone(score) }}>{score}</div>
+    </div>
+  );
+}
+
+function SetupBox({ label, value, sub, highlight }: { label: string; value: string | number; sub: string; highlight?: boolean }) {
+  return (
+    <div style={highlight ? styles.setupBoxHighlight : styles.setupBox}>
+      <div style={styles.smallCaps}>{label}</div>
+      <div style={styles.setupValue}>{value}</div>
+      <div style={styles.muted}>{sub}</div>
+    </div>
+  );
+}
+
+function OiCard({ title, data }: { title: string; data: any }) {
+  return (
+    <div style={styles.panelCard}>
+      <h2 style={styles.cardTitle}>{title}</h2>
+      <div style={styles.miniGrid}>
+        <Mini label="Gravity" value={fmt(data.gravity)} />
+        <Mini label="Strong Pin" value={fmt(data.strongestPin)} />
+        <Mini label="Put Wall" value={fmt(data.putWall)} />
+        <Mini label="Call Wall" value={fmt(data.callWall)} />
+        <Mini label="OI Strength" value={`${data.oiStrength}%`} />
+        <Mini label="Symmetry" value={`${data.symmetryScore}%`} />
+        <Mini label="Imbalance" value={`${data.callPutImbalance}%`} />
+        <Mini label="Clusters" value={data.clusters.length} />
+      </div>
+    </div>
+  );
+}
+
+function Mini({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div style={styles.miniBox}>
+      <div style={styles.smallCaps}>{label}</div>
+      <div style={styles.miniValue}>{value}</div>
+    </div>
+  );
+}
+
+function Th({ children }: { children: React.ReactNode }) {
+  return <th style={styles.th}>{children}</th>;
+}
+
+function Td({ children, accent }: { children: React.ReactNode; accent?: boolean }) {
+  return <td style={{ ...styles.td, color: accent ? "#67e8f9" : "#dbeafe" }}>{children}</td>;
+}
+
+function fmt(value: number | null | undefined) {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value);
+}
+
+function scoreTone(score: number) {
+  if (score >= 70) return "#34d399";
+  if (score >= 50) return "#fde047";
+  return "#fb7185";
+}
+
+function pressureTone(score: number) {
+  if (score > 20) return "#34d399";
+  if (score < -20) return "#fb7185";
+  return "#dbeafe";
+}
+
+function statusStyle(status?: string): React.CSSProperties {
+  const color = status === "ok" ? "#34d399" : status === "partial" ? "#fde047" : status === "error" ? "#fb7185" : "#94a3b8";
+  return { fontWeight: 900, color, fontSize: 18 };
+}
+
+const styles: Record<string, React.CSSProperties> = {
+  shell: {
+    minHeight: "100vh",
+    background: "#06101b",
+    color: "#e5f2ff",
+    display: "flex",
+    fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+  },
+  main: {
+    marginLeft: 0,
+    width: `calc(100% - ${SIDENAV_WIDTH}px)`,
+    minHeight: "100vh",
+    padding: 24,
+    boxSizing: "border-box",
+    background: "radial-gradient(circle at top left, rgba(34,211,238,0.08), transparent 34%), #07111f",
+  },
+  header: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 18, marginBottom: 18 },
+  kicker: { color: "#22d3ee", fontSize: 12, textTransform: "uppercase", letterSpacing: "0.28em", fontWeight: 900 },
+  title: { margin: "6px 0 4px", fontSize: 32, letterSpacing: "-0.04em", color: "#f8fbff" },
+  subtitle: { color: "#b8cce0", maxWidth: 900, lineHeight: 1.45, margin: 0, fontSize: 14 },
+  refreshButton: { border: "1px solid #22d3ee", background: "#0b3947", color: "#67e8f9", borderRadius: 10, padding: "11px 16px", fontWeight: 900, cursor: "pointer", whiteSpace: "nowrap" },
+  controls: { display: "grid", gridTemplateColumns: "minmax(220px, 320px) minmax(160px, 220px) minmax(180px, 1fr)", gap: 14, marginBottom: 16 },
+  controlLabel: { border: "1px solid #22384c", background: "rgba(10,25,41,0.85)", borderRadius: 14, padding: 14, display: "grid", gap: 8 },
+  controlText: { fontSize: 12, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 800 },
+  input: { background: "#071523", color: "#f8fbff", border: "1px solid #1d3448", borderRadius: 8, padding: "10px 11px", fontSize: 15 },
+  statusBox: { border: "1px solid #22384c", background: "rgba(10,25,41,0.85)", borderRadius: 14, padding: 14 },
+  statusTitle: { fontSize: 12, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 800, marginBottom: 4 },
+  timestamp: { color: "#94a3b8", fontSize: 12, marginTop: 5 },
+  grid4: { display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 14, marginBottom: 14 },
+  grid3: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 14, marginBottom: 14 },
+  heroGrid: { display: "grid", gridTemplateColumns: "2fr 1fr", gap: 14, marginBottom: 14 },
+  metricCard: { border: "1px solid #22384c", background: "rgba(10,25,41,0.86)", borderRadius: 16, padding: 18 },
+  metricValue: { marginTop: 7, fontSize: 27, fontWeight: 950, letterSpacing: "-0.03em" },
+  heroCard: { border: "1px solid rgba(34,211,238,0.25)", background: "rgba(5,15,30,0.92)", borderRadius: 18, padding: 20, boxShadow: "0 0 28px rgba(34,211,238,0.08)" },
+  panelCard: { border: "1px solid #22384c", background: "rgba(5,15,30,0.92)", borderRadius: 18, padding: 18 },
+  cardHeaderRow: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: 16 },
+  sectionTitle: { margin: 0, color: "#f8fbff", fontSize: 20, letterSpacing: "-0.02em" },
+  cardTitle: { margin: "0 0 14px", color: "#f8fbff", fontSize: 18 },
+  muted: { color: "#94a3b8", fontSize: 13, lineHeight: 1.4, margin: 0 },
+  smallCaps: { fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.11em", fontWeight: 900 },
+  scoreBadge: { minWidth: 112, border: "1px solid #1d3448", background: "#071523", borderRadius: 12, padding: "10px 12px", textAlign: "center" },
+  scoreNumber: { fontSize: 32, fontWeight: 950, lineHeight: 1.05 },
+  flyGrid: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12 },
+  setupBox: { border: "1px solid #22384c", background: "rgba(10,25,41,0.9)", borderRadius: 14, padding: 16 },
+  setupBoxHighlight: { border: "1px solid rgba(34,211,238,0.55)", background: "rgba(8,80,102,0.32)", borderRadius: 14, padding: 16 },
+  setupValue: { marginTop: 8, fontSize: 30, fontWeight: 950, color: "#f8fbff" },
+  structureBox: { marginTop: 14, border: "1px solid #22384c", background: "rgba(10,25,41,0.72)", borderRadius: 14, padding: 15 },
+  structureText: { margin: "4px 0", color: "#67e8f9", fontSize: 24, fontWeight: 950 },
+  managementBox: { marginTop: 14, border: "1px solid #22384c", background: "rgba(10,25,41,0.72)", borderRadius: 14, padding: 14, color: "#dbeafe", lineHeight: 1.45, fontWeight: 700 },
+  notesList: { marginTop: 14, color: "#b8cce0", fontSize: 13, lineHeight: 1.55, display: "grid", gap: 4 },
+  miniGrid: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 },
+  miniBox: { border: "1px solid #1d3448", background: "rgba(10,25,41,0.72)", borderRadius: 12, padding: 11 },
+  miniValue: { marginTop: 4, color: "#f8fbff", fontWeight: 900 },
+  tableCard: { border: "1px solid #22384c", background: "rgba(5,15,30,0.92)", borderRadius: 18, padding: 18, marginBottom: 24 },
+  tableWrap: { overflowX: "auto" },
+  table: { width: "100%", borderCollapse: "collapse", fontSize: 13 },
+  th: { textAlign: "left", color: "#94a3b8", borderBottom: "1px solid #22384c", padding: "11px 10px", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.09em" },
+  tr: { borderBottom: "1px solid rgba(34,56,76,0.6)" },
+  td: { padding: "11px 10px" },
+  sourceText: { color: "#94a3b8", fontSize: 12, whiteSpace: "nowrap" },
+  emptyCard: { border: "1px solid #22384c", background: "rgba(5,15,30,0.92)", borderRadius: 18, padding: 20 },
+  errorCard: { border: "1px solid #7f1d1d", background: "rgba(69,10,10,0.32)", borderRadius: 16, padding: 16, marginBottom: 14 },
+  errorText: { color: "#fecaca", margin: "8px 0 0", lineHeight: 1.45 },
+};
