@@ -3,7 +3,7 @@
 import Link from "next/link";
 import AuthStatusPill from "./auth/AuthStatusPill";
 
-type NavKey = "dashboard" | "watchlist" | "scanner" | "positions" | "wheel" | "control-center" | "validation" | "news" | "zero-dte";
+type NavKey = "dashboard" | "watchlist" | "scanner" | "positions" | "wheel" | "control-center" | "validation" | "zero-dte" | "news";
 
 type NavItem = {
   href: string;
