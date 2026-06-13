@@ -148,9 +148,9 @@ export default function ZeroDteCommandClient() {
         <header style={styles.header}>
           <div>
             <div style={styles.eyebrow}>Personal Trading Lab</div>
-            <h1 style={styles.title}>0DTE SPX Iron Fly Command</h1>
+            <h1 style={styles.title}>0DTE SPX Premium Command</h1>
             <p style={styles.subtitle}>
-              SPX is the traded instrument. SPY is converted into SPX-equivalent levels and used only for alignment, confirmation, and secondary pressure analytics.
+              SPX is the traded instrument. OI/dealer pressure place the iron fly and credit-spread short strikes. SPY is confirmation only.
             </p>
           </div>
           <button onClick={load} disabled={loading} style={styles.primaryButton}>{loading ? "Harvesting…" : "Harvest 0DTE"}</button>
@@ -168,8 +168,8 @@ export default function ZeroDteCommandClient() {
           </label>
 
           <label style={styles.controlCard}>
-            <span style={styles.controlText}>TOS mood override</span>
-            <input value={manualMood} onChange={(e) => setManualMood(e.target.value)} placeholder="optional, e.g. 78 or -82" type="number" step="0.5" style={styles.input} />
+            <span style={styles.controlText}>Optional TOS mood</span>
+            <input value={manualMood} onChange={(e) => setManualMood(e.target.value)} placeholder="optional only, e.g. 78 or -82" type="number" step="0.5" style={styles.input} />
           </label>
 
           <label style={styles.controlCard}>

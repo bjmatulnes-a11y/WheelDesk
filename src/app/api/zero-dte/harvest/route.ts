@@ -148,6 +148,7 @@ export async function GET(req: NextRequest) {
     mood = buildZeroDteMoodRead(moodInput);
     tradeSelection = buildZeroDteTradeSelection({
       recommendation,
+      spxRows: spx.rows,
       mood,
       spreadWidth,
       riskMode: "balanced",
