@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { WheelDeskSideNav, SIDENAV_WIDTH } from "../../../components/WheelDeskSideNav";
+import { WheelDeskSideNav } from "../../../components/WheelDeskSideNav";
 import type { SpxOiMapRow, SpyAlignmentRow, ZeroDteChainRow, ZeroDteRecommendation } from "../../../lib/zeroDteOiIntelligence";
 
 type HarvestSymbolResult = {
@@ -164,6 +164,19 @@ export default function ZeroDteCommandPage() {
           </section>
         ) : (
           <>
+            <section style={styles.chartCard}>
+              <div style={styles.cardHeaderRow}>
+                <div>
+                  <h2 style={styles.sectionTitle}>SPX OI Chain Map</h2>
+                  <p style={styles.muted}>Old-school chain view: SPX strikes on the X-axis, open interest on the Y-axis. Calls plot above the baseline, puts below. The IF center, wings, spot, pin, and walls are overlaid.</p>
+                </div>
+                <div style={styles.sourceText}>
+                  SPX-primary placement | SPY confirmation only
+                </div>
+              </div>
+              <SpxOiHistogram rows={spxMapRows} rec={rec} />
+            </section>
+
             <section style={styles.grid4}>
               <MetricCard title="SPX" value={fmt(rec.spxPrice)} />
               <MetricCard title="SPY" value={fmt(rec.spyPrice)} />
@@ -283,6 +296,126 @@ export default function ZeroDteCommandPage() {
           </>
         )}
       </main>
+    </div>
+  );
+}
+
+
+function SpxOiHistogram({ rows, rec }: { rows: SpxOiMapRow[]; rec: ZeroDteRecommendation }) {
+  const chartRows = rows.filter((row) => Number.isFinite(row.strike));
+
+  if (chartRows.length < 2) {
+    return (
+      <div style={styles.chartEmpty}>
+        Not enough SPX rows to draw the OI chain map yet.
+      </div>
+    );
+  }
+
+  const width = 1120;
+  const height = 320;
+  const left = 54;
+  const right = 26;
+  const top = 26;
+  const bottom = 42;
+  const mid = 168;
+  const minStrike = chartRows[0].strike;
+  const maxStrike = chartRows[chartRows.length - 1].strike;
+  const span = Math.max(1, maxStrike - minStrike);
+  const maxOi = Math.max(1, ...chartRows.map((row) => Math.max(row.callOi, row.putOi)));
+  const barWidth = Math.max(4, Math.min(16, (width - left - right) / Math.max(chartRows.length * 2.6, 1)));
+  const labelEvery = Math.max(1, Math.ceil(chartRows.length / 9));
+
+  const x = (strike: number) => left + ((strike - minStrike) / span) * (width - left - right);
+  const yCall = (oi: number) => mid - (oi / maxOi) * (mid - top);
+  const yPut = (oi: number) => mid + (oi / maxOi) * (height - bottom - mid);
+
+  const markers = [
+    { label: "SPOT", strike: rec.spxPrice, color: "#f8fafc", dash: "4 4" },
+    { label: "CENTER", strike: rec.suggestedCenter, color: "#fde047" },
+    { label: "LOWER", strike: rec.lowerWing, color: "#fb7185", dash: "3 5" },
+    { label: "UPPER", strike: rec.upperWing, color: "#34d399", dash: "3 5" },
+    { label: "PIN", strike: rec.spx.strongestPin, color: "#67e8f9" },
+    { label: "PUT WALL", strike: rec.spx.putWall, color: "#f472b6", dash: "6 4" },
+    { label: "CALL WALL", strike: rec.spx.callWall, color: "#22c55e", dash: "6 4" },
+  ].filter((marker) => typeof marker.strike === "number" && marker.strike >= minStrike && marker.strike <= maxStrike) as Array<{
+    label: string;
+    strike: number;
+    color: string;
+    dash?: string;
+  }>;
+
+  const topRows = [...chartRows]
+    .sort((a, b) => b.totalOi - a.totalOi)
+    .slice(0, 5)
+    .sort((a, b) => a.strike - b.strike);
+
+  return (
+    <div style={styles.chartShell}>
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="SPX open interest chain map" style={styles.chartSvg}>
+        <rect x={0} y={0} width={width} height={height} rx={16} fill="#06111f" />
+
+        {[0.25, 0.5, 0.75, 1].map((pct) => {
+          const y1 = mid - pct * (mid - top);
+          const y2 = mid + pct * (height - bottom - mid);
+          return (
+            <g key={`grid-${pct}`}>
+              <line x1={left} x2={width - right} y1={y1} y2={y1} stroke="rgba(148,163,184,0.12)" />
+              <line x1={left} x2={width - right} y1={y2} y2={y2} stroke="rgba(148,163,184,0.12)" />
+            </g>
+          );
+        })}
+
+        <line x1={left} x2={width - right} y1={mid} y2={mid} stroke="rgba(226,232,240,0.35)" />
+        <text x={12} y={top + 8} fill="#67e8f9" fontSize={11} fontWeight={900}>CALL OI</text>
+        <text x={12} y={height - bottom - 8} fill="#fb7185" fontSize={11} fontWeight={900}>PUT OI</text>
+
+        {chartRows.map((row) => {
+          const cx = x(row.strike);
+          const callY = yCall(row.callOi);
+          const putY = yPut(row.putOi);
+          return (
+            <g key={`bars-${row.strike}`}>
+              <rect x={cx - barWidth - 1} y={callY} width={barWidth} height={mid - callY} rx={2} fill="rgba(34,211,238,0.78)" />
+              <rect x={cx + 1} y={mid} width={barWidth} height={putY - mid} rx={2} fill="rgba(251,113,133,0.78)" />
+              {row.spyAlignment === "aligned" || row.spyAlignment === "near" ? (
+                <circle cx={cx} cy={mid} r={row.spyAlignment === "aligned" ? 4 : 3} fill={row.spyAlignment === "aligned" ? "#34d399" : "#fde047"} opacity={0.95} />
+              ) : null}
+            </g>
+          );
+        })}
+
+        {markers.map((marker, idx) => {
+          const mx = x(marker.strike);
+          const labelY = 16 + (idx % 3) * 14;
+          return (
+            <g key={`${marker.label}-${marker.strike}`}>
+              <line x1={mx} x2={mx} y1={top} y2={height - bottom} stroke={marker.color} strokeWidth={1.5} strokeDasharray={marker.dash} />
+              <text x={mx + 4} y={labelY} fill={marker.color} fontSize={10} fontWeight={900}>{marker.label}</text>
+            </g>
+          );
+        })}
+
+        {chartRows.map((row, idx) => idx % labelEvery === 0 || idx === chartRows.length - 1 ? (
+          <text key={`label-${row.strike}`} x={x(row.strike)} y={height - 14} fill="#93b5d9" fontSize={10} textAnchor="middle">{fmt(row.strike)}</text>
+        ) : null)}
+      </svg>
+
+      <div style={styles.chartLegend}>
+        <span><b style={{ color: "#67e8f9" }}>Cyan</b> call OI above baseline</span>
+        <span><b style={{ color: "#fb7185" }}>Red</b> put OI below baseline</span>
+        <span><b style={{ color: "#fde047" }}>Yellow</b> suggested IF center</span>
+        <span><b style={{ color: "#34d399" }}>Green dot</b> SPY aligned/confirming</span>
+      </div>
+
+      <div style={styles.topStrikeStrip}>
+        {topRows.map((row) => (
+          <div key={`top-${row.strike}`} style={styles.topStrikePill}>
+            <span>{fmt(row.strike)}</span>
+            <strong>{fmt(row.totalOi)}</strong>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -431,11 +564,9 @@ function qualityStyle(status: QualityCheck["status"]): React.CSSProperties {
   };
 }
 
-const navWidth = typeof SIDENAV_WIDTH === "number" ? SIDENAV_WIDTH : 260;
-
 const styles: Record<string, React.CSSProperties> = {
-  shell: { minHeight: "100vh", background: "#07111f", color: "#f8fafc" },
-  main: { marginLeft: navWidth, padding: 24, minHeight: "100vh" },
+  shell: { minHeight: "100vh", background: "#07111f", color: "#f8fafc", display: "flex", alignItems: "stretch" },
+  main: { flex: 1, minWidth: 0, padding: 24, minHeight: "100vh" },
   header: { display: "flex", justifyContent: "space-between", gap: 20, alignItems: "flex-start", marginBottom: 20 },
   kicker: { color: "#22d3ee", textTransform: "uppercase", letterSpacing: "0.22em", fontSize: 12, fontWeight: 900 },
   title: { fontSize: 32, lineHeight: 1.1, margin: "6px 0 8px", fontWeight: 900 },
@@ -473,6 +604,13 @@ const styles: Record<string, React.CSSProperties> = {
   scoreValue: { fontSize: 30, fontWeight: 900 },
   smallCaps: { color: "#93b5d9", textTransform: "uppercase", letterSpacing: "0.12em", fontSize: 12, fontWeight: 900 },
   oiLine: { display: "flex", justifyContent: "space-between", gap: 12, padding: "9px 0", borderBottom: "1px solid rgba(148, 163, 184, 0.16)", color: "#cbd5e1", fontSize: 13 },
+  chartCard: { border: "1px solid rgba(34, 211, 238, 0.28)", background: "#0b1b2b", borderRadius: 18, padding: 18, marginBottom: 16 },
+  chartShell: { display: "grid", gap: 12 },
+  chartSvg: { width: "100%", height: "auto", display: "block", border: "1px solid rgba(148, 163, 184, 0.16)", borderRadius: 16, background: "#06111f" },
+  chartEmpty: { border: "1px solid #1e3a5f", background: "#07111f", borderRadius: 14, padding: 16, color: "#94a3b8" },
+  chartLegend: { display: "flex", flexWrap: "wrap", gap: 12, color: "#94a3b8", fontSize: 12 },
+  topStrikeStrip: { display: "flex", flexWrap: "wrap", gap: 10 },
+  topStrikePill: { border: "1px solid #1e3a5f", background: "#07111f", borderRadius: 999, padding: "7px 10px", color: "#cbd5e1", display: "flex", gap: 8, alignItems: "center", fontSize: 12 },
   tableCard: { border: "1px solid #1e3a5f", background: "#0b1b2b", borderRadius: 18, padding: 18, marginBottom: 16 },
   tableWrap: { overflowX: "auto" },
   table: { width: "100%", borderCollapse: "collapse", fontSize: 13 },
