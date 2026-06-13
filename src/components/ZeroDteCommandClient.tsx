@@ -245,8 +245,12 @@ export default function ZeroDteCommandClient() {
               <MetricCard title="SPX Gravity" value={fmt(rec.spx.gravity)} />
               <MetricCard title="SPX Pin" value={fmt(rec.spx.strongestPin)} />
               <MetricCard title="SPX Put / Call Wall" value={`${fmt(rec.spx.putWall)} / ${fmt(rec.spx.callWall)}`} />
-              <MetricCard title="Dealer Pressure" value={`${rec.dealerPressure > 0 ? "+" : ""}${rec.dealerPressure}`} tone={pressureTone(rec.dealerPressure)} />
+              <MetricCard title={`Dealer Pressure ${rec.dealerPressureSource === "dealer-pressure-engine" ? "(Engine)" : "(Local)"}`} value={`${rec.dealerPressure > 0 ? "+" : ""}${rec.dealerPressure}`} tone={pressureTone(rec.dealerPressure)} />
             </section>
+
+
+
+            <DealerPressureEnginePanel rec={rec} />
 
             <section style={styles.grid3}>
               <OiCard title="SPX OI Intelligence" data={rec.spx} />
@@ -496,6 +500,42 @@ function SetupBox({ label, value, sub, highlight }: { label: string; value: stri
   return <div style={highlight ? styles.setupBoxHighlight : styles.setupBox}><div style={styles.smallCaps}>{label}</div><div style={styles.setupValue}>{value}</div><div style={styles.muted}>{sub}</div></div>;
 }
 
+function DealerPressureEnginePanel({ rec }: { rec: ZeroDteRecommendation }) {
+  const summary = rec.dealerPressureRead?.summary;
+  if (!summary) {
+    return (
+      <section style={styles.panelCardInline}>
+        <div style={styles.cardHeaderRowNoMargin}>
+          <div>
+            <h2 style={styles.sectionTitle}>Dealer Pressure Engine</h2>
+            <p style={styles.muted}>Using local fallback pressure because dealer-pressure-engine did not return a usable summary.</p>
+          </div>
+          <div style={styles.sourceText}>source: {rec.dealerPressureSource}</div>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section style={styles.panelCardInline}>
+      <div style={styles.cardHeaderRowNoMargin}>
+        <div>
+          <h2 style={styles.sectionTitle}>Dealer Pressure Engine</h2>
+          <p style={styles.muted}>{summary.interpretation}</p>
+        </div>
+        <div style={styles.sourceText}>source: {rec.dealerPressureSource}</div>
+      </div>
+
+      <div style={styles.grid4NoMarginTight}>
+        <MetricCard title="Regime" value={summary.regime} />
+        <MetricCard title="Hedge Bias" value={summary.hedgeFlowBias.toUpperCase()} />
+        <MetricCard title="Pin / Snap" value={`${Math.round(summary.pinRiskScore)} / ${Math.round(summary.snapRiskScore)}`} />
+        <MetricCard title="Engine Confidence" value={`${Math.round(summary.confidenceScore)}%`} tone={scoreTone(summary.confidenceScore)} />
+      </div>
+    </section>
+  );
+}
+
 function OiCard({ title, data }: { title: string; data: ZeroDteRecommendation["spx"] }) {
   return <div style={styles.panelCard}><h2 style={styles.sectionTitle}>{title}</h2><div style={styles.oiLine}><span>Gravity</span><strong>{fmt(data.gravity)}</strong></div><div style={styles.oiLine}><span>Strongest Pin</span><strong>{fmt(data.strongestPin)}</strong></div><div style={styles.oiLine}><span>Put Wall</span><strong>{fmt(data.putWall)}</strong></div><div style={styles.oiLine}><span>Call Wall</span><strong>{fmt(data.callWall)}</strong></div><div style={styles.oiLine}><span>OI Strength</span><strong>{data.oiStrength}%</strong></div><div style={styles.oiLine}><span>Symmetry</span><strong>{data.symmetryScore}%</strong></div><div style={styles.oiLine}><span>Call/Put Imbalance</span><strong>{data.callPutImbalance > 0 ? "+" : ""}{data.callPutImbalance}%</strong></div></div>;
 }
@@ -579,15 +619,18 @@ const styles: Record<string, React.CSSProperties> = {
   topStrikePill: { display: "flex", gap: 8, alignItems: "center", border: "1px solid #1e3a5f", background: "#07111f", borderRadius: 999, padding: "6px 10px", color: "#cbd5e1", fontSize: 12 },
   grid4: { display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12, marginBottom: 16 },
   grid4NoMargin: { display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12, margin: "16px 0" },
+  grid4NoMarginTight: { display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12, margin: "14px 0 0" },
   grid3: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12, marginBottom: 16 },
   grid3NoMargin: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12, margin: "0 0 16px" },
   grid2NoMargin: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12, margin: "0 0 16px" },
   heroGrid: { display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12, marginBottom: 16 },
   heroCard: { border: "1px solid rgba(34,211,238,0.28)", background: "#0b1b2b", borderRadius: 18, padding: 18 },
   panelCard: { border: "1px solid #1e3a5f", background: "#0b1b2b", borderRadius: 18, padding: 18 },
+  panelCardInline: { border: "1px solid #1e3a5f", background: "#0b1b2b", borderRadius: 18, padding: 18, marginBottom: 16 },
   panelCardTight: { border: "1px solid #1e3a5f", background: "#071827", borderRadius: 16, padding: 14 },
   cockpitCard: { border: "1px solid rgba(253,224,71,0.35)", background: "#111827", borderRadius: 18, padding: 18, marginBottom: 16 },
   cardHeaderRow: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: 14 },
+  cardHeaderRowNoMargin: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: 0 },
   sectionTitle: { margin: 0, fontSize: 20, fontWeight: 900 },
   sideTitle: { margin: 0, fontSize: 15, fontWeight: 950, letterSpacing: "0.08em" },
   muted: { color: "#94a3b8", fontSize: 13, lineHeight: 1.45 },

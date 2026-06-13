@@ -1,3 +1,4 @@
+import { buildZeroDteDealerPressureRead, type ZeroDteDealerPressureRead } from "./zeroDteDealerPressureBridge";
 export type OptionType = "call" | "put";
 export type ZeroDteSymbol = "SPX" | "SPY" | "SPY_EQUIV" | "COMPOSITE";
 
@@ -83,6 +84,8 @@ export type ZeroDteRecommendation = {
   spxDealerPressure: number;
   spyDealerPressure: number;
   pressureBias: "up" | "down" | "neutral";
+  dealerPressureSource: "dealer-pressure-engine" | "local-proxy";
+  dealerPressureRead: ZeroDteDealerPressureRead | null;
   spyNotionalWeight: number;
   spx: SymbolOiIntelligence;
   spyEquivalent: SymbolOiIntelligence;
@@ -122,11 +125,28 @@ export function buildZeroDteRecommendation(input: BuildZeroDteInput): ZeroDteRec
       : estimateAtmStraddle(spxRows, spxPrice) ?? estimateAtmStraddle(spyEquivalentRows, spxPrice) ?? 0;
 
   const alignmentScore = calculateAlignmentScore(spx.gravity, spyEquivalent.gravity, expectedMove || 70);
-  const spxDealerPressure = estimateDealerPressure(spxRows, spxPrice);
+  const dealerPressureRead = buildZeroDteDealerPressureRead({
+    ticker: "SPX",
+    spot: spxPrice,
+    rows: spxRows,
+    snapshotDate: spxRows[0]?.expiration?.slice(0, 10) ?? null,
+    expiration: spxRows[0]?.expiration ?? null,
+    support: spx.putWall,
+    resistance: spx.callWall,
+    magnet: spx.strongestPin ?? spx.gravity,
+  });
+
+  const localSpxDealerPressure = estimateDealerPressure(spxRows, spxPrice);
+  const spxDealerPressure =
+    dealerPressureRead.source === "dealer-pressure-engine"
+      ? dealerPressureRead.signedPressure
+      : localSpxDealerPressure;
+
   const spyDealerPressure = estimateDealerPressure(spyEquivalentRows, spxPrice);
 
   // SPX dominates. SPY confirms or warns, but it should not move the trade by itself.
-  const dealerPressure = clamp(Math.round(spxDealerPressure * 0.78 + spyDealerPressure * 0.22), -100, 100);
+  // SPX dealer pressure comes from dealer-pressure-engine when available.
+  const dealerPressure = clamp(Math.round(spxDealerPressure * 0.86 + spyDealerPressure * 0.14), -100, 100);
   const pressureBias = dealerPressure > 20 ? "up" : dealerPressure < -20 ? "down" : "neutral";
 
   const suggestedCenter = chooseIronFlyCenter({
@@ -184,6 +204,7 @@ export function buildZeroDteRecommendation(input: BuildZeroDteInput): ZeroDteRec
     spx,
     spyEquivalent,
     composite,
+    dealerPressureRead,
     spyNotionalWeight,
     suggestedCenter,
     lowerWing,
@@ -204,6 +225,8 @@ export function buildZeroDteRecommendation(input: BuildZeroDteInput): ZeroDteRec
     spxDealerPressure,
     spyDealerPressure,
     pressureBias,
+    dealerPressureSource: dealerPressureRead.source === "dealer-pressure-engine" ? "dealer-pressure-engine" : "local-proxy",
+    dealerPressureRead,
     spyNotionalWeight,
     spx,
     spyEquivalent,
@@ -584,6 +607,7 @@ function buildNotes(args: {
   spx: SymbolOiIntelligence;
   spyEquivalent: SymbolOiIntelligence;
   composite: SymbolOiIntelligence;
+  dealerPressureRead?: ZeroDteDealerPressureRead | null;
   spyNotionalWeight?: number;
   suggestedCenter: number;
   lowerWing: number;
@@ -605,6 +629,8 @@ function buildNotes(args: {
 
   notes.push(`SPX gravity: ${fmt(args.spx.gravity)}. SPY-equivalent gravity: ${fmt(args.spyEquivalent.gravity)}. Composite reference gravity: ${fmt(args.composite.gravity)}.`);
   notes.push(`Dealer pressure blend: SPX ${signed(args.spxDealerPressure)}, SPY alignment ${signed(args.spyDealerPressure)}, combined ${signed(args.dealerPressure)}.`);
+  if (args.dealerPressureRead?.summary) notes.push(`Dealer-pressure-engine: ${args.dealerPressureRead.summary.regime}; hedge-flow ${args.dealerPressureRead.summary.hedgeFlowBias}; pin ${Math.round(args.dealerPressureRead.summary.pinRiskScore)} / snap ${Math.round(args.dealerPressureRead.summary.snapRiskScore)}.`);
+  else if (args.dealerPressureRead?.notes?.length) notes.push(args.dealerPressureRead.notes[0]);
   if (args.spyNotionalWeight) notes.push(`SPY footprint is notional-weighted to ${(args.spyNotionalWeight * 100).toFixed(1)}% of raw SPY OI/volume and is used for alignment, not as the primary trade center.`);
   notes.push(`Suggested SPX IF: ${args.lowerWing} / ${args.suggestedCenter} / ${args.upperWing}.`);
 

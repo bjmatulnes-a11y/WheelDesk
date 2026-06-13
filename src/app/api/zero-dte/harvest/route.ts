@@ -296,8 +296,8 @@ async function harvestSymbol(args: {
       const yearsToExpiration = yearsUntilExpiration(expiration.date);
 
       const rows: ZeroDteChainRow[] = [
-        ...(block.calls ?? []).map((c) => mapContract(args.symbol, "call", c, chainPrice, yearsToExpiration)),
-        ...(block.puts ?? []).map((p) => mapContract(args.symbol, "put", p, chainPrice, yearsToExpiration)),
+        ...(block.calls ?? []).map((c) => mapContract(args.symbol, "call", c, chainPrice, yearsToExpiration, expiration.date)),
+        ...(block.puts ?? []).map((p) => mapContract(args.symbol, "put", p, chainPrice, yearsToExpiration, expiration.date)),
       ]
         .filter((row) => Number.isFinite(row.strike))
         .filter((row) => row.strike >= minStrike && row.strike <= maxStrike)
@@ -438,7 +438,8 @@ function mapContract(
   optionType: "call" | "put",
   contract: YahooContract,
   spot: number,
-  yearsToExpiration: number
+  yearsToExpiration: number,
+  expirationDate: string
 ): ZeroDteChainRow {
   const strike = numberOrZero(contract.strike);
   const bid = cleanNumber(contract.bid);
@@ -452,6 +453,7 @@ function mapContract(
     symbol,
     strike,
     optionType,
+    expiration: expirationDate,
     openInterest: cleanNumber(contract.openInterest),
     volume: cleanNumber(contract.volume),
     iv,
