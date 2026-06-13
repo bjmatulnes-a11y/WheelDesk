@@ -46,6 +46,12 @@ type HarvestSymbolResult = {
   source: "yahoo";
 };
 
+type QualityCheck = {
+  label: string;
+  status: "ok" | "warn" | "fail";
+  message: string;
+};
+
 type HarvestResponse = {
   tradeDate: string;
   generatedAt: string;
@@ -54,6 +60,7 @@ type HarvestResponse = {
   spy?: HarvestSymbolResult;
   recommendation?: ReturnType<typeof buildZeroDteRecommendation>;
   errors: string[];
+  qualityChecks: QualityCheck[];
 };
 
 const DEFAULT_SPX_QUOTE_SYMBOLS = "^GSPC,^SPX,SPX";
@@ -124,8 +131,22 @@ export async function GET(req: NextRequest) {
     if (!spy?.rows.length) errors.push("No SPY option rows available after range/filtering.");
   }
 
+  const qualityChecks = buildQualityChecks({
+    tradeDate,
+    spx,
+    spy,
+    recommendation,
+    rangePct,
+    manualExpectedMove,
+  });
+
+  const hasQualityFail = qualityChecks.some((check) => check.status === "fail");
+  const hasQualityWarn = qualityChecks.some((check) => check.status === "warn");
+
   const status: HarvestResponse["status"] = recommendation
-    ? errors.length
+    ? hasQualityFail
+      ? "error"
+      : errors.length || hasQualityWarn
       ? "partial"
       : "ok"
     : "error";
@@ -139,9 +160,95 @@ export async function GET(req: NextRequest) {
       spy,
       recommendation,
       errors,
+      qualityChecks,
     } satisfies HarvestResponse,
     status === "error" ? 502 : 200
   );
+}
+
+function buildQualityChecks(args: {
+  tradeDate: string;
+  spx?: HarvestSymbolResult;
+  spy?: HarvestSymbolResult;
+  recommendation?: ReturnType<typeof buildZeroDteRecommendation>;
+  rangePct: number;
+  manualExpectedMove: number;
+}): QualityCheck[] {
+  const checks: QualityCheck[] = [];
+  const { tradeDate, spx, spy, recommendation } = args;
+
+  if (spx?.isZeroDte && spy?.isZeroDte) {
+    checks.push({ label: "Expiration", status: "ok", message: `Both chains match trade date ${tradeDate}.` });
+  } else if (spx || spy) {
+    checks.push({
+      label: "Expiration",
+      status: "warn",
+      message: `Not a true same-day 0DTE harvest. SPX=${spx?.expirationDate ?? "none"}, SPY=${spy?.expirationDate ?? "none"}, tradeDate=${tradeDate}. Treat as preview only.`,
+    });
+  } else {
+    checks.push({ label: "Expiration", status: "fail", message: "No usable option expiration was harvested." });
+  }
+
+  if (spx?.rows?.length) {
+    checks.push({
+      label: "SPX Rows",
+      status: spx.rows.length >= 30 ? "ok" : "warn",
+      message: `${spx.rows.length} SPX option rows inside ±${(args.rangePct * 100).toFixed(1)}% range.`,
+    });
+  } else {
+    checks.push({ label: "SPX Rows", status: "fail", message: "No SPX rows available." });
+  }
+
+  if (spy?.rows?.length) {
+    checks.push({
+      label: "SPY Rows",
+      status: spy.rows.length >= 30 ? "ok" : "warn",
+      message: `${spy.rows.length} SPY option rows inside ±${(args.rangePct * 100).toFixed(1)}% range.`,
+    });
+  } else {
+    checks.push({ label: "SPY Rows", status: "fail", message: "No SPY rows available." });
+  }
+
+  if (recommendation) {
+    const ratio = recommendation.spxPrice / recommendation.spyPrice;
+    checks.push({
+      label: "SPX/SPY Ratio",
+      status: ratio >= 8.5 && ratio <= 11.5 ? "ok" : "warn",
+      message: `SPX/SPY conversion ratio is ${ratio.toFixed(3)}.`,
+    });
+
+    const emPct = recommendation.expectedMove / recommendation.spxPrice;
+    checks.push({
+      label: "Expected Move",
+      status: recommendation.expectedMove > 0 && emPct <= 0.035 ? "ok" : recommendation.expectedMove > 0 ? "warn" : "fail",
+      message: args.manualExpectedMove > 0
+        ? `Manual expected move override used: ${recommendation.expectedMove.toFixed(2)} SPX points.`
+        : `ATM straddle expected move estimate: ${recommendation.expectedMove.toFixed(2)} SPX points (${(emPct * 100).toFixed(2)}%).`,
+    });
+
+    checks.push({
+      label: "SPY Weighting",
+      status: "ok",
+      message: `SPY OI/volume is reduced to ${(recommendation.spyNotionalWeight * 100).toFixed(1)}% SPX-contract-equivalent weight before composite scoring.`,
+    });
+
+    const centerDistance = Math.abs(recommendation.suggestedCenter - recommendation.spxPrice);
+    checks.push({
+      label: "Center Distance",
+      status: centerDistance <= Math.max(recommendation.expectedMove * 0.45, 25) ? "ok" : "warn",
+      message: `Suggested center is ${centerDistance.toFixed(1)} points from SPX spot.`,
+    });
+  } else {
+    checks.push({ label: "Recommendation", status: "fail", message: "No recommendation could be calculated." });
+  }
+
+  checks.push({
+    label: "Provider",
+    status: "warn",
+    message: "Yahoo data is a useful sanity feed but not broker-grade for live 0DTE execution. Validate ATM mids and OI against Thinkorswim/IBKR before placing trades.",
+  });
+
+  return checks;
 }
 
 async function harvestSymbol(args: {

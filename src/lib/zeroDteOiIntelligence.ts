@@ -16,6 +16,8 @@ export type ZeroDteChainRow = {
   ask?: number | null;
   mid?: number | null;
   last?: number | null;
+  /** SPX contract-equivalent weighting. SPY rows are reduced by SPY/SPX before composite reference scoring. */
+  notionalWeight?: number | null;
 };
 
 export type OiCluster = {
@@ -47,6 +49,26 @@ export type SymbolOiIntelligence = {
   clusters: OiCluster[];
 };
 
+export type SpxOiMapRow = OiCluster & {
+  distanceFromSpot: number;
+  isCallWall: boolean;
+  isPutWall: boolean;
+  isPin: boolean;
+  sideBias: "call" | "put" | "balanced";
+  sideBiasPct: number;
+  nearestSpyStrike: number | null;
+  nearestSpyDistance: number | null;
+  spyScore: number;
+  spyAlignment: "aligned" | "near" | "none";
+};
+
+export type SpyAlignmentRow = OiCluster & {
+  nearestSpxStrike: number | null;
+  nearestSpxDistance: number | null;
+  spxScore: number;
+  alignment: "aligned" | "near" | "none";
+};
+
 export type ZeroDteRecommendation = {
   spxPrice: number;
   spyPrice: number;
@@ -58,10 +80,15 @@ export type ZeroDteRecommendation = {
   alignmentScore: number;
   confidenceScore: number;
   dealerPressure: number;
+  spxDealerPressure: number;
+  spyDealerPressure: number;
   pressureBias: "up" | "down" | "neutral";
+  spyNotionalWeight: number;
   spx: SymbolOiIntelligence;
   spyEquivalent: SymbolOiIntelligence;
   composite: SymbolOiIntelligence;
+  spxChainMap: SpxOiMapRow[];
+  spyAlignmentMap: SpyAlignmentRow[];
   management: string;
   notes: string[];
 };
@@ -77,10 +104,16 @@ export type BuildZeroDteInput = {
 export function buildZeroDteRecommendation(input: BuildZeroDteInput): ZeroDteRecommendation {
   const { spxPrice, spyPrice, spxRows, spyRows, manualExpectedMove } = input;
 
+  const spyNotionalWeight = calculateSpyNotionalWeight(spxPrice, spyPrice);
   const spyEquivalentRows = convertSpyRowsToSpx(spyRows, spxPrice, spyPrice);
 
+  // SPX is the traded instrument. This is the primary footprint.
   const spx = buildOiIntelligence("SPX", spxPrice, spxRows);
+
+  // SPY is converted to the SPX coordinate system and used as confirmation/alignment only.
   const spyEquivalent = buildOiIntelligence("SPY_EQUIV", spxPrice, spyEquivalentRows);
+
+  // Composite is retained as a reference, not the primary center source.
   const composite = buildOiIntelligence("COMPOSITE", spxPrice, [...spxRows, ...spyEquivalentRows]);
 
   const expectedMove =
@@ -89,16 +122,21 @@ export function buildZeroDteRecommendation(input: BuildZeroDteInput): ZeroDteRec
       : estimateAtmStraddle(spxRows, spxPrice) ?? estimateAtmStraddle(spyEquivalentRows, spxPrice) ?? 0;
 
   const alignmentScore = calculateAlignmentScore(spx.gravity, spyEquivalent.gravity, expectedMove || 70);
-  const dealerPressure = estimateDealerPressure([...spxRows, ...spyEquivalentRows], spxPrice);
+  const spxDealerPressure = estimateDealerPressure(spxRows, spxPrice);
+  const spyDealerPressure = estimateDealerPressure(spyEquivalentRows, spxPrice);
+
+  // SPX dominates. SPY confirms or warns, but it should not move the trade by itself.
+  const dealerPressure = clamp(Math.round(spxDealerPressure * 0.78 + spyDealerPressure * 0.22), -100, 100);
   const pressureBias = dealerPressure > 20 ? "up" : dealerPressure < -20 ? "down" : "neutral";
 
   const suggestedCenter = chooseIronFlyCenter({
     spot: spxPrice,
-    compositeGravity: composite.gravity,
-    compositePin: composite.strongestPin,
+    spxGravity: spx.gravity,
+    spxPin: spx.strongestPin,
+    spyGravity: spyEquivalent.gravity,
     dealerPressure,
     alignmentScore,
-    symmetryScore: composite.symmetryScore,
+    symmetryScore: spx.symmetryScore,
   });
 
   const suggestedWingWidth = roundToFive(Math.max(expectedMove, 50));
@@ -107,12 +145,26 @@ export function buildZeroDteRecommendation(input: BuildZeroDteInput): ZeroDteRec
 
   const confidenceScore = calculateConfidenceScore({
     alignmentScore,
-    oiStrength: composite.oiStrength,
-    symmetryScore: composite.symmetryScore,
+    oiStrength: spx.oiStrength,
+    symmetryScore: spx.symmetryScore,
     dealerPressure,
     spot: spxPrice,
     center: suggestedCenter,
     expectedMove,
+  });
+
+  const spxChainMap = buildSpxOiMap({
+    spxClusters: spx.clusters,
+    spyClusters: spyEquivalent.clusters,
+    spot: spxPrice,
+    spxCallWall: spx.callWall,
+    spxPutWall: spx.putWall,
+    spxPin: spx.strongestPin,
+  });
+
+  const spyAlignmentMap = buildSpyAlignmentMap({
+    spyClusters: spyEquivalent.clusters,
+    spxClusters: spx.clusters,
   });
 
   const management = getIronFlyManagement({
@@ -127,9 +179,12 @@ export function buildZeroDteRecommendation(input: BuildZeroDteInput): ZeroDteRec
     alignmentScore,
     confidenceScore,
     dealerPressure,
+    spxDealerPressure,
+    spyDealerPressure,
     spx,
     spyEquivalent,
     composite,
+    spyNotionalWeight,
     suggestedCenter,
     lowerWing,
     upperWing,
@@ -146,10 +201,15 @@ export function buildZeroDteRecommendation(input: BuildZeroDteInput): ZeroDteRec
     alignmentScore,
     confidenceScore,
     dealerPressure,
+    spxDealerPressure,
+    spyDealerPressure,
     pressureBias,
+    spyNotionalWeight,
     spx,
     spyEquivalent,
     composite,
+    spxChainMap,
+    spyAlignmentMap,
     management,
     notes,
   };
@@ -202,12 +262,31 @@ export function convertSpyRowsToSpx(
   spyPrice: number
 ): ZeroDteChainRow[] {
   const ratio = spyPrice > 0 ? spxPrice / spyPrice : 10;
+  const notionalWeight = calculateSpyNotionalWeight(spxPrice, spyPrice);
 
   return spyRows.map((row) => ({
     ...row,
     symbol: "SPY_EQUIV",
     strike: row.strike * ratio,
+    // SPY contracts are roughly 1/10th the notional of SPX contracts.
+    // Raw SPY OI is large and should not overpower SPX, which is the actual trade.
+    openInterest: scale(row.openInterest, notionalWeight),
+    volume: scale(row.volume, notionalWeight),
+    // Keep gamma unscaled. SPY gamma is naturally larger because the underlying price is lower.
+    // Scaling OI/volume to SPX-contract equivalents keeps gamma-weight comparison usable.
+    gamma: row.gamma ?? null,
+    // Premium/expected-move values are SPY points, so convert them to SPX points.
+    bid: scale(row.bid, ratio),
+    ask: scale(row.ask, ratio),
+    mid: scale(row.mid, ratio),
+    last: scale(row.last, ratio),
+    notionalWeight,
   }));
+}
+
+export function calculateSpyNotionalWeight(spxPrice: number, spyPrice: number) {
+  if (spxPrice > 0 && spyPrice > 0) return spyPrice / spxPrice;
+  return 0.10;
 }
 
 function buildClusters(rows: ZeroDteChainRow[]): OiCluster[] {
@@ -337,23 +416,32 @@ function estimateDealerPressure(rows: ZeroDteChainRow[], spot: number) {
 
 function chooseIronFlyCenter(args: {
   spot: number;
-  compositeGravity: number | null;
-  compositePin: number | null;
+  spxGravity: number | null;
+  spxPin: number | null;
+  spyGravity: number | null;
   dealerPressure: number;
   alignmentScore: number;
   symmetryScore: number;
 }) {
-  const { spot, compositeGravity, compositePin, dealerPressure, alignmentScore, symmetryScore } = args;
+  const { spot, spxGravity, spxPin, spyGravity, dealerPressure, alignmentScore, symmetryScore } = args;
 
   let center = spot;
 
-  if (compositeGravity) center = center * 0.30 + compositeGravity * 0.70;
-  if (compositePin) center = center * 0.80 + compositePin * 0.20;
+  // Primary center uses SPX only.
+  if (spxGravity) center = center * 0.25 + spxGravity * 0.75;
+  if (spxPin) center = center * 0.80 + spxPin * 0.20;
 
+  // SPY only nudges when it confirms reasonably well; it never controls the center.
+  if (spyGravity && alignmentScore >= 65) {
+    center += clamp((spyGravity - center) * 0.10, -5, 5);
+  }
+
+  // Dealer pressure can shift center, but capped.
   center += clamp(dealerPressure * 0.12, -15, 15);
 
-  if (alignmentScore < 55 || symmetryScore < 45) {
-    center = center * 0.6 + spot * 0.4;
+  // Bad alignment/symmetry means do not chase the OI footprint too far from spot.
+  if (alignmentScore < 45 || symmetryScore < 45) {
+    center = center * 0.55 + spot * 0.45;
   }
 
   return roundToFive(center);
@@ -371,8 +459,8 @@ function calculateConfidenceScore(args: {
   const { alignmentScore, oiStrength, symmetryScore, dealerPressure, spot, center, expectedMove } = args;
 
   let score = 0;
-  score += alignmentScore * 0.35;
-  score += oiStrength * 0.25;
+  score += alignmentScore * 0.30;
+  score += oiStrength * 0.30;
   score += symmetryScore * 0.25;
 
   const pressurePenalty = Math.min(Math.abs(dealerPressure), 70) * 0.22;
@@ -384,6 +472,76 @@ function calculateConfidenceScore(args: {
   }
 
   return clamp(Math.round(score), 0, 100);
+}
+
+function buildSpxOiMap(args: {
+  spxClusters: OiCluster[];
+  spyClusters: OiCluster[];
+  spot: number;
+  spxCallWall: number | null;
+  spxPutWall: number | null;
+  spxPin: number | null;
+}): SpxOiMapRow[] {
+  return [...args.spxClusters]
+    .sort((a, b) => a.strike - b.strike)
+    .map((cluster) => {
+      const nearestSpy = nearestCluster(cluster.strike, args.spyClusters);
+      const nearestSpyDistance = nearestSpy ? Math.abs(nearestSpy.strike - cluster.strike) : null;
+      const sideBias = getSideBias(cluster);
+      const sideBiasPct = getSideBiasPct(cluster.callOi, cluster.putOi);
+
+      return {
+        ...cluster,
+        distanceFromSpot: cluster.strike - args.spot,
+        isCallWall: args.spxCallWall === cluster.strike,
+        isPutWall: args.spxPutWall === cluster.strike,
+        isPin: args.spxPin === cluster.strike,
+        sideBias,
+        sideBiasPct,
+        nearestSpyStrike: nearestSpy?.strike ?? null,
+        nearestSpyDistance,
+        spyScore: nearestSpy?.score ?? 0,
+        spyAlignment: nearestSpyDistance === null ? "none" : nearestSpyDistance <= 7.5 ? "aligned" : nearestSpyDistance <= 20 ? "near" : "none",
+      };
+    });
+}
+
+function buildSpyAlignmentMap(args: {
+  spyClusters: OiCluster[];
+  spxClusters: OiCluster[];
+}): SpyAlignmentRow[] {
+  return [...args.spyClusters]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 20)
+    .map((cluster) => {
+      const nearestSpx = nearestCluster(cluster.strike, args.spxClusters);
+      const nearestSpxDistance = nearestSpx ? Math.abs(nearestSpx.strike - cluster.strike) : null;
+
+      return {
+        ...cluster,
+        nearestSpxStrike: nearestSpx?.strike ?? null,
+        nearestSpxDistance,
+        spxScore: nearestSpx?.score ?? 0,
+        alignment: nearestSpxDistance === null ? "none" : nearestSpxDistance <= 7.5 ? "aligned" : nearestSpxDistance <= 20 ? "near" : "none",
+      };
+    });
+}
+
+function nearestCluster(strike: number, clusters: OiCluster[]) {
+  if (!clusters.length) return null;
+  return [...clusters].sort((a, b) => Math.abs(a.strike - strike) - Math.abs(b.strike - strike))[0] ?? null;
+}
+
+function getSideBias(cluster: OiCluster): "call" | "put" | "balanced" {
+  const total = cluster.callOi + cluster.putOi;
+  if (!total) return "balanced";
+  const imbalance = Math.abs(cluster.callOi - cluster.putOi) / total;
+  if (imbalance < 0.15) return "balanced";
+  return cluster.callOi > cluster.putOi ? "call" : "put";
+}
+
+function getSideBiasPct(callOi: number, putOi: number) {
+  return percentImbalance(callOi, putOi);
 }
 
 function estimateAtmStraddle(rows: ZeroDteChainRow[], spot: number) {
@@ -421,28 +579,34 @@ function buildNotes(args: {
   alignmentScore: number;
   confidenceScore: number;
   dealerPressure: number;
+  spxDealerPressure: number;
+  spyDealerPressure: number;
   spx: SymbolOiIntelligence;
   spyEquivalent: SymbolOiIntelligence;
   composite: SymbolOiIntelligence;
+  spyNotionalWeight?: number;
   suggestedCenter: number;
   lowerWing: number;
   upperWing: number;
 }) {
   const notes: string[] = [];
 
-  if (args.confidenceScore >= 70) notes.push("High-confidence iron fly footprint.");
+  if (args.confidenceScore >= 70) notes.push("High-confidence SPX iron fly footprint.");
   else if (args.confidenceScore >= 55) notes.push("Moderate confidence; size conservatively.");
   else notes.push("Low confidence; wait or favor directional credit-spread logic instead of an iron fly.");
 
-  if (args.alignmentScore >= 75) notes.push("SPX and SPY OI gravity are aligned.");
-  else if (args.alignmentScore <= 45) notes.push("SPX and SPY OI gravity conflict.");
+  if (args.alignmentScore >= 75) notes.push("SPY confirms the SPX OI gravity area.");
+  else if (args.alignmentScore <= 45) notes.push("SPY conflicts with the SPX OI gravity area. Treat SPX center with lower confidence.");
+  else notes.push("SPY is only partially aligned with SPX.");
 
-  if (args.dealerPressure > 25) notes.push("Dealer pressure leans upward; center may need an upside adjustment.");
-  else if (args.dealerPressure < -25) notes.push("Dealer pressure leans downward; center may need a downside adjustment.");
+  if (args.dealerPressure > 25) notes.push("Dealer pressure leans upward; center may need a small upside adjustment.");
+  else if (args.dealerPressure < -25) notes.push("Dealer pressure leans downward; center may need a small downside adjustment.");
   else notes.push("Dealer pressure is relatively neutral, which supports pin behavior.");
 
-  notes.push(`SPX gravity: ${fmt(args.spx.gravity)}. SPY-equivalent gravity: ${fmt(args.spyEquivalent.gravity)}. Composite gravity: ${fmt(args.composite.gravity)}.`);
-  notes.push(`Suggested IF: ${args.lowerWing} / ${args.suggestedCenter} / ${args.upperWing}.`);
+  notes.push(`SPX gravity: ${fmt(args.spx.gravity)}. SPY-equivalent gravity: ${fmt(args.spyEquivalent.gravity)}. Composite reference gravity: ${fmt(args.composite.gravity)}.`);
+  notes.push(`Dealer pressure blend: SPX ${signed(args.spxDealerPressure)}, SPY alignment ${signed(args.spyDealerPressure)}, combined ${signed(args.dealerPressure)}.`);
+  if (args.spyNotionalWeight) notes.push(`SPY footprint is notional-weighted to ${(args.spyNotionalWeight * 100).toFixed(1)}% of raw SPY OI/volume and is used for alignment, not as the primary trade center.`);
+  notes.push(`Suggested SPX IF: ${args.lowerWing} / ${args.suggestedCenter} / ${args.upperWing}.`);
 
   return notes;
 }
@@ -465,6 +629,11 @@ function roundToFive(n: number) {
   return Math.round(n / 5) * 5;
 }
 
+function scale(n: number | null | undefined, factor: number) {
+  if (typeof n !== "number" || !Number.isFinite(n)) return n ?? null;
+  return n * factor;
+}
+
 function safe(n: number | null | undefined) {
   return typeof n === "number" && Number.isFinite(n) ? n : 0;
 }
@@ -476,4 +645,8 @@ function clamp(n: number, min: number, max: number) {
 function fmt(n: number | null | undefined) {
   if (n === null || n === undefined) return "N/A";
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(n);
+}
+
+function signed(n: number) {
+  return `${n > 0 ? "+" : ""}${n}`;
 }
