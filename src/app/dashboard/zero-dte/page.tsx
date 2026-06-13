@@ -11,6 +11,7 @@ type HarvestSymbolResult = {
   price: number;
   expirationTimestamp: number;
   expirationDate: string;
+  isZeroDte?: boolean;
   rows: ZeroDteChainRow[];
   source: "yahoo";
 };
@@ -123,7 +124,7 @@ export default function ZeroDteCommandPage() {
           <section style={styles.emptyCard}>
             <h2 style={styles.sectionTitle}>No live 0DTE recommendation yet</h2>
             <p style={styles.muted}>
-              This page does not use mock data. If today has no listed 0DTE expiration, or Yahoo does not return SPX options for your configured symbol, it will stay blank and show the harvest error.
+              This page does not use mock data. This page uses no mock data. On weekends/non-session days it may show the next listed expiration as a preview and mark the harvest as partial.
             </p>
           </section>
         ) : (
@@ -187,7 +188,7 @@ export default function ZeroDteCommandPage() {
                   <p style={styles.muted}>SPX + SPY-equivalent levels sorted by footprint score.</p>
                 </div>
                 <div style={styles.sourceText}>
-                  SPX rows: {data?.spx?.rows.length ?? 0} | SPY rows: {data?.spy?.rows.length ?? 0}
+                  SPX exp: {data?.spx?.expirationDate ?? "—"} | SPY exp: {data?.spy?.expirationDate ?? "—"} | SPX rows: {data?.spx?.rows.length ?? 0} | SPY rows: {data?.spy?.rows.length ?? 0}
                 </div>
               </div>
 

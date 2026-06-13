@@ -16,6 +16,24 @@ type YahooContract = {
   lastPrice?: number;
 };
 
+type YahooOptionBlock = {
+  calls?: YahooContract[];
+  puts?: YahooContract[];
+};
+
+type YahooOptionResult = {
+  underlyingSymbol?: string;
+  expirationDates?: number[];
+  regularMarketPrice?: number;
+  quote?: {
+    regularMarketPrice?: number;
+    marketPrice?: number;
+    regularMarketPreviousClose?: number;
+    previousClose?: number;
+  };
+  options?: YahooOptionBlock[];
+};
+
 type HarvestSymbolResult = {
   symbol: "SPX" | "SPY";
   yahooOptionSymbol: string;
@@ -23,9 +41,9 @@ type HarvestSymbolResult = {
   price: number;
   expirationTimestamp: number;
   expirationDate: string;
+  isZeroDte: boolean;
   rows: ZeroDteChainRow[];
   source: "yahoo";
-  error?: string;
 };
 
 type HarvestResponse = {
@@ -38,10 +56,10 @@ type HarvestResponse = {
   errors: string[];
 };
 
-const SPX_QUOTE_SYMBOL = process.env.ZERO_DTE_SPX_QUOTE_SYMBOL ?? "^GSPC";
-const SPX_OPTION_SYMBOL = process.env.ZERO_DTE_SPX_OPTION_SYMBOL ?? "^SPX";
-const SPY_QUOTE_SYMBOL = process.env.ZERO_DTE_SPY_QUOTE_SYMBOL ?? "SPY";
-const SPY_OPTION_SYMBOL = process.env.ZERO_DTE_SPY_OPTION_SYMBOL ?? "SPY";
+const DEFAULT_SPX_QUOTE_SYMBOLS = "^GSPC,^SPX,SPX";
+const DEFAULT_SPX_OPTION_SYMBOLS = "^SPX,SPX,^GSPC";
+const DEFAULT_SPY_QUOTE_SYMBOLS = "SPY";
+const DEFAULT_SPY_OPTION_SYMBOLS = "SPY";
 
 function json(data: unknown, status = 200) {
   return NextResponse.json(data, {
@@ -57,6 +75,7 @@ export async function GET(req: NextRequest) {
   const tradeDate = req.nextUrl.searchParams.get("date") ?? nyDateString(now);
   const rangePct = numberParam(req, "rangePct", 0.045);
   const manualExpectedMove = numberParam(req, "expectedMove", 0);
+  const strictZeroDte = req.nextUrl.searchParams.get("strict") === "1";
 
   const errors: string[] = [];
   let spx: HarvestSymbolResult | undefined;
@@ -65,11 +84,13 @@ export async function GET(req: NextRequest) {
   try {
     spx = await harvestSymbol({
       symbol: "SPX",
-      quoteSymbol: SPX_QUOTE_SYMBOL,
-      optionSymbol: SPX_OPTION_SYMBOL,
+      quoteSymbols: envList("ZERO_DTE_SPX_QUOTE_SYMBOLS", DEFAULT_SPX_QUOTE_SYMBOLS),
+      optionSymbols: envList("ZERO_DTE_SPX_OPTION_SYMBOLS", process.env.ZERO_DTE_SPX_OPTION_SYMBOL || DEFAULT_SPX_OPTION_SYMBOLS),
       tradeDate,
       rangePct,
+      strictZeroDte,
     });
+    if (!spx.isZeroDte) errors.push(`SPX using next listed expiration ${spx.expirationDate}; ${tradeDate} is not an available 0DTE session.`);
   } catch (error) {
     errors.push(`SPX harvest failed: ${message(error)}`);
   }
@@ -77,11 +98,13 @@ export async function GET(req: NextRequest) {
   try {
     spy = await harvestSymbol({
       symbol: "SPY",
-      quoteSymbol: SPY_QUOTE_SYMBOL,
-      optionSymbol: SPY_OPTION_SYMBOL,
+      quoteSymbols: envList("ZERO_DTE_SPY_QUOTE_SYMBOLS", process.env.ZERO_DTE_SPY_QUOTE_SYMBOL || DEFAULT_SPY_QUOTE_SYMBOLS),
+      optionSymbols: envList("ZERO_DTE_SPY_OPTION_SYMBOLS", process.env.ZERO_DTE_SPY_OPTION_SYMBOL || DEFAULT_SPY_OPTION_SYMBOLS),
       tradeDate,
       rangePct,
+      strictZeroDte,
     });
+    if (!spy.isZeroDte) errors.push(`SPY using next listed expiration ${spy.expirationDate}; ${tradeDate} is not an available 0DTE session.`);
   } catch (error) {
     errors.push(`SPY harvest failed: ${message(error)}`);
   }
@@ -97,8 +120,8 @@ export async function GET(req: NextRequest) {
       manualExpectedMove: manualExpectedMove > 0 ? manualExpectedMove : null,
     });
   } else {
-    if (!spx?.rows.length) errors.push("No SPX 0DTE rows available.");
-    if (!spy?.rows.length) errors.push("No SPY 0DTE rows available.");
+    if (!spx?.rows.length) errors.push("No SPX option rows available after range/filtering.");
+    if (!spy?.rows.length) errors.push("No SPY option rows available after range/filtering.");
   }
 
   const status: HarvestResponse["status"] = recommendation
@@ -107,62 +130,172 @@ export async function GET(req: NextRequest) {
       : "ok"
     : "error";
 
-  return json({
-    tradeDate,
-    generatedAt: now.toISOString(),
-    status,
-    spx,
-    spy,
-    recommendation,
-    errors,
-  } satisfies HarvestResponse, status === "error" ? 502 : 200);
+  return json(
+    {
+      tradeDate,
+      generatedAt: now.toISOString(),
+      status,
+      spx,
+      spy,
+      recommendation,
+      errors,
+    } satisfies HarvestResponse,
+    status === "error" ? 502 : 200
+  );
 }
 
 async function harvestSymbol(args: {
   symbol: "SPX" | "SPY";
-  quoteSymbol: string;
-  optionSymbol: string;
+  quoteSymbols: string[];
+  optionSymbols: string[];
   tradeDate: string;
   rangePct: number;
+  strictZeroDte: boolean;
 }): Promise<HarvestSymbolResult> {
-  const price = await fetchYahooPrice(args.quoteSymbol);
-  const expirationTimestamp = await getZeroDteExpiration(args.optionSymbol, args.tradeDate);
-  const chain = await fetchYahooOptionChain(args.optionSymbol, expirationTimestamp);
-  const expirationDate = timestampToDateString(expirationTimestamp);
+  const errors: string[] = [];
 
-  const calls = Array.isArray(chain?.calls) ? chain.calls : [];
-  const puts = Array.isArray(chain?.puts) ? chain.puts : [];
-  const minStrike = price * (1 - args.rangePct);
-  const maxStrike = price * (1 + args.rangePct);
-  const yearsToExpiration = yearsUntilExpiration(args.tradeDate);
+  for (const optionSymbol of args.optionSymbols) {
+    try {
+      const summary = await fetchYahooOptionResult(optionSymbol);
+      const expirations = normalizeExpirationDates(summary.expirationDates);
+      const expiration = chooseExpiration(expirations, args.tradeDate, !args.strictZeroDte);
 
-  const rows: ZeroDteChainRow[] = [
-    ...calls.map((c: YahooContract) => mapContract(args.symbol, "call", c, price, yearsToExpiration)),
-    ...puts.map((p: YahooContract) => mapContract(args.symbol, "put", p, price, yearsToExpiration)),
-  ]
-    .filter((row) => Number.isFinite(row.strike))
-    .filter((row) => row.strike >= minStrike && row.strike <= maxStrike)
-    .filter((row) => (row.openInterest ?? 0) > 0 || (row.volume ?? 0) > 0 || (row.bid ?? 0) > 0 || (row.ask ?? 0) > 0)
-    .sort((a, b) => a.strike - b.strike || a.optionType.localeCompare(b.optionType));
+      if (!expiration) {
+        const available = expirations.slice(0, 8).map((x) => x.date).join(", ") || "none returned";
+        throw new Error(
+          args.strictZeroDte
+            ? `No exact 0DTE expiration for ${optionSymbol} on ${args.tradeDate}. Available: ${available}`
+            : `No same-day or future expiration for ${optionSymbol} on ${args.tradeDate}. Available: ${available}`
+        );
+      }
 
-  return {
-    symbol: args.symbol,
-    yahooOptionSymbol: args.optionSymbol,
-    yahooQuoteSymbol: args.quoteSymbol,
-    price,
-    expirationTimestamp,
-    expirationDate,
-    rows,
-    source: "yahoo",
-  };
+      const chainResult = await fetchYahooOptionResult(optionSymbol, expiration.timestamp);
+      const block = chainResult.options?.[0];
+      if (!block) throw new Error(`Yahoo returned no option block for ${optionSymbol} ${expiration.date}.`);
+
+      const quotePrice = await fetchYahooPriceCandidates(args.quoteSymbols).catch(() => null);
+      const chainPrice =
+        finite(chainResult.quote?.regularMarketPrice) ??
+        finite(chainResult.quote?.marketPrice) ??
+        finite(chainResult.regularMarketPrice) ??
+        finite(summary.quote?.regularMarketPrice) ??
+        finite(summary.regularMarketPrice) ??
+        quotePrice;
+
+      if (!chainPrice || chainPrice <= 0) throw new Error(`No usable underlying price for ${optionSymbol}.`);
+
+      const minStrike = chainPrice * (1 - args.rangePct);
+      const maxStrike = chainPrice * (1 + args.rangePct);
+      const yearsToExpiration = yearsUntilExpiration(expiration.date);
+
+      const rows: ZeroDteChainRow[] = [
+        ...(block.calls ?? []).map((c) => mapContract(args.symbol, "call", c, chainPrice, yearsToExpiration)),
+        ...(block.puts ?? []).map((p) => mapContract(args.symbol, "put", p, chainPrice, yearsToExpiration)),
+      ]
+        .filter((row) => Number.isFinite(row.strike))
+        .filter((row) => row.strike >= minStrike && row.strike <= maxStrike)
+        .filter((row) =>
+          (row.openInterest ?? 0) > 0 ||
+          (row.volume ?? 0) > 0 ||
+          (row.bid ?? 0) > 0 ||
+          (row.ask ?? 0) > 0 ||
+          (row.mid ?? 0) > 0
+        )
+        .sort((a, b) => a.strike - b.strike || a.optionType.localeCompare(b.optionType));
+
+      if (!rows.length) {
+        throw new Error(`No usable ${optionSymbol} strikes inside ±${(args.rangePct * 100).toFixed(1)}% of ${chainPrice.toFixed(2)}.`);
+      }
+
+      return {
+        symbol: args.symbol,
+        yahooOptionSymbol: optionSymbol,
+        yahooQuoteSymbol: args.quoteSymbols[0] ?? optionSymbol,
+        price: chainPrice,
+        expirationTimestamp: expiration.timestamp,
+        expirationDate: expiration.date,
+        isZeroDte: expiration.date === args.tradeDate,
+        rows,
+        source: "yahoo",
+      };
+    } catch (error) {
+      errors.push(`${optionSymbol}: ${message(error)}`);
+    }
+  }
+
+  throw new Error(errors.join(" | "));
+}
+
+async function fetchYahooOptionResult(optionSymbol: string, expirationTimestamp?: number): Promise<YahooOptionResult> {
+  const attempts: Array<() => Promise<YahooOptionResult>> = [
+    () => fetchYahooOptionResultNoCrumb("query2", optionSymbol, expirationTimestamp),
+    () => fetchYahooOptionResultNoCrumb("query1", optionSymbol, expirationTimestamp),
+    () => fetchYahooOptionResultWithCrumb("query2", optionSymbol, expirationTimestamp),
+    () => fetchYahooOptionResultWithCrumb("query1", optionSymbol, expirationTimestamp),
+  ];
+
+  const errors: string[] = [];
+  for (const attempt of attempts) {
+    try {
+      const result = await attempt();
+      if (result) return result;
+    } catch (error) {
+      errors.push(message(error));
+    }
+  }
+
+  throw new Error(errors.join(" | "));
+}
+
+async function fetchYahooOptionResultNoCrumb(host: "query1" | "query2", optionSymbol: string, expirationTimestamp?: number): Promise<YahooOptionResult> {
+  const params = new URLSearchParams();
+  if (expirationTimestamp) params.set("date", String(expirationTimestamp));
+
+  const url = `https://${host}.finance.yahoo.com/v7/finance/options/${encodeURIComponent(optionSymbol)}${params.toString() ? `?${params.toString()}` : ""}`;
+  return parseYahooOptionResponse(url, await fetch(url, yahooFetchInit()));
+}
+
+async function fetchYahooOptionResultWithCrumb(host: "query1" | "query2", optionSymbol: string, expirationTimestamp?: number): Promise<YahooOptionResult> {
+  const { crumb, cookie } = await getYahooCrumbAndCookie();
+  const params = new URLSearchParams({ crumb });
+  if (expirationTimestamp) params.set("date", String(expirationTimestamp));
+
+  const url = `https://${host}.finance.yahoo.com/v7/finance/options/${encodeURIComponent(optionSymbol)}?${params.toString()}`;
+  return parseYahooOptionResponse(url, await fetch(url, yahooFetchInit(cookie)));
+}
+
+async function parseYahooOptionResponse(url: string, res: Response): Promise<YahooOptionResult> {
+  const text = await res.text();
+
+  if (!res.ok) {
+    throw new Error(`${url} failed ${res.status}: ${text.slice(0, 220)}`);
+  }
+
+  const data = JSON.parse(text);
+  const error = data?.optionChain?.error;
+  if (error) throw new Error(`${url}: ${JSON.stringify(error)}`);
+
+  const result = data?.optionChain?.result?.[0];
+  if (!result) throw new Error(`${url}: no optionChain.result[0]`);
+
+  return result as YahooOptionResult;
+}
+
+async function fetchYahooPriceCandidates(symbols: string[]): Promise<number> {
+  const errors: string[] = [];
+  for (const symbol of symbols) {
+    try {
+      return await fetchYahooPrice(symbol);
+    } catch (error) {
+      errors.push(`${symbol}: ${message(error)}`);
+    }
+  }
+  throw new Error(errors.join(" | "));
 }
 
 async function fetchYahooPrice(symbol: string): Promise<number> {
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=5d&interval=1d`;
-  const res = await fetch(url, {
-    cache: "no-store",
-    headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
-  });
+  const res = await fetch(url, yahooFetchInit());
 
   const text = await res.text();
   if (!res.ok) throw new Error(`Yahoo quote ${symbol} failed ${res.status}: ${text.slice(0, 240)}`);
@@ -175,82 +308,22 @@ async function fetchYahooPrice(symbol: string): Promise<number> {
     ? quote.close.filter((x: unknown) => typeof x === "number" && Number.isFinite(x))
     : [];
 
-  const price = finite(meta?.regularMarketPrice) ? meta.regularMarketPrice : closes.at(-1);
-  if (!finite(price)) throw new Error(`Yahoo quote ${symbol} returned no price.`);
+  const price = finite(meta?.regularMarketPrice) ?? finite(meta?.previousClose) ?? closes.at(-1) ?? null;
+  if (!price || price <= 0) throw new Error(`Yahoo quote ${symbol} returned no price.`);
   return Number(price);
 }
 
-async function getZeroDteExpiration(optionSymbol: string, tradeDate: string): Promise<number> {
-  const summary = await fetchYahooOptions(optionSymbol);
-  const expirations: number[] = Array.isArray(summary?.expirationDates) ? summary.expirationDates : [];
-
-  const exact = expirations.find((ts) => timestampToDateString(ts) === tradeDate);
-  if (exact) return exact;
-
-  const upcoming = expirations.find((ts) => timestampToDateString(ts) > tradeDate);
-  if (upcoming) {
-    throw new Error(
-      `No 0DTE expiration for ${optionSymbol} on ${tradeDate}. Next listed expiration is ${timestampToDateString(upcoming)}.`
-    );
-  }
-
-  throw new Error(`No expirations returned for ${optionSymbol}.`);
-}
-
-async function fetchYahooOptionChain(optionSymbol: string, expirationTimestamp: number) {
-  const data = await fetchYahooOptions(optionSymbol, expirationTimestamp);
-  const result = data?.optionChain?.result?.[0];
-  const block = result?.options?.[0];
-
-  if (!block) throw new Error(`Yahoo options ${optionSymbol} returned no chain block.`);
-
-  return {
-    calls: block.calls ?? [],
-    puts: block.puts ?? [],
-  };
-}
-
-async function fetchYahooOptions(optionSymbol: string, expirationTimestamp?: number) {
-  const { crumb, cookie } = await getYahooCrumbAndCookie();
-  const params = new URLSearchParams();
-  params.set("crumb", crumb);
-  if (expirationTimestamp) params.set("date", String(expirationTimestamp));
-
-  const url = `https://query2.finance.yahoo.com/v7/finance/options/${encodeURIComponent(optionSymbol)}?${params.toString()}`;
-  const res = await fetch(url, {
-    cache: "no-store",
-    headers: {
-      "User-Agent": "Mozilla/5.0",
-      Accept: "application/json,text/plain,*/*",
-      Cookie: cookie,
-    },
-  });
-
-  const text = await res.text();
-  if (!res.ok) throw new Error(`Yahoo options ${optionSymbol} failed ${res.status}: ${text.slice(0, 400)}`);
-
-  const data = JSON.parse(text);
-  const error = data?.optionChain?.error;
-  if (error) throw new Error(`Yahoo options ${optionSymbol}: ${JSON.stringify(error)}`);
-
-  return data;
-}
-
 async function getYahooCrumbAndCookie() {
-  const cookieRes = await fetch("https://fc.yahoo.com", {
-    headers: { "User-Agent": "Mozilla/5.0", Accept: "*/*" },
-    cache: "no-store",
-  });
-
+  const cookieRes = await fetch("https://fc.yahoo.com", yahooFetchInit());
   const cookie = cookieHeaderFromSetCookie(cookieRes.headers.get("set-cookie"));
-  const crumbRes = await fetch("https://query1.finance.yahoo.com/v1/test/getcrumb", {
-    headers: { "User-Agent": "Mozilla/5.0", Cookie: cookie },
-    cache: "no-store",
-  });
 
+  const crumbRes = await fetch("https://query1.finance.yahoo.com/v1/test/getcrumb", yahooFetchInit(cookie));
   if (!crumbRes.ok) throw new Error(`Yahoo crumb failed: ${crumbRes.status}`);
 
-  return { crumb: await crumbRes.text(), cookie };
+  const crumb = (await crumbRes.text()).trim();
+  if (!crumb || crumb.includes("<")) throw new Error("Yahoo crumb response was not usable.");
+
+  return { crumb, cookie };
 }
 
 function mapContract(
@@ -272,7 +345,6 @@ function mapContract(
     symbol,
     strike,
     optionType,
-    expiration: contract.expiration ? timestampToDateString(contract.expiration) : null,
     openInterest: cleanNumber(contract.openInterest),
     volume: cleanNumber(contract.volume),
     iv,
@@ -282,7 +354,6 @@ function mapContract(
     bid,
     ask,
     mid,
-    last,
   };
 }
 
@@ -312,9 +383,9 @@ function blackScholesGreeks(args: {
   const thetaPut = (-(S * pdf * sigma) / (2 * sqrtT) + r * K * Math.exp(-r * T) * normalCdf(-d2)) / 365;
 
   return {
-    delta,
-    gamma,
-    theta: args.optionType === "call" ? thetaCall : thetaPut,
+    delta: Number.isFinite(delta) ? delta : null,
+    gamma: Number.isFinite(gamma) ? gamma : null,
+    theta: Number.isFinite(thetaCall) && Number.isFinite(thetaPut) ? (args.optionType === "call" ? thetaCall : thetaPut) : null,
   };
 }
 
@@ -331,11 +402,48 @@ function normalCdf(x: number) {
 }
 
 function yearsUntilExpiration(tradeDate: string) {
-  // 0DTE: use market close New York time as expiry proxy.
-  const expiry = new Date(`${tradeDate}T16:00:00-04:00`).getTime();
+  // 4 PM New York proxy. This is only for ranking gamma when Yahoo does not return greeks.
+  const expiry = new Date(`${tradeDate}T21:00:00.000Z`).getTime();
   const now = Date.now();
   const ms = Math.max(expiry - now, 60 * 60 * 1000);
   return ms / (365 * 24 * 60 * 60 * 1000);
+}
+
+function chooseExpiration(
+  expirations: Array<{ timestamp: number; date: string }>,
+  tradeDate: string,
+  allowNext: boolean
+): { timestamp: number; date: string } | null {
+  const exact = expirations.find((x) => x.date === tradeDate);
+  if (exact) return exact;
+  if (!allowNext) return null;
+  return expirations.find((x) => x.date > tradeDate) ?? null;
+}
+
+function normalizeExpirationDates(values: unknown): Array<{ timestamp: number; date: string }> {
+  if (!Array.isArray(values)) return [];
+  return values
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value))
+    .map((timestamp) => ({ timestamp, date: timestampToDateString(timestamp) }))
+    .sort((a, b) => a.timestamp - b.timestamp);
+}
+
+function envList(key: string, fallback: string) {
+  return (process.env[key] || fallback)
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+function yahooFetchInit(cookie?: string): RequestInit {
+  return {
+    cache: "no-store",
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36",
+      Accept: "application/json,text/plain,*/*",
+      ...(cookie ? { Cookie: cookie } : {}),
+    },
+  };
 }
 
 function nyDateString(date: Date) {
@@ -354,7 +462,7 @@ function timestampToDateString(ts: number) {
 function cookieHeaderFromSetCookie(setCookie: string | null) {
   if (!setCookie) return "";
   return setCookie
-    .split(",")
+    .split(/,(?=\s*[^;=]+=)/g)
     .map((part) => part.split(";")[0].trim())
     .filter(Boolean)
     .join("; ");
@@ -375,8 +483,8 @@ function numberOrZero(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-function finite(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
+function finite(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function message(error: unknown) {
