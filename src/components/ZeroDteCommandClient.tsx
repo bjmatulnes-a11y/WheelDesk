@@ -5,6 +5,9 @@ import type React from "react";
 import { WheelDeskSideNav } from "./WheelDeskSideNav";
 import type { SpxOiMapRow, SpyAlignmentRow, ZeroDteChainRow, ZeroDteRecommendation } from "../lib/zeroDteOiIntelligence";
 import { buildIronFlyPositionReport, type IronFlyPositionReport, type IronFlySideReport } from "../lib/zeroDteIronFlyManager";
+import { ZeroDteTradeSelectionPanel } from "./ZeroDteTradeSelectionPanel";
+import type { ZeroDteMoodRead } from "../lib/zeroDteMoodEngine";
+import type { ZeroDteTradeSelection } from "../lib/zeroDteTradeSelector";
 
 type HarvestSymbolResult = {
   symbol: "SPX" | "SPY";
@@ -31,6 +34,8 @@ type HarvestResponse = {
   spx?: HarvestSymbolResult;
   spy?: HarvestSymbolResult;
   recommendation?: ZeroDteRecommendation;
+  mood?: ZeroDteMoodRead;
+  tradeSelection?: ZeroDteTradeSelection;
   errors: string[];
   qualityChecks?: QualityCheck[];
 };
@@ -60,6 +65,8 @@ export default function ZeroDteCommandClient() {
   const [expectedMove, setExpectedMove] = useState("");
   const [rangePct, setRangePct] = useState("0.045");
   const [strictZeroDte, setStrictZeroDte] = useState(false);
+  const [manualMood, setManualMood] = useState("");
+  const [spreadWidth, setSpreadWidth] = useState("20");
   const [position, setPosition] = useState<PositionState>(defaultPosition);
 
   async function load() {
@@ -71,6 +78,8 @@ export default function ZeroDteCommandClient() {
       if (Number(expectedMove) > 0) params.set("expectedMove", expectedMove);
       if (Number(rangePct) > 0) params.set("rangePct", rangePct);
       if (strictZeroDte) params.set("strict", "1");
+      if (Number(manualMood) || manualMood.trim() === "0") params.set("mood", manualMood);
+      if (Number(spreadWidth) > 0) params.set("spreadWidth", spreadWidth);
 
       const res = await fetch(`/api/zero-dte/harvest?${params.toString()}`, { cache: "no-store" });
       const json = (await res.json()) as HarvestResponse;
@@ -158,6 +167,16 @@ export default function ZeroDteCommandClient() {
             <input value={rangePct} onChange={(e) => setRangePct(e.target.value)} type="number" step="0.005" style={styles.input} />
           </label>
 
+          <label style={styles.controlCard}>
+            <span style={styles.controlText}>TOS mood override</span>
+            <input value={manualMood} onChange={(e) => setManualMood(e.target.value)} placeholder="optional, e.g. 78 or -82" type="number" step="0.5" style={styles.input} />
+          </label>
+
+          <label style={styles.controlCard}>
+            <span style={styles.controlText}>Credit spread width</span>
+            <input value={spreadWidth} onChange={(e) => setSpreadWidth(e.target.value)} placeholder="20" type="number" step="5" style={styles.input} />
+          </label>
+
           <label style={styles.checkboxCard}>
             <span style={styles.controlText}>Strict 0DTE</span>
             <span style={styles.checkboxRow}>
@@ -194,6 +213,8 @@ export default function ZeroDteCommandClient() {
               </div>
               <SpxOiHistogram rows={spxMapRows} rec={rec} />
             </section>
+
+            <ZeroDteTradeSelectionPanel mood={data?.mood ?? null} tradeSelection={data?.tradeSelection ?? null} />
 
             <section style={styles.grid4}>
               <MetricCard title="SPX" value={fmt(rec.spxPrice)} />
@@ -597,7 +618,7 @@ const styles: Record<string, React.CSSProperties> = {
   subtitle: { maxWidth: 900, margin: 0, color: "#cbd5e1", fontSize: 14, lineHeight: 1.5 },
   primaryButton: { background: "#0e7490", color: "white", border: "1px solid #22d3ee", borderRadius: 10, padding: "12px 18px", fontWeight: 900, cursor: "pointer" },
   secondaryButton: { background: "#0f2235", color: "#67e8f9", border: "1px solid rgba(34,211,238,0.45)", borderRadius: 10, padding: "10px 14px", fontWeight: 900, cursor: "pointer" },
-  controlsGrid: { display: "grid", gridTemplateColumns: "minmax(220px, 320px) minmax(180px, 220px) minmax(180px, 220px) 1fr", gap: 12, marginBottom: 16 },
+  controlsGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12, marginBottom: 16 },
   controlCard: { border: "1px solid #1e3a5f", background: "#0b1b2b", borderRadius: 14, padding: 14, display: "grid", gap: 8 },
   checkboxCard: { border: "1px solid #1e3a5f", background: "#0b1b2b", borderRadius: 14, padding: 14, display: "grid", gap: 10 },
   checkboxRow: { display: "flex", gap: 8, alignItems: "center", color: "#cbd5e1", fontSize: 13 },

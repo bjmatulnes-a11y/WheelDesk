@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { buildZeroDteRecommendation, ZeroDteChainRow } from "../../../../lib/zeroDteOiIntelligence";
+import { buildZeroDteMoodRead, type ZeroDteMoodInput, type ZeroDteMoodRead } from "../../../../lib/zeroDteMoodEngine";
+import { buildZeroDteTradeSelection, type ZeroDteTradeSelection } from "../../../../lib/zeroDteTradeSelector";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -59,6 +61,8 @@ type HarvestResponse = {
   spx?: HarvestSymbolResult;
   spy?: HarvestSymbolResult;
   recommendation?: ReturnType<typeof buildZeroDteRecommendation>;
+  mood?: ZeroDteMoodRead;
+  tradeSelection?: ZeroDteTradeSelection;
   errors: string[];
   qualityChecks: QualityCheck[];
 };
@@ -82,6 +86,8 @@ export async function GET(req: NextRequest) {
   const tradeDate = req.nextUrl.searchParams.get("date") ?? nyDateString(now);
   const rangePct = numberParam(req, "rangePct", 0.045);
   const manualExpectedMove = numberParam(req, "expectedMove", 0);
+  const manualMoodPercent = optionalNumberParam(req, "mood");
+  const spreadWidth = numberParam(req, "spreadWidth", 20);
   const strictZeroDte = req.nextUrl.searchParams.get("strict") === "1";
 
   const errors: string[] = [];
@@ -117,6 +123,8 @@ export async function GET(req: NextRequest) {
   }
 
   let recommendation: HarvestResponse["recommendation"] | undefined;
+  let mood: ZeroDteMoodRead | undefined;
+  let tradeSelection: ZeroDteTradeSelection | undefined;
 
   if (spx?.rows.length && spy?.rows.length) {
     recommendation = buildZeroDteRecommendation({
@@ -125,6 +133,24 @@ export async function GET(req: NextRequest) {
       spxRows: spx.rows,
       spyRows: spy.rows,
       manualExpectedMove: manualExpectedMove > 0 ? manualExpectedMove : null,
+    });
+
+    const moodInput = await buildMoodInput({
+      req,
+      generatedAt: now.toISOString(),
+      spxPrice: spx.price,
+      manualMoodPercent,
+    }).catch((error) => {
+      errors.push(`Mood harvest failed: ${message(error)}`);
+      return { index: "SPX", manualMoodPercent, generatedAt: now.toISOString(), source: "unavailable" } satisfies ZeroDteMoodInput;
+    });
+
+    mood = buildZeroDteMoodRead(moodInput);
+    tradeSelection = buildZeroDteTradeSelection({
+      recommendation,
+      mood,
+      spreadWidth,
+      riskMode: "balanced",
     });
   } else {
     if (!spx?.rows.length) errors.push("No SPX option rows available after range/filtering.");
@@ -159,6 +185,8 @@ export async function GET(req: NextRequest) {
       spx,
       spy,
       recommendation,
+      mood,
+      tradeSelection,
       errors,
       qualityChecks,
     } satisfies HarvestResponse,
@@ -249,6 +277,128 @@ function buildQualityChecks(args: {
   });
 
   return checks;
+}
+
+
+async function buildMoodInput(args: {
+  req: NextRequest;
+  generatedAt: string;
+  spxPrice: number;
+  manualMoodPercent: number | null;
+}): Promise<ZeroDteMoodInput> {
+  const manualMoodPercent = args.manualMoodPercent;
+
+  if (manualMoodPercent !== null) {
+    return {
+      index: "SPX",
+      manualMoodPercent,
+      generatedAt: args.generatedAt,
+      source: "manual-tos-mood",
+    };
+  }
+
+  const internalsFromQuery: Partial<ZeroDteMoodInput> = {
+    tick: optionalNumberParam(args.req, "tick"),
+    uvolDvolRatio: optionalNumberParam(args.req, "uvolDvolRatio"),
+    advanceDecline: optionalNumberParam(args.req, "add"),
+    highWeightTrend: optionalNumberParam(args.req, "highWeightTrend"),
+    tickTrend: optionalNumberParam(args.req, "tickTrend"),
+    uvolDvolTrend: optionalNumberParam(args.req, "uvolDvolTrend"),
+    advanceDeclineTrend: optionalNumberParam(args.req, "addTrend"),
+  };
+
+  const highWeight = await fetchSpxHighWeightPull().catch(() => null);
+
+  return {
+    index: "SPX",
+    manualMoodPercent: null,
+    indexPctChange: highWeight?.indexPctChange ?? null,
+    highWeightPullPct: highWeight?.highWeightPullPct ?? null,
+    ...internalsFromQuery,
+    generatedAt: args.generatedAt,
+    source: highWeight ? "yahoo-high-weight-components" : "partial-query-internals",
+  };
+}
+
+async function fetchSpxHighWeightPull(): Promise<{
+  indexPctChange: number;
+  highWeightPctChange: number;
+  highWeightPullPct: number;
+}> {
+  const indexQuote = await fetchYahooDailyQuote("^GSPC");
+  const components = [
+    { symbol: "AAPL", weight: 6.32 },
+    { symbol: "MSFT", weight: 6.71 },
+    { symbol: "NVDA", weight: 6.57 },
+    { symbol: "AMZN", weight: 3.85 },
+    { symbol: "META", weight: 2.81 },
+    { symbol: "TSLA", weight: 1.91 },
+    { symbol: "GOOGL", weight: 1.9 },
+    { symbol: "AVGO", weight: 2.17 },
+    { symbol: "GOOG", weight: 1.56 },
+    { symbol: "BRK-B", weight: 1.85 },
+  ];
+
+  const settled = await Promise.allSettled(
+    components.map(async (component) => ({
+      ...component,
+      quote: await fetchYahooDailyQuote(component.symbol),
+    }))
+  );
+
+  const usable = settled
+    .filter((x): x is PromiseFulfilledResult<{ symbol: string; weight: number; quote: YahooDailyQuote }> => x.status === "fulfilled")
+    .map((x) => x.value)
+    .filter((x) => Number.isFinite(x.quote.pctChange));
+
+  if (!usable.length) throw new Error("No usable high-weight component quotes were returned.");
+
+  const weightSum = usable.reduce((sum, x) => sum + x.weight, 0);
+  const highWeightPctChange = usable.reduce((sum, x) => sum + x.quote.pctChange * x.weight, 0) / weightSum;
+  const indexPctChange = indexQuote.pctChange;
+
+  return {
+    indexPctChange,
+    highWeightPctChange,
+    highWeightPullPct: highWeightPctChange - indexPctChange,
+  };
+}
+
+type YahooDailyQuote = {
+  symbol: string;
+  price: number;
+  previousClose: number;
+  pctChange: number;
+};
+
+async function fetchYahooDailyQuote(symbol: string): Promise<YahooDailyQuote> {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=5d&interval=1d`;
+  const res = await fetch(url, yahooFetchInit());
+  const text = await res.text();
+
+  if (!res.ok) throw new Error(`Yahoo quote ${symbol} failed ${res.status}: ${text.slice(0, 240)}`);
+
+  const data = JSON.parse(text);
+  const result = data?.chart?.result?.[0];
+  const meta = result?.meta;
+  const quote = result?.indicators?.quote?.[0];
+  const closes = Array.isArray(quote?.close)
+    ? quote.close.filter((x: unknown) => typeof x === "number" && Number.isFinite(x))
+    : [];
+
+  const price = finite(meta?.regularMarketPrice) ?? closes.at(-1) ?? null;
+  const previousClose = finite(meta?.previousClose) ?? (closes.length >= 2 ? closes.at(-2) ?? null : null);
+
+  if (!price || !previousClose || previousClose <= 0) {
+    throw new Error(`Yahoo quote ${symbol} returned no usable price/previous close.`);
+  }
+
+  return {
+    symbol,
+    price,
+    previousClose,
+    pctChange: ((price - previousClose) / previousClose) * 100,
+  };
 }
 
 async function harvestSymbol(args: {
@@ -582,6 +732,13 @@ function numberParam(req: NextRequest, key: string, fallback: number) {
   if (!raw) return fallback;
   const parsed = Number(raw);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function optionalNumberParam(req: NextRequest, key: string): number | null {
+  const raw = req.nextUrl.searchParams.get(key);
+  if (raw === null || raw.trim() === "") return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function cleanNumber(value: unknown): number | null {
