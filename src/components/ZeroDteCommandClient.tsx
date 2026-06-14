@@ -6,6 +6,7 @@ import { WheelDeskSideNav } from "./WheelDeskSideNav";
 import type { SpxOiMapRow, SpyAlignmentRow, ZeroDteChainRow, ZeroDteRecommendation } from "../lib/zeroDteOiIntelligence";
 import { buildIronFlyPositionReport, type IronFlyPositionReport, type IronFlySideReport } from "../lib/zeroDteIronFlyManager";
 import { ZeroDteTradeSelectionPanel } from "./ZeroDteTradeSelectionPanel";
+import { ZeroDteTosInputsPanel } from "./ZeroDteTosInputsPanel";
 import type { ZeroDteMoodRead } from "../lib/zeroDteMoodEngine";
 import type { ZeroDteTradeSelection } from "../lib/zeroDteTradeSelector";
 
@@ -240,6 +241,12 @@ export default function ZeroDteCommandClient() {
             </section>
 
             <ZeroDteTradeSelectionPanel mood={data?.mood ?? null} tradeSelection={data?.tradeSelection ?? null} />
+
+            <ZeroDteTosInputsPanel
+              recommendation={rec}
+              tradeSelection={data?.tradeSelection ?? null}
+              generatedAt={data?.generatedAt ?? null}
+            />
 
             <section style={styles.grid4}>
               <MetricCard title="SPX" value={fmt(rec.spxPrice)} />
