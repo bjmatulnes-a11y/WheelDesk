@@ -87,7 +87,14 @@ export async function GET(req: NextRequest) {
   const rangePct = numberParam(req, "rangePct", 0.045);
   const manualExpectedMove = numberParam(req, "expectedMove", 0);
   const manualMoodPercent = optionalNumberParam(req, "mood");
-  const spreadWidth = numberParam(req, "spreadWidth", 20);
+  // spreadWidth is retained for backward compatibility, but the selector now treats it as maxWidth, not a forced width.
+  const legacySpreadWidth = optionalNumberParam(req, "spreadWidth");
+  const maxWidth = optionalNumberParam(req, "maxWidth") ?? legacySpreadWidth ?? 40;
+  const minWidth = optionalNumberParam(req, "minWidth") ?? 5;
+  const maxRiskDollars = optionalNumberParam(req, "maxRisk");
+  const minCredit = optionalNumberParam(req, "minCredit");
+  const minCreditToRiskPct = percentParam(req, "minCreditToRiskPct");
+  const riskMode = riskModeParam(req);
   const strictZeroDte = req.nextUrl.searchParams.get("strict") === "1";
 
   const errors: string[] = [];
@@ -150,8 +157,13 @@ export async function GET(req: NextRequest) {
       recommendation,
       spxRows: spx.rows,
       mood,
-      spreadWidth,
-      riskMode: "balanced",
+      spreadWidth: maxWidth,
+      maxWidth,
+      minWidth,
+      maxRiskDollars,
+      minCredit,
+      minCreditToRiskPct,
+      riskMode,
     });
   } else {
     if (!spx?.rows.length) errors.push("No SPX option rows available after range/filtering.");
@@ -195,6 +207,19 @@ export async function GET(req: NextRequest) {
   );
 }
 
+
+function riskModeParam(req: NextRequest): "conservative" | "balanced" | "aggressive" {
+  const raw = req.nextUrl.searchParams.get("riskMode");
+  if (raw === "conservative" || raw === "balanced" || raw === "aggressive") return raw;
+  return "balanced";
+}
+
+function percentParam(req: NextRequest, key: string) {
+  const value = optionalNumberParam(req, key);
+  if (value === null) return null;
+  // UI may pass 8 for 8%, or 0.08. Normalize both to 0.08.
+  return value > 1 ? value / 100 : value;
+}
 function buildQualityChecks(args: {
   tradeDate: string;
   spx?: HarvestSymbolResult;

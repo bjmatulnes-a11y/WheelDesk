@@ -40,7 +40,13 @@ export type BuildZeroDteTradeSelectionInput = {
   recommendation: ZeroDteRecommendation;
   spxRows: ZeroDteChainRow[];
   mood?: ZeroDteMoodRead | null;
+  /** Legacy field. Now treated as max allowed width, not a forced width. */
   spreadWidth?: number | null;
+  maxWidth?: number | null;
+  minWidth?: number | null;
+  maxRiskDollars?: number | null;
+  minCredit?: number | null;
+  minCreditToRiskPct?: number | null;
   riskMode?: CreditSpreadRiskMode;
 };
 
@@ -54,6 +60,11 @@ export function buildZeroDteTradeSelection(input: BuildZeroDteTradeSelectionInpu
     spxRows: input.spxRows,
     mood,
     width: input.spreadWidth,
+    maxWidth: input.maxWidth ?? input.spreadWidth,
+    minWidth: input.minWidth,
+    maxRiskDollars: input.maxRiskDollars,
+    minCredit: input.minCredit,
+    minCreditToRiskPct: input.minCreditToRiskPct,
     riskMode: input.riskMode ?? "balanced",
   });
 

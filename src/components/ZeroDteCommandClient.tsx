@@ -66,7 +66,10 @@ export default function ZeroDteCommandClient() {
   const [rangePct, setRangePct] = useState("0.045");
   const [strictZeroDte, setStrictZeroDte] = useState(false);
   const [manualMood, setManualMood] = useState("");
-  const [spreadWidth, setSpreadWidth] = useState("20");
+  const [riskMode, setRiskMode] = useState<"conservative" | "balanced" | "aggressive">("balanced");
+  const [maxWidth, setMaxWidth] = useState("40");
+  const [maxRisk, setMaxRisk] = useState("");
+  const [minCredit, setMinCredit] = useState("");
   const [position, setPosition] = useState<PositionState>(defaultPosition);
 
   async function load() {
@@ -79,7 +82,10 @@ export default function ZeroDteCommandClient() {
       if (Number(rangePct) > 0) params.set("rangePct", rangePct);
       if (strictZeroDte) params.set("strict", "1");
       if (Number(manualMood) || manualMood.trim() === "0") params.set("mood", manualMood);
-      if (Number(spreadWidth) > 0) params.set("spreadWidth", spreadWidth);
+      params.set("riskMode", riskMode);
+      if (Number(maxWidth) > 0) params.set("maxWidth", maxWidth);
+      if (Number(maxRisk) > 0) params.set("maxRisk", maxRisk);
+      if (Number(minCredit) > 0) params.set("minCredit", minCredit);
 
       const res = await fetch(`/api/zero-dte/harvest?${params.toString()}`, { cache: "no-store" });
       const json = (await res.json()) as HarvestResponse;
@@ -173,8 +179,27 @@ export default function ZeroDteCommandClient() {
           </label>
 
           <label style={styles.controlCard}>
-            <span style={styles.controlText}>Credit spread width</span>
-            <input value={spreadWidth} onChange={(e) => setSpreadWidth(e.target.value)} placeholder="20" type="number" step="5" style={styles.input} />
+            <span style={styles.controlText}>Credit spread risk mode</span>
+            <select value={riskMode} onChange={(e) => setRiskMode(e.target.value as "conservative" | "balanced" | "aggressive")} style={styles.input}>
+              <option value="conservative">Conservative</option>
+              <option value="balanced">Balanced</option>
+              <option value="aggressive">Aggressive</option>
+            </select>
+          </label>
+
+          <label style={styles.controlCard}>
+            <span style={styles.controlText}>Max spread width</span>
+            <input value={maxWidth} onChange={(e) => setMaxWidth(e.target.value)} placeholder="40" type="number" step="5" style={styles.input} />
+          </label>
+
+          <label style={styles.controlCard}>
+            <span style={styles.controlText}>Max risk / spread</span>
+            <input value={maxRisk} onChange={(e) => setMaxRisk(e.target.value)} placeholder="optional, e.g. 1500" type="number" step="50" style={styles.input} />
+          </label>
+
+          <label style={styles.controlCard}>
+            <span style={styles.controlText}>Min credit</span>
+            <input value={minCredit} onChange={(e) => setMinCredit(e.target.value)} placeholder="optional, e.g. 1.25" type="number" step="0.05" style={styles.input} />
           </label>
 
           <label style={styles.checkboxCard}>

@@ -23,21 +23,23 @@ export function ZeroDteTradeSelectionPanel({
         <div>
           <h2 style={styles.title}>SPX Credit Spread Strike Selector</h2>
           <p style={styles.muted}>
-            This is the useful layer: it ranks actual SPX short strikes from live mids, OI support/resistance, dealer pressure, expected-move distance, and SPY confirmation.
+            Width is now optimized across candidate spreads. The selector tests short strikes and multiple widths, then ranks by SPX OI protection, expected-move cushion, actual credit/risk, delta, liquidity, dealer pressure, and SPY confirmation.
           </p>
         </div>
         <div style={styles.badgeWrap}>
-          <div style={styles.smallCaps}>Preferred Read</div>
-          <div style={{ ...styles.badgeValue, color: tone(tradeSelection?.confidence ?? 0) }}>{tradeSelection?.label ?? "No read"}</div>
-          <div style={styles.sourceLine}>{book?.selectionMode ?? "not loaded"}</div>
+          <div style={styles.smallCaps}>Preferred</div>
+          <div style={{ ...styles.badgeValue, color: preferredSide === "put" ? "#34d399" : preferredSide === "call" ? "#fb7185" : "#fde047" }}>
+            {preferredSide === "put" ? "Put spread" : preferredSide === "call" ? "Call spread" : "Review"}
+          </div>
+          <div style={styles.sourceLine}>{tradeSelection?.selectionMode ?? "not selected"}</div>
         </div>
       </div>
 
       <div style={styles.grid4}>
-        <Metric title="TOS Mood" value={mood?.moodPercent == null ? "optional" : `${mood.moodPercent.toFixed(1)}%`} tone={moodTone(mood?.moodPercent)} />
-        <Metric title="Mood Source" value={mood?.source ?? "not required"} />
-        <Metric title="Preferred Side" value={preferredSide.toUpperCase()} tone={preferredSide === "put" ? "#34d399" : preferredSide === "call" ? "#fb7185" : "#fde047"} />
-        <Metric title="Confidence" value={tradeSelection ? `${tradeSelection.confidence}%` : "—"} tone={tone(tradeSelection?.confidence ?? 0)} />
+        <Metric title="Mood" value={mood?.moodPercent == null ? "—" : `${mood.moodPercent.toFixed(1)}%`} tone={moodTone(mood?.moodPercent)} />
+        <Metric title="Mood Bias" value={mood?.tradeBias ?? "—"} />
+        <Metric title="Final Trade" value={tradeSelection?.label ?? "—"} />
+        <Metric title="Confidence" value={tradeSelection?.confidence == null ? "—" : `${tradeSelection.confidence}%`} tone={tone(tradeSelection?.confidence ?? 0)} />
       </div>
 
       <div style={styles.grid2}>
@@ -46,13 +48,13 @@ export function ZeroDteTradeSelectionPanel({
       </div>
 
       <div style={styles.grid2}>
-        <ReasonList title="Selection Notes" items={tradeSelection?.reasons ?? []} empty="No notes available yet." />
-        <ReasonList title="Warnings" items={[...(mood?.warnings ?? []), ...(tradeSelection?.warnings ?? [])]} empty="No warnings." warning />
+        <ReasonList title="Why" items={[...(book?.notes ?? []), ...(tradeSelection?.reasons ?? [])]} empty="No selection notes yet." />
+        <ReasonList title="Warnings" items={[...(book?.warnings ?? []), ...(tradeSelection?.warnings ?? [])]} empty="No warnings." warning />
       </div>
 
       <div style={styles.grid2}>
-        <CandidateTable title="Top Put Short-Strike Candidates" spread={put} />
-        <CandidateTable title="Top Call Short-Strike Candidates" spread={call} />
+        <CandidateTable title="Top Put Spread Candidates" spread={put} />
+        <CandidateTable title="Top Call Spread Candidates" spread={call} />
       </div>
     </section>
   );
@@ -77,19 +79,25 @@ function SpreadCard({ spread, preferred }: { spread: ZeroDteCreditSpreadSelectio
           <div style={styles.tradeText}>
             SELL {fmt(spread.shortStrike)}{sideSuffix} / BUY {fmt(spread.longStrike)}{sideSuffix}
           </div>
+          <div style={styles.widthNote}>
+            Width selected by optimizer: {spread.actualWidth}-wide. Max allowed width: {spread.maxAllowedWidth}. Risk mode: {spread.riskMode}.
+          </div>
           <div style={styles.statsGrid}>
             <MiniStat label="Credit" value={money(spread.estimatedCredit)} />
             <MiniStat label="Width" value={spread.actualWidth ?? spread.requestedWidth} />
             <MiniStat label="Max Risk" value={money(spread.maxLoss)} />
+            <MiniStat label="$ Risk" value={moneyDollars(spread.maxLossDollars)} />
+            <MiniStat label="Credit/Risk" value={spread.creditToRiskPct == null ? "—" : `${(spread.creditToRiskPct * 100).toFixed(1)}%`} />
+            <MiniStat label="Credit/Width" value={spread.creditToWidthPct == null ? "—" : `${(spread.creditToWidthPct * 100).toFixed(1)}%`} />
             <MiniStat label="BE" value={fmt(spread.breakeven)} />
             <MiniStat label="EM Used" value={spread.distanceAsExpectedMovePct == null ? "—" : `${Math.round(spread.distanceAsExpectedMovePct * 100)}%`} />
             <MiniStat label="Delta" value={spread.shortDeltaAbs == null ? "—" : spread.shortDeltaAbs.toFixed(2)} />
           </div>
           <div style={styles.wallText}>{spread.wallRelationship}</div>
-          {spread.reasons.slice(0, 3).map((reason, idx) => <div key={idx} style={styles.reasonLine}>• {reason}</div>)}
+          {spread.reasons.slice(0, 5).map((reason, idx) => <div key={idx} style={styles.reasonLine}>• {reason}</div>)}
         </>
       ) : (
-        <div style={styles.emptySpread}>No executable candidate from current SPX quote rows.</div>
+        <div style={styles.emptySpread}>No executable candidate from current SPX quote rows and risk filters.</div>
       )}
     </div>
   );
@@ -108,20 +116,24 @@ function CandidateTable({ title, spread }: { title: string; spread: ZeroDteCredi
             <tr>
               <th style={styles.th}>Short</th>
               <th style={styles.th}>Long</th>
+              <th style={styles.th}>Width</th>
               <th style={styles.th}>Credit</th>
               <th style={styles.th}>Risk</th>
+              <th style={styles.th}>C/R</th>
               <th style={styles.th}>Score</th>
               <th style={styles.th}>EM</th>
               <th style={styles.th}>Δ</th>
             </tr>
           </thead>
           <tbody>
-            {candidates.slice(0, 7).map((candidate) => (
-              <tr key={`${candidate.strike}-${candidate.longStrike}`} style={styles.tr}>
+            {candidates.slice(0, 8).map((candidate) => (
+              <tr key={`${candidate.strike}-${candidate.longStrike}-${candidate.actualWidth}`} style={styles.tr}>
                 <td style={styles.tdStrong}>{fmt(candidate.strike)}{sideSuffix}</td>
                 <td style={styles.td}>{fmt(candidate.longStrike)}{sideSuffix}</td>
+                <td style={styles.td}>{candidate.actualWidth}</td>
                 <td style={styles.td}>{money(candidate.estimatedCredit)}</td>
                 <td style={styles.td}>{money(candidate.maxLoss)}</td>
+                <td style={styles.td}>{(candidate.creditToRiskPct * 100).toFixed(1)}%</td>
                 <td style={styles.td}>{candidate.score}</td>
                 <td style={styles.td}>{Math.round(candidate.distanceAsExpectedMovePct * 100)}%</td>
                 <td style={styles.td}>{candidate.shortDeltaAbs == null ? "—" : candidate.shortDeltaAbs.toFixed(2)}</td>
@@ -173,6 +185,11 @@ function money(value: number | null | undefined) {
   return `$${value.toFixed(2)}`;
 }
 
+function moneyDollars(value: number | null | undefined) {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  return `$${Math.round(value).toLocaleString()}`;
+}
+
 function tone(score: number) {
   if (score >= 70) return "#34d399";
   if (score <= 40) return "#fb7185";
@@ -204,6 +221,7 @@ const styles: Record<string, React.CSSProperties> = {
   preferredPill: { display: "inline-block", marginTop: 6, padding: "4px 8px", borderRadius: 999, background: "rgba(34,211,238,0.14)", color: "#67e8f9", fontSize: 11, fontWeight: 900 },
   score: { fontSize: 24, fontWeight: 950 },
   tradeText: { marginTop: 10, fontSize: 23, fontWeight: 950, color: "#67e8f9" },
+  widthNote: { marginTop: 8, color: "#93b5d9", fontSize: 12, fontWeight: 800 },
   emptySpread: { marginTop: 16, color: "#fca5a5", fontSize: 14, fontWeight: 800 },
   statsGrid: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8, marginTop: 12 },
   miniStat: { border: "1px solid #1e3a5f", background: "#07111f", borderRadius: 10, padding: 9 },
