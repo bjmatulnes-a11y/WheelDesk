@@ -29,7 +29,7 @@ export function ZeroDteTosInputsPanel({ recommendation, tradeSelection, generate
       {
         key: "WD_OIGravity",
         label: "OI Gravity",
-        value: recommendation.spx.gravity,
+        value: recommendation.spx.gravity ?? 0,
         note: "Primary SPX OI center / battlefield line.",
       },
       {
@@ -47,7 +47,7 @@ export function ZeroDteTosInputsPanel({ recommendation, tradeSelection, generate
       {
         key: "WD_IFCenter",
         label: "IF Center",
-        value: recommendation.suggestedCenter,
+        value: recommendation.suggestedCenter ?? 0,
         note: "WheelDesk suggested iron-fly center.",
       },
       {
@@ -65,13 +65,13 @@ export function ZeroDteTosInputsPanel({ recommendation, tradeSelection, generate
       {
         key: "WD_DealerPressure",
         label: "Dealer Pressure",
-        value: recommendation.dealerPressure,
+        value: recommendation.dealerPressure ?? 0,
         note: "Regime filter for Compass reactions.",
       },
       {
         key: "WD_PinScore",
         label: "Pin / Confidence",
-        value: recommendation.confidenceScore,
+        value: recommendation.confidenceScore ?? 0,
         note: "Use as the Compass pin/compression score.",
       },
     ];
