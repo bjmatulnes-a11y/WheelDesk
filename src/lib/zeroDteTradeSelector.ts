@@ -7,6 +7,7 @@ import {
   type ZeroDteCreditSpreadBook,
   type ZeroDteCreditSpreadSelection,
 } from "./zeroDteCreditSpreadSelector";
+import { buildZeroDteOpeningExecutionPlan, type ZeroDteOpeningExecutionPlan } from "./zeroDteOpeningExecutionPlan";
 
 export type ZeroDteSelectedTradeType =
   | "put-credit-spread"
@@ -32,6 +33,7 @@ export type ZeroDteTradeSelection = {
     upperWing: number;
     wingWidth: number;
   } | null;
+  openingExecutionPlan: ZeroDteOpeningExecutionPlan;
   reasons: string[];
   warnings: string[];
 };
@@ -48,6 +50,8 @@ export type BuildZeroDteTradeSelectionInput = {
   minCredit?: number | null;
   minCreditToRiskPct?: number | null;
   riskMode?: CreditSpreadRiskMode;
+  tradeDate?: string | null;
+  generatedAt?: string | null;
 };
 
 export function buildZeroDteTradeSelection(input: BuildZeroDteTradeSelectionInput): ZeroDteTradeSelection {
@@ -68,10 +72,21 @@ export function buildZeroDteTradeSelection(input: BuildZeroDteTradeSelectionInpu
     riskMode: input.riskMode ?? "balanced",
   });
 
+  const openingExecutionPlan = buildZeroDteOpeningExecutionPlan({
+    recommendation: rec,
+    spxRows: input.spxRows,
+    creditSpreadBook,
+    tradeDate: input.tradeDate,
+    generatedAt: input.generatedAt,
+  });
+
   reasons.push("Credit-spread strikes are selected from live SPX option mids plus the SPX OI chain map.");
   reasons.push("SPY is used only as alignment/confirmation, not as the traded strike map.");
+  reasons.push("Opening IF is a locked 50-wide map; it is not an automatic open-entry order.");
   reasons.push(...creditSpreadBook.notes);
+  reasons.push(...openingExecutionPlan.reasons);
   warnings.push(...creditSpreadBook.warnings);
+  warnings.push(...openingExecutionPlan.warnings);
 
   if (mood?.warnings?.length) warnings.push(...mood.warnings);
 
@@ -95,6 +110,7 @@ export function buildZeroDteTradeSelection(input: BuildZeroDteTradeSelectionInpu
             wingWidth: rec.suggestedWingWidth,
           }
         : null,
+      openingExecutionPlan,
       reasons: [...reasons, ...preferred.reasons],
       warnings: unique([...warnings, ...preferred.warnings]),
     };
@@ -116,6 +132,7 @@ export function buildZeroDteTradeSelection(input: BuildZeroDteTradeSelectionInpu
         upperWing: rec.upperWing,
         wingWidth: rec.suggestedWingWidth,
       },
+      openingExecutionPlan,
       reasons,
       warnings: unique(warnings),
     };
@@ -131,6 +148,7 @@ export function buildZeroDteTradeSelection(input: BuildZeroDteTradeSelectionInpu
     creditSpread: null,
     creditSpreadBook,
     ironFly: null,
+    openingExecutionPlan,
     reasons,
     warnings: unique(warnings),
   };

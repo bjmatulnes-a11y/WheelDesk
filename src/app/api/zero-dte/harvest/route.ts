@@ -164,6 +164,8 @@ export async function GET(req: NextRequest) {
       minCredit,
       minCreditToRiskPct,
       riskMode,
+      tradeDate,
+      generatedAt: now.toISOString(),
     });
   } else {
     if (!spx?.rows.length) errors.push("No SPX option rows available after range/filtering.");

@@ -4,11 +4,13 @@ import { useMemo, useState } from "react";
 import type React from "react";
 import type { ZeroDteRecommendation } from "../lib/zeroDteOiIntelligence";
 import type { ZeroDteTradeSelection } from "../lib/zeroDteTradeSelector";
+import type { ZeroDteOpeningIfMap } from "../lib/zeroDteOpeningExecutionPlan";
 
 type Props = {
   recommendation: ZeroDteRecommendation;
   tradeSelection?: ZeroDteTradeSelection | null;
   generatedAt?: string | null;
+  openingMapOverride?: ZeroDteOpeningIfMap | null;
 };
 
 type TosInputRow = {
@@ -18,11 +20,12 @@ type TosInputRow = {
   note: string;
 };
 
-export function ZeroDteTosInputsPanel({ recommendation, tradeSelection, generatedAt }: Props) {
+export function ZeroDteTosInputsPanel({ recommendation, tradeSelection, generatedAt, openingMapOverride }: Props) {
   const [copied, setCopied] = useState(false);
 
   const putSpread = tradeSelection?.creditSpreadBook?.put ?? null;
   const callSpread = tradeSelection?.creditSpreadBook?.call ?? null;
+  const executionMap = openingMapOverride ?? tradeSelection?.openingExecutionPlan?.map ?? null;
 
   const rows = useMemo<TosInputRow[]>(() => {
     return [
@@ -47,8 +50,32 @@ export function ZeroDteTosInputsPanel({ recommendation, tradeSelection, generate
       {
         key: "WD_IFCenter",
         label: "IF Center",
-        value: recommendation.suggestedCenter ?? 0,
-        note: "WheelDesk suggested iron-fly center.",
+        value: executionMap?.center ?? recommendation.suggestedCenter ?? 0,
+        note: "Opening-harvest locked 50-wide iron-fly center.",
+      },
+      {
+        key: "WD_LowerEdge",
+        label: "Lower Edge",
+        value: executionMap?.lowerEdgeEnd ?? 0,
+        note: "Lower edge/absorption zone end for spring-to-center setups.",
+      },
+      {
+        key: "WD_UpperEdge",
+        label: "Upper Edge",
+        value: executionMap?.upperEdgeStart ?? 0,
+        note: "Upper edge/rejection zone start for spring-to-center setups.",
+      },
+      {
+        key: "WD_CenterTarget",
+        label: "Center Target",
+        value: executionMap?.center ?? recommendation.suggestedCenter ?? 0,
+        note: "Springback target from edge-loaded fly entries.",
+      },
+      {
+        key: "WD_PreferredWidth",
+        label: "Preferred Width",
+        value: executionMap?.wingWidth ?? 50,
+        note: "SPX 0DTE default IF width locked to 50.",
       },
       {
         key: "WD_ShortPut",
@@ -75,7 +102,7 @@ export function ZeroDteTosInputsPanel({ recommendation, tradeSelection, generate
         note: "Use as the Compass pin/compression score.",
       },
     ];
-  }, [callSpread?.shortStrike, putSpread?.shortStrike, recommendation]);
+  }, [callSpread?.shortStrike, executionMap, putSpread?.shortStrike, recommendation]);
 
   const thinkScriptBlock = useMemo(() => {
     const header = [
@@ -138,7 +165,7 @@ export function ZeroDteTosInputsPanel({ recommendation, tradeSelection, generate
         </div>
         <div style={styles.summaryBox}>
           <div style={styles.smallCaps}>Iron Fly</div>
-          <div style={styles.tradeText}>{fmt(recommendation.lowerWing)} / {fmt(recommendation.suggestedCenter)} / {fmt(recommendation.upperWing)}</div>
+          <div style={styles.tradeText}>{fmt(executionMap?.lowerWing ?? recommendation.suggestedCenter - 50)} / {fmt(executionMap?.center ?? recommendation.suggestedCenter)} / {fmt(executionMap?.upperWing ?? recommendation.suggestedCenter + 50)}</div>
         </div>
       </div>
 

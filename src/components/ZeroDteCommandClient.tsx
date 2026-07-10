@@ -9,6 +9,7 @@ import { ZeroDteTradeSelectionPanel } from "./ZeroDteTradeSelectionPanel";
 import { ZeroDteTosInputsPanel } from "./ZeroDteTosInputsPanel";
 import type { ZeroDteMoodRead } from "../lib/zeroDteMoodEngine";
 import type { ZeroDteTradeSelection } from "../lib/zeroDteTradeSelector";
+import { buildOpeningIfMapFromRecommendation, type ZeroDteOpeningIfMap } from "../lib/zeroDteOpeningExecutionPlan";
 
 type HarvestSymbolResult = {
   symbol: "SPX" | "SPY";
@@ -68,10 +69,11 @@ export default function ZeroDteCommandClient() {
   const [strictZeroDte, setStrictZeroDte] = useState(false);
   const [manualMood, setManualMood] = useState("");
   const [riskMode, setRiskMode] = useState<"conservative" | "balanced" | "aggressive">("balanced");
-  const [maxWidth, setMaxWidth] = useState("40");
+  const [maxWidth, setMaxWidth] = useState("50");
   const [maxRisk, setMaxRisk] = useState("");
   const [minCredit, setMinCredit] = useState("");
   const [position, setPosition] = useState<PositionState>(defaultPosition);
+  const [openingIfMap, setOpeningIfMap] = useState<ZeroDteOpeningIfMap | null>(null);
 
   async function load() {
     setLoading(true);
@@ -92,6 +94,13 @@ export default function ZeroDteCommandClient() {
       const json = (await res.json()) as HarvestResponse;
       setData(json);
 
+      if (json.recommendation) {
+        setOpeningIfMap((prev) => {
+          if (prev?.tradeDate === json.tradeDate) return prev;
+          return buildOpeningIfMapFromRecommendation(json.recommendation!, json.tradeDate, json.generatedAt);
+        });
+      }
+
       if (!res.ok) setError(json.errors?.join(" ") || "0DTE harvest failed.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown 0DTE harvest failure.");
@@ -111,8 +120,8 @@ export default function ZeroDteCommandClient() {
     if (!rec) return;
     setPosition((prev) => ({
       ...prev,
-      center: String(rec.suggestedCenter),
-      wingWidth: String(rec.suggestedWingWidth),
+      center: String(openingIfMap?.center ?? rec.suggestedCenter),
+      wingWidth: String(openingIfMap?.wingWidth ?? 50),
     }));
   }
 
@@ -131,8 +140,8 @@ export default function ZeroDteCommandClient() {
   const positionReport = useMemo(() => {
     if (!rec || !data?.spx?.rows.length) return null;
 
-    const center = Number(position.center) > 0 ? Number(position.center) : rec.suggestedCenter;
-    const wingWidth = Number(position.wingWidth) > 0 ? Number(position.wingWidth) : rec.suggestedWingWidth;
+    const center = Number(position.center) > 0 ? Number(position.center) : openingIfMap?.center ?? rec.suggestedCenter;
+    const wingWidth = Number(position.wingWidth) > 0 ? Number(position.wingWidth) : openingIfMap?.wingWidth ?? 50;
 
     return buildIronFlyPositionReport({
       spxRows: data.spx.rows,
@@ -145,7 +154,7 @@ export default function ZeroDteCommandClient() {
       entryPutShortCredit: Number(position.entryPutShortCredit) || null,
       entryCallShortCredit: Number(position.entryCallShortCredit) || null,
     });
-  }, [data?.spx?.rows, position, rec]);
+  }, [data?.spx?.rows, openingIfMap, position, rec]);
 
   return (
     <div style={styles.shell}>
@@ -190,7 +199,7 @@ export default function ZeroDteCommandClient() {
 
           <label style={styles.controlCard}>
             <span style={styles.controlText}>Max spread width</span>
-            <input value={maxWidth} onChange={(e) => setMaxWidth(e.target.value)} placeholder="40" type="number" step="5" style={styles.input} />
+            <input value={maxWidth} onChange={(e) => setMaxWidth(e.target.value)} placeholder="50" type="number" step="5" style={styles.input} />
           </label>
 
           <label style={styles.controlCard}>
@@ -240,12 +249,13 @@ export default function ZeroDteCommandClient() {
               <SpxOiHistogram rows={spxMapRows} rec={rec} />
             </section>
 
-            <ZeroDteTradeSelectionPanel mood={data?.mood ?? null} tradeSelection={data?.tradeSelection ?? null} />
+            <ZeroDteTradeSelectionPanel mood={data?.mood ?? null} tradeSelection={data?.tradeSelection ?? null} openingMapOverride={openingIfMap} />
 
             <ZeroDteTosInputsPanel
               recommendation={rec}
               tradeSelection={data?.tradeSelection ?? null}
               generatedAt={data?.generatedAt ?? null}
+              openingMapOverride={openingIfMap}
             />
 
             <section style={styles.grid4}>
@@ -266,21 +276,21 @@ export default function ZeroDteCommandClient() {
                 </div>
 
                 <div style={styles.flyGrid}>
-                  <SetupBox label="Lower Wing" value={fmt(rec.lowerWing)} sub="long put" />
-                  <SetupBox label="Center" value={fmt(rec.suggestedCenter)} sub="short call / short put" highlight />
-                  <SetupBox label="Upper Wing" value={fmt(rec.upperWing)} sub="long call" />
+                  <SetupBox label="Lower Wing" value={fmt(openingIfMap?.lowerWing ?? rec.suggestedCenter - 50)} sub="long put" />
+                  <SetupBox label="Center" value={fmt(openingIfMap?.center ?? rec.suggestedCenter)} sub="short call / short put" highlight />
+                  <SetupBox label="Upper Wing" value={fmt(openingIfMap?.upperWing ?? rec.suggestedCenter + 50)} sub="long call" />
                 </div>
 
                 <div style={styles.structureBox}>
                   <div style={styles.smallCaps}>Suggested SPX Iron Fly</div>
-                  <div style={styles.structureText}>{fmt(rec.lowerWing)} / {fmt(rec.suggestedCenter)} / {fmt(rec.upperWing)}</div>
-                  <div style={styles.muted}>Suggested wing width: ±{fmt(rec.suggestedWingWidth)}</div>
+                  <div style={styles.structureText}>{fmt(openingIfMap?.lowerWing ?? rec.suggestedCenter - 50)} / {fmt(openingIfMap?.center ?? rec.suggestedCenter)} / {fmt(openingIfMap?.upperWing ?? rec.suggestedCenter + 50)}</div>
+                  <div style={styles.muted}>Locked wing width: ±{fmt(openingIfMap?.wingWidth ?? 50)}</div>
                 </div>
               </div>
 
               <div style={styles.panelCard}>
                 <h2 style={styles.sectionTitle}>Placement Read</h2>
-                <p style={styles.muted}>This is the opening placement logic. The live position cockpit below handles defense after entry.</p>
+                <p style={styles.muted}>Opening IF stays as the map. Prefer credit spreads during directional impulse; use the fly only at confirmed edge or center-pin conditions.</p>
                 <div style={styles.managementBox}>{rec.management}</div>
                 <div style={styles.notesList}>{rec.notes.map((note, idx) => <div key={idx}>• {note}</div>)}</div>
               </div>
