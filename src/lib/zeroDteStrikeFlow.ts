@@ -45,7 +45,7 @@ export type ZeroDteStrikeFlowRead = {
   notes: string[];
 };
 
-type StoredSnapshot = {
+export type StrikeFlowSnapshot = {
   tradeDate: string;
   generatedAt: string;
   expiration: string | null;
@@ -76,23 +76,32 @@ export function updateZeroDteStrikeFlow(args: {
 }
 
 export function buildZeroDteStrikeFlowRead(
-  current: StoredSnapshot,
-  previous: StoredSnapshot | null,
+  current: StrikeFlowSnapshot,
+  previous: StrikeFlowSnapshot | null,
   recommendation: ZeroDteRecommendation
 ): ZeroDteStrikeFlowRead {
+  const previousTimestamp = previous ? Date.parse(previous.generatedAt) : Number.NaN;
+  const currentTimestamp = Date.parse(current.generatedAt);
+  const chronological = !previous || (Number.isFinite(previousTimestamp) && Number.isFinite(currentTimestamp) && currentTimestamp > previousTimestamp);
+  const sameSeries = !previous || (previous.tradeDate === current.tradeDate && previous.expiration === current.expiration);
+  const elapsed = previous && chronological ? (currentTimestamp - previousTimestamp) / 60000 : null;
+  const usablePrevious = previous && chronological && sameSeries && elapsed !== null && elapsed <= 180 ? previous : null;
+
   const currentMap = aggregate(current.rows);
-  const previousMap = aggregate(previous?.rows ?? []);
+  const previousMap = aggregate(usablePrevious?.rows ?? []);
   const strikes = [...currentMap.keys()].sort((a, b) => a - b);
 
+  let detectedVolumeReset = false;
   const deltas = strikes.map((strike) => {
     const now = currentMap.get(strike)!;
     const before = previousMap.get(strike) ?? emptyAggregate();
+    if (usablePrevious && (now.callVolume < before.callVolume || now.putVolume < before.putVolume)) detectedVolumeReset = true;
     return {
       strike,
       callVolume: now.callVolume,
       putVolume: now.putVolume,
-      callVolumeDelta: Math.max(0, now.callVolume - before.callVolume),
-      putVolumeDelta: Math.max(0, now.putVolume - before.putVolume),
+      callVolumeDelta: usablePrevious ? Math.max(0, now.callVolume - before.callVolume) : 0,
+      putVolumeDelta: usablePrevious ? Math.max(0, now.putVolume - before.putVolume) : 0,
       callOpenInterest: now.callOpenInterest,
       putOpenInterest: now.putOpenInterest,
     };
@@ -106,7 +115,7 @@ export function buildZeroDteStrikeFlowRead(
     const totalVolumeDelta = row.callVolumeDelta + row.putVolumeDelta;
     const imbalance = row.callVolumeDelta - row.putVolumeDelta;
     const biasThreshold = Math.max(10, totalVolumeDelta * 0.15);
-    const activity: StrikeFlowActivity = !previous
+    const activity: StrikeFlowActivity = !usablePrevious || detectedVolumeReset
       ? "quiet"
       : totalVolumeDelta >= extremeFloor
       ? "extreme"
@@ -127,28 +136,39 @@ export function buildZeroDteStrikeFlowRead(
     };
   });
 
-  const priceChange = previous ? current.spxPrice - previous.spxPrice : null;
+  const priceChange = usablePrevious ? current.spxPrice - usablePrevious.spxPrice : null;
   const callWall = classifyCallWall({
     strike: recommendation.spx.callWall,
     rows,
-    previousPrice: previous?.spxPrice ?? null,
+    previousPrice: usablePrevious?.spxPrice ?? null,
     currentPrice: current.spxPrice,
   });
   const putWall = classifyPutWall({
     strike: recommendation.spx.putWall,
     rows,
-    previousPrice: previous?.spxPrice ?? null,
+    previousPrice: usablePrevious?.spxPrice ?? null,
     currentPrice: current.spxPrice,
   });
 
   const totalCallVolumeDelta = rows.reduce((sum, row) => sum + row.callVolumeDelta, 0);
   const totalPutVolumeDelta = rows.reduce((sum, row) => sum + row.putVolumeDelta, 0);
-  const elapsedMinutes = previous ? Math.max(0, (Date.parse(current.generatedAt) - Date.parse(previous.generatedAt)) / 60000) : null;
-  const notes = previous
+  const elapsedMinutes = usablePrevious ? Math.max(0, (Date.parse(current.generatedAt) - Date.parse(usablePrevious.generatedAt)) / 60000) : null;
+  const notes = usablePrevious && !detectedVolumeReset
     ? [
-        `Flow compares this harvest with ${previous.generatedAt}.`,
+        `Flow compares this harvest with ${usablePrevious.generatedAt}.`,
         "OI remains the structural map; cumulative volume deltas are used only as an execution confirmation layer.",
       ]
+    : detectedVolumeReset
+    ? [
+        "Option volume decreased at one or more strikes, indicating a provider/session reset. This harvest was saved as a new baseline.",
+        "No wall attack/defense classification is emitted from a reset interval.",
+      ]
+    : previous && !sameSeries
+    ? ["Expiration or trade date changed. This harvest was saved as a new baseline."]
+    : previous && !chronological
+    ? ["The prior snapshot timestamp was not earlier than this harvest. This harvest was saved as a new baseline."]
+    : previous && elapsed !== null && elapsed > 180
+    ? ["The prior snapshot was more than three hours old. This harvest was saved as a new baseline."]
     : [
         "Baseline strike-volume snapshot saved. Harvest again to calculate volume acceleration.",
         "The first snapshot cannot distinguish recent flow from volume accumulated earlier in the session.",
@@ -157,12 +177,12 @@ export function buildZeroDteStrikeFlowRead(
   return {
     tradeDate: current.tradeDate,
     generatedAt: current.generatedAt,
-    previousGeneratedAt: previous?.generatedAt ?? null,
+    previousGeneratedAt: usablePrevious?.generatedAt ?? null,
     elapsedMinutes,
-    previousSpxPrice: previous?.spxPrice ?? null,
+    previousSpxPrice: usablePrevious?.spxPrice ?? null,
     currentSpxPrice: current.spxPrice,
     priceChange,
-    hasPriorSnapshot: Boolean(previous),
+    hasPriorSnapshot: Boolean(usablePrevious) && !detectedVolumeReset,
     totalCallVolumeDelta,
     totalPutVolumeDelta,
     netVolumeDelta: totalCallVolumeDelta - totalPutVolumeDelta,
@@ -223,7 +243,7 @@ function toSnapshot(args: {
   expiration?: string | null;
   spxPrice: number;
   rows: ZeroDteChainRow[];
-}): StoredSnapshot {
+}): StrikeFlowSnapshot {
   return {
     tradeDate: args.tradeDate,
     generatedAt: args.generatedAt,
@@ -238,7 +258,7 @@ function toSnapshot(args: {
   };
 }
 
-function aggregate(rows: StoredSnapshot["rows"]) {
+function aggregate(rows: StrikeFlowSnapshot["rows"]) {
   const map = new Map<number, ReturnType<typeof emptyAggregate>>();
   for (const row of rows) {
     const strike = Math.round(row.strike / 5) * 5;
@@ -276,17 +296,17 @@ function storageKey(tradeDate: string, expiration: string | null) {
   return `${STORAGE_PREFIX}.${tradeDate}.${expiration ?? "none"}`;
 }
 
-function readSnapshot(tradeDate: string, expiration: string | null): StoredSnapshot | null {
+function readSnapshot(tradeDate: string, expiration: string | null): StrikeFlowSnapshot | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = window.localStorage.getItem(storageKey(tradeDate, expiration));
-    return raw ? (JSON.parse(raw) as StoredSnapshot) : null;
+    return raw ? (JSON.parse(raw) as StrikeFlowSnapshot) : null;
   } catch {
     return null;
   }
 }
 
-function writeSnapshot(snapshot: StoredSnapshot) {
+function writeSnapshot(snapshot: StrikeFlowSnapshot) {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(storageKey(snapshot.tradeDate, snapshot.expiration), JSON.stringify(snapshot));

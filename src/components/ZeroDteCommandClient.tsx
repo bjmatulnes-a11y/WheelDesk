@@ -7,6 +7,7 @@ import type { SpxOiMapRow, SpyAlignmentRow, ZeroDteChainRow, ZeroDteRecommendati
 import { buildIronFlyPositionReport, type IronFlyPositionReport, type IronFlySideReport } from "../lib/zeroDteIronFlyManager";
 import { ZeroDteTradeSelectionPanel } from "./ZeroDteTradeSelectionPanel";
 import { ZeroDteStrikeFlowPanel } from "./ZeroDteStrikeFlowPanel";
+import { ZeroDteSystemDiagnosticsPanel } from "./ZeroDteSystemDiagnosticsPanel";
 import { ZeroDteTosInputsPanel } from "./ZeroDteTosInputsPanel";
 import type { ZeroDteMoodRead } from "../lib/zeroDteMoodEngine";
 import { buildZeroDteTradeSelection, type ZeroDteTradeSelection } from "../lib/zeroDteTradeSelector";
@@ -256,6 +257,7 @@ export default function ZeroDteCommandClient() {
         {error ? <ErrorPanel errors={[error, ...(data?.errors ?? [])]} /> : null}
         {!error && data?.errors?.length ? <ErrorPanel errors={data.errors} warning /> : null}
         {data?.qualityChecks?.length ? <QualityPanel checks={data.qualityChecks} /> : null}
+        <ZeroDteSystemDiagnosticsPanel />
 
         {!rec ? (
           <section style={styles.emptyCard}>
