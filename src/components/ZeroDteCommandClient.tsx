@@ -6,9 +6,11 @@ import { WheelDeskSideNav } from "./WheelDeskSideNav";
 import type { SpxOiMapRow, SpyAlignmentRow, ZeroDteChainRow, ZeroDteRecommendation } from "../lib/zeroDteOiIntelligence";
 import { buildIronFlyPositionReport, type IronFlyPositionReport, type IronFlySideReport } from "../lib/zeroDteIronFlyManager";
 import { ZeroDteTradeSelectionPanel } from "./ZeroDteTradeSelectionPanel";
+import { ZeroDteStrikeFlowPanel } from "./ZeroDteStrikeFlowPanel";
 import { ZeroDteTosInputsPanel } from "./ZeroDteTosInputsPanel";
 import type { ZeroDteMoodRead } from "../lib/zeroDteMoodEngine";
-import type { ZeroDteTradeSelection } from "../lib/zeroDteTradeSelector";
+import { buildZeroDteTradeSelection, type ZeroDteTradeSelection } from "../lib/zeroDteTradeSelector";
+import { updateZeroDteStrikeFlow, type ZeroDteStrikeFlowRead } from "../lib/zeroDteStrikeFlow";
 import { getOpeningExecutionRead, lockOpeningMap, resetOpeningMap, type ZeroDteOpeningMap } from "../lib/zeroDteOpeningMap";
 
 type HarvestSymbolResult = {
@@ -74,6 +76,7 @@ export default function ZeroDteCommandClient() {
   const [minCredit, setMinCredit] = useState("");
   const [position, setPosition] = useState<PositionState>(defaultPosition);
   const [openingMap, setOpeningMap] = useState<ZeroDteOpeningMap | null>(null);
+  const [strikeFlow, setStrikeFlow] = useState<ZeroDteStrikeFlowRead | null>(null);
 
   async function load() {
     setLoading(true);
@@ -92,10 +95,34 @@ export default function ZeroDteCommandClient() {
 
       const res = await fetch(`/api/zero-dte/harvest?${params.toString()}`, { cache: "no-store" });
       const json = (await res.json()) as HarvestResponse;
-      setData(json);
-      if (json.recommendation && json.tradeDate) {
+      let nextData = json;
+      if (json.recommendation && json.tradeDate && json.spx?.rows?.length) {
+        const flow = updateZeroDteStrikeFlow({
+          tradeDate: json.tradeDate,
+          generatedAt: json.generatedAt,
+          expiration: json.spx.expirationDate,
+          spxPrice: json.spx.price,
+          rows: json.spx.rows,
+          recommendation: json.recommendation,
+        });
+        setStrikeFlow(flow);
+        nextData = {
+          ...json,
+          tradeSelection: buildZeroDteTradeSelection({
+            recommendation: json.recommendation,
+            spxRows: json.spx.rows,
+            mood: json.mood ?? null,
+            maxWidth: Number(maxWidth) > 0 ? Number(maxWidth) : 50,
+            minWidth: 5,
+            maxRiskDollars: Number(maxRisk) > 0 ? Number(maxRisk) : null,
+            minCredit: Number(minCredit) > 0 ? Number(minCredit) : null,
+            riskMode,
+            strikeFlow: flow,
+          }),
+        };
         setOpeningMap(lockOpeningMap(json.tradeDate, json.generatedAt, json.recommendation));
       }
+      setData(nextData);
 
       if (!res.ok) setError(json.errors?.join(" ") || "0DTE harvest failed.");
     } catch (err) {
@@ -270,7 +297,9 @@ export default function ZeroDteCommandClient() {
               </section>
             ) : null}
 
-            <ZeroDteTradeSelectionPanel mood={data?.mood ?? null} tradeSelection={data?.tradeSelection ?? null} />
+            <ZeroDteStrikeFlowPanel flow={strikeFlow} />
+
+            <ZeroDteTradeSelectionPanel mood={data?.mood ?? null} tradeSelection={data?.tradeSelection ?? null} strikeFlow={strikeFlow} />
 
             <ZeroDteTosInputsPanel
               recommendation={rec}

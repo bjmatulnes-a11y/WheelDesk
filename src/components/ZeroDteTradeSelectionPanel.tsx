@@ -4,31 +4,29 @@ import type React from "react";
 import type { ZeroDteMoodRead } from "../lib/zeroDteMoodEngine";
 import type { ZeroDteCreditSpreadSelection } from "../lib/zeroDteCreditSpreadSelector";
 import type { ZeroDteTradeSelection } from "../lib/zeroDteTradeSelector";
-import type { ZeroDteOpeningIfMap } from "../lib/zeroDteOpeningExecutionPlan";
+import type { ZeroDteStrikeFlowRead } from "../lib/zeroDteStrikeFlow";
 
 export function ZeroDteTradeSelectionPanel({
   mood,
   tradeSelection,
-  openingMapOverride,
+  strikeFlow,
 }: {
   mood: ZeroDteMoodRead | null | undefined;
   tradeSelection: ZeroDteTradeSelection | null | undefined;
-  openingMapOverride?: ZeroDteOpeningIfMap | null;
+  strikeFlow?: ZeroDteStrikeFlowRead | null;
 }) {
   const book = tradeSelection?.creditSpreadBook ?? null;
   const put = book?.put ?? null;
   const call = book?.call ?? null;
-  const preferredSide = book?.preferredSide ?? "none";
-  const executionPlan = tradeSelection?.openingExecutionPlan ?? null;
-  const executionMap = openingMapOverride ?? executionPlan?.map ?? null;
+  const preferredSide = tradeSelection?.creditSpread?.side ?? book?.preferredSide ?? "none";
 
   return (
     <section style={styles.card}>
       <div style={styles.headerRow}>
         <div>
-          <h2 style={styles.title}>SPX Execution Plan</h2>
+          <h2 style={styles.title}>SPX Credit Spread Strike Selector</h2>
           <p style={styles.muted}>
-            Opening harvest locks the 50-wide IF map. Execution waits for location and reaction: credit spreads are preferred during directional impulse; flies are reserved for confirmed edge or center-pin setups.
+            Width is now optimized across candidate spreads. The selector tests short strikes and multiple widths, then ranks by SPX OI protection, expected-move cushion, actual credit/risk, delta, liquidity, dealer pressure, and SPY confirmation.
           </p>
         </div>
         <div style={styles.badgeWrap}>
@@ -41,36 +39,11 @@ export function ZeroDteTradeSelectionPanel({
       </div>
 
       <div style={styles.grid4}>
-        <Metric title="Mode" value={executionPlan?.mode ?? "—"} tone={executionTone(executionPlan?.mode)} />
-        <Metric title="Location" value={executionPlan?.priceLocation?.split("-").join(" ") ?? "—"} />
-        <Metric title="IF Credit" value={executionPlan?.estimatedIronFlyCredit == null ? "—" : money(executionPlan.estimatedIronFlyCredit)} tone={creditTone(executionPlan?.creditQuality)} />
-        <Metric title="Spread Bias" value={executionPlan?.creditSpreadBias === "put" ? "Put spread" : executionPlan?.creditSpreadBias === "call" ? "Call spread" : "None / wait"} />
-      </div>
-
-      {executionPlan && executionMap ? (
-        <div style={styles.executionBox}>
-          <div style={styles.executionHeader}>
-            <div>
-              <div style={styles.smallCaps}>Opening Harvest IF Map — Locked For Day</div>
-              <div style={styles.structureText}>{fmt(executionMap.lowerWing)} / {fmt(executionMap.center)} / {fmt(executionMap.upperWing)}</div>
-              <div style={styles.muted}>Fixed width: ±{fmt(executionMap.wingWidth)} | Upper edge: {fmt(executionMap.upperEdgeStart)}-{fmt(executionMap.upperEdgeEnd)} | Lower edge: {fmt(executionMap.lowerEdgeStart)}-{fmt(executionMap.lowerEdgeEnd)}</div>
-            </div>
-            <div style={styles.executionMode}>{executionPlan.mode}</div>
-          </div>
-          <div style={styles.actionText}>{executionPlan.primaryAction}</div>
-          <div style={styles.statsGrid}>
-            <MiniStat label="Center Target" value={fmt(executionMap.center)} />
-            <MiniStat label="Breakevens" value={executionPlan.lowerBreakeven == null || executionPlan.upperBreakeven == null ? "—" : `${fmt(executionPlan.lowerBreakeven)} / ${fmt(executionPlan.upperBreakeven)}`} />
-            <MiniStat label="Max Risk/Contract" value={executionPlan.maxRiskDollarsPerContract == null ? "—" : moneyDollars(executionPlan.maxRiskDollarsPerContract)} />
-          </div>
-        </div>
-      ) : null}
-
-      <div style={styles.grid4}>
         <Metric title="Mood" value={mood?.moodPercent == null ? "—" : `${mood.moodPercent.toFixed(1)}%`} tone={moodTone(mood?.moodPercent)} />
         <Metric title="Mood Bias" value={mood?.tradeBias ?? "—"} />
-        <Metric title="Model Favorite" value={tradeSelection?.label ?? "—"} />
+        <Metric title="Final Trade" value={tradeSelection?.label ?? "—"} />
         <Metric title="Confidence" value={tradeSelection?.confidence == null ? "—" : `${tradeSelection.confidence}%`} tone={tone(tradeSelection?.confidence ?? 0)} />
+        <Metric title="Flow Guard" value={!strikeFlow?.hasPriorSnapshot ? "Baseline" : `${strikeFlow.callWall.state} / ${strikeFlow.putWall.state}`} />
       </div>
 
       <div style={styles.grid2}>
@@ -227,23 +200,6 @@ function tone(score: number) {
   return "#fde047";
 }
 
-
-function executionTone(mode: string | null | undefined) {
-  if (!mode) return "#94a3b8";
-  if (mode.includes("PUT")) return "#34d399";
-  if (mode.includes("CALL")) return "#fb7185";
-  if (mode.includes("EDGE") || mode.includes("PIN")) return "#67e8f9";
-  if (mode.includes("BREAKOUT")) return "#fde047";
-  return "#94a3b8";
-}
-
-function creditTone(quality: string | null | undefined) {
-  if (quality === "excellent" || quality === "good") return "#34d399";
-  if (quality === "acceptable") return "#fde047";
-  if (quality === "weak" || quality === "avoid") return "#fb7185";
-  return "#94a3b8";
-}
-
 function moodTone(mood: number | null | undefined) {
   if (mood === null || mood === undefined) return "#94a3b8";
   if (mood >= 40) return "#34d399";
@@ -260,7 +216,7 @@ const styles: Record<string, React.CSSProperties> = {
   sourceLine: { marginTop: 3, color: "#94a3b8", fontSize: 12 },
   badgeWrap: { textAlign: "right", minWidth: 230 },
   badgeValue: { marginTop: 4, fontSize: 18, fontWeight: 950 },
-  grid4: { display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12, marginBottom: 14 },
+  grid4: { display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 12, marginBottom: 14 },
   grid2: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12, marginTop: 14 },
   metricCard: { border: "1px solid #1e3a5f", background: "#07111f", borderRadius: 14, padding: 14 },
   metricValue: { marginTop: 6, fontSize: 19, fontWeight: 950, wordBreak: "break-word" },
@@ -269,11 +225,6 @@ const styles: Record<string, React.CSSProperties> = {
   preferredPill: { display: "inline-block", marginTop: 6, padding: "4px 8px", borderRadius: 999, background: "rgba(34,211,238,0.14)", color: "#67e8f9", fontSize: 11, fontWeight: 900 },
   score: { fontSize: 24, fontWeight: 950 },
   tradeText: { marginTop: 10, fontSize: 23, fontWeight: 950, color: "#67e8f9" },
-  executionBox: { border: "1px solid rgba(34,211,238,0.42)", background: "linear-gradient(135deg, rgba(8,24,40,0.98), rgba(7,17,31,0.98))", borderRadius: 16, padding: 16, marginBottom: 14 },
-  executionHeader: { display: "flex", justifyContent: "space-between", gap: 14, alignItems: "flex-start" },
-  executionMode: { color: "#67e8f9", fontSize: 17, fontWeight: 950, textAlign: "right" },
-  structureText: { marginTop: 6, color: "#f8fafc", fontSize: 28, fontWeight: 950 },
-  actionText: { marginTop: 12, color: "#e2e8f0", fontSize: 14, fontWeight: 850, lineHeight: 1.55 },
   widthNote: { marginTop: 8, color: "#93b5d9", fontSize: 12, fontWeight: 800 },
   emptySpread: { marginTop: 16, color: "#fca5a5", fontSize: 14, fontWeight: 800 },
   statsGrid: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8, marginTop: 12 },

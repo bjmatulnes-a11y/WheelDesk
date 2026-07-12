@@ -333,7 +333,9 @@ function buildClusters(rows: ZeroDteChainRow[]): OiCluster[] {
 
     const oi = safe(row.openInterest);
     const volume = safe(row.volume);
-    const gammaWeight = Math.abs(safe(row.gamma)) * Math.max(oi + volume * 0.35, 1) * 1000;
+    // Structural OI intelligence intentionally excludes intraday volume.
+    // Volume is cumulative and belongs in the strike-flow execution layer.
+    const gammaWeight = Math.abs(safe(row.gamma)) * Math.max(oi, 1) * 1000;
 
     if (row.optionType === "call") {
       existing.callOi += oi;
@@ -348,7 +350,7 @@ function buildClusters(rows: ZeroDteChainRow[]): OiCluster[] {
     existing.totalOi += oi;
     existing.totalVolume += volume;
     existing.gammaWeight += gammaWeight;
-    existing.score = existing.totalOi + existing.totalVolume * 0.35 + existing.gammaWeight;
+    existing.score = existing.totalOi + existing.gammaWeight;
 
     map.set(strike, existing);
   }
@@ -364,8 +366,8 @@ function strongestBySide(clusters: OiCluster[], side: OptionType) {
       strike: cluster.strike,
       score:
         side === "call"
-          ? cluster.callOi + cluster.callVolume * 0.35 + cluster.callGammaWeight
-          : cluster.putOi + cluster.putVolume * 0.35 + cluster.putGammaWeight,
+          ? cluster.callOi + cluster.callGammaWeight
+          : cluster.putOi + cluster.putGammaWeight,
     }))
     .sort((a, b) => b.score - a.score)[0]?.strike ?? null;
 }
