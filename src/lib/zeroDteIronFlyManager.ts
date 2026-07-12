@@ -89,9 +89,9 @@ export function getIronFlyClockState(now = new Date()): IronFlyClockState {
   if (total < 11 * 60) {
     return {
       sessionPhase: "open",
-      newEntryAllowed: true,
+      newEntryAllowed: false,
       triggerMultiple: 3.0,
-      warning: "Opening window. Use smaller size until first range stabilizes.",
+      warning: "Opening window. Treat the locked fly as a map; favor directional credit spreads until pin or edge-reversal behavior is confirmed.",
     };
   }
 

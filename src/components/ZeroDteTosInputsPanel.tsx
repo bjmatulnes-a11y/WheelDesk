@@ -4,13 +4,13 @@ import { useMemo, useState } from "react";
 import type React from "react";
 import type { ZeroDteRecommendation } from "../lib/zeroDteOiIntelligence";
 import type { ZeroDteTradeSelection } from "../lib/zeroDteTradeSelector";
-import type { ZeroDteOpeningIfMap } from "../lib/zeroDteOpeningExecutionPlan";
+import type { ZeroDteOpeningMap } from "../lib/zeroDteOpeningMap";
 
 type Props = {
   recommendation: ZeroDteRecommendation;
   tradeSelection?: ZeroDteTradeSelection | null;
   generatedAt?: string | null;
-  openingMapOverride?: ZeroDteOpeningIfMap | null;
+  openingMap?: ZeroDteOpeningMap | null;
 };
 
 type TosInputRow = {
@@ -20,62 +20,37 @@ type TosInputRow = {
   note: string;
 };
 
-export function ZeroDteTosInputsPanel({ recommendation, tradeSelection, generatedAt, openingMapOverride }: Props) {
+export function ZeroDteTosInputsPanel({ recommendation, tradeSelection, generatedAt, openingMap }: Props) {
   const [copied, setCopied] = useState(false);
 
   const putSpread = tradeSelection?.creditSpreadBook?.put ?? null;
   const callSpread = tradeSelection?.creditSpreadBook?.call ?? null;
-  const executionMap = openingMapOverride ?? tradeSelection?.openingExecutionPlan?.map ?? null;
 
   const rows = useMemo<TosInputRow[]>(() => {
     return [
       {
         key: "WD_OIGravity",
         label: "OI Gravity",
-        value: recommendation.spx.gravity ?? 0,
+        value: openingMap?.gravity ?? recommendation.spx.gravity ?? 0,
         note: "Primary SPX OI center / battlefield line.",
       },
       {
         key: "WD_PutWall",
         label: "Put Wall",
-        value: recommendation.spx.putWall ?? 0,
+        value: openingMap?.putWall ?? recommendation.spx.putWall ?? 0,
         note: "Primary SPX downside support wall.",
       },
       {
         key: "WD_CallWall",
         label: "Call Wall",
-        value: recommendation.spx.callWall ?? 0,
+        value: openingMap?.callWall ?? recommendation.spx.callWall ?? 0,
         note: "Primary SPX upside resistance wall.",
       },
       {
         key: "WD_IFCenter",
         label: "IF Center",
-        value: executionMap?.center ?? recommendation.suggestedCenter ?? 0,
-        note: "Opening-harvest locked 50-wide iron-fly center.",
-      },
-      {
-        key: "WD_LowerEdge",
-        label: "Lower Edge",
-        value: executionMap?.lowerEdgeEnd ?? 0,
-        note: "Lower edge/absorption zone end for spring-to-center setups.",
-      },
-      {
-        key: "WD_UpperEdge",
-        label: "Upper Edge",
-        value: executionMap?.upperEdgeStart ?? 0,
-        note: "Upper edge/rejection zone start for spring-to-center setups.",
-      },
-      {
-        key: "WD_CenterTarget",
-        label: "Center Target",
-        value: executionMap?.center ?? recommendation.suggestedCenter ?? 0,
-        note: "Springback target from edge-loaded fly entries.",
-      },
-      {
-        key: "WD_PreferredWidth",
-        label: "Preferred Width",
-        value: executionMap?.wingWidth ?? 50,
-        note: "SPX 0DTE default IF width locked to 50.",
+        value: openingMap?.center ?? recommendation.suggestedCenter ?? 0,
+        note: "WheelDesk suggested iron-fly center.",
       },
       {
         key: "WD_ShortPut",
@@ -102,7 +77,7 @@ export function ZeroDteTosInputsPanel({ recommendation, tradeSelection, generate
         note: "Use as the Compass pin/compression score.",
       },
     ];
-  }, [callSpread?.shortStrike, executionMap, putSpread?.shortStrike, recommendation]);
+  }, [callSpread?.shortStrike, putSpread?.shortStrike, recommendation, openingMap]);
 
   const thinkScriptBlock = useMemo(() => {
     const header = [
@@ -165,7 +140,7 @@ export function ZeroDteTosInputsPanel({ recommendation, tradeSelection, generate
         </div>
         <div style={styles.summaryBox}>
           <div style={styles.smallCaps}>Iron Fly</div>
-          <div style={styles.tradeText}>{fmt(executionMap?.lowerWing ?? recommendation.suggestedCenter - 50)} / {fmt(executionMap?.center ?? recommendation.suggestedCenter)} / {fmt(executionMap?.upperWing ?? recommendation.suggestedCenter + 50)}</div>
+          <div style={styles.tradeText}>{fmt(openingMap?.lowerWing ?? recommendation.lowerWing)} / {fmt(openingMap?.center ?? recommendation.suggestedCenter)} / {fmt(openingMap?.upperWing ?? recommendation.upperWing)}</div>
         </div>
       </div>
 

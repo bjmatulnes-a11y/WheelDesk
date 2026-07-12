@@ -159,7 +159,7 @@ export function buildZeroDteRecommendation(input: BuildZeroDteInput): ZeroDteRec
     symmetryScore: spx.symmetryScore,
   });
 
-  const suggestedWingWidth = roundToFive(Math.max(expectedMove, 50));
+  const suggestedWingWidth = 50;
   const lowerWing = suggestedCenter - suggestedWingWidth;
   const upperWing = suggestedCenter + suggestedWingWidth;
 
@@ -632,7 +632,7 @@ function buildNotes(args: {
   if (args.dealerPressureRead?.summary) notes.push(`Dealer-pressure-engine: ${args.dealerPressureRead.summary.regime}; hedge-flow ${args.dealerPressureRead.summary.hedgeFlowBias}; pin ${Math.round(args.dealerPressureRead.summary.pinRiskScore)} / snap ${Math.round(args.dealerPressureRead.summary.snapRiskScore)}.`);
   else if (args.dealerPressureRead?.notes?.length) notes.push(args.dealerPressureRead.notes[0]);
   if (args.spyNotionalWeight) notes.push(`SPY footprint is notional-weighted to ${(args.spyNotionalWeight * 100).toFixed(1)}% of raw SPY OI/volume and is used for alignment, not as the primary trade center.`);
-  notes.push(`Suggested SPX IF: ${args.lowerWing} / ${args.suggestedCenter} / ${args.upperWing}.`);
+  notes.push(`Opening SPX IF map: ${args.lowerWing} / ${args.suggestedCenter} / ${args.upperWing}. The 50-point wings are a locked daily map, not an automatic opening entry.`);
 
   return notes;
 }

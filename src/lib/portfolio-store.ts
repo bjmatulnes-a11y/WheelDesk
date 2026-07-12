@@ -26,6 +26,7 @@ function readProfiles(): PortfolioProfile[] {
 function writeProfiles(profiles: PortfolioProfile[]): void {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(profiles));
+  window.dispatchEvent(new CustomEvent("wheeldesk:portfolio-updated", { detail: { updatedAt: new Date().toISOString() } }));
 }
 
 export function listPortfolioProfiles(): PortfolioProfile[] {

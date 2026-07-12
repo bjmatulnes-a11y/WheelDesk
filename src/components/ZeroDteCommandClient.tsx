@@ -9,7 +9,7 @@ import { ZeroDteTradeSelectionPanel } from "./ZeroDteTradeSelectionPanel";
 import { ZeroDteTosInputsPanel } from "./ZeroDteTosInputsPanel";
 import type { ZeroDteMoodRead } from "../lib/zeroDteMoodEngine";
 import type { ZeroDteTradeSelection } from "../lib/zeroDteTradeSelector";
-import { buildOpeningIfMapFromRecommendation, type ZeroDteOpeningIfMap } from "../lib/zeroDteOpeningExecutionPlan";
+import { getOpeningExecutionRead, lockOpeningMap, resetOpeningMap, type ZeroDteOpeningMap } from "../lib/zeroDteOpeningMap";
 
 type HarvestSymbolResult = {
   symbol: "SPX" | "SPY";
@@ -73,7 +73,7 @@ export default function ZeroDteCommandClient() {
   const [maxRisk, setMaxRisk] = useState("");
   const [minCredit, setMinCredit] = useState("");
   const [position, setPosition] = useState<PositionState>(defaultPosition);
-  const [openingIfMap, setOpeningIfMap] = useState<ZeroDteOpeningIfMap | null>(null);
+  const [openingMap, setOpeningMap] = useState<ZeroDteOpeningMap | null>(null);
 
   async function load() {
     setLoading(true);
@@ -93,12 +93,8 @@ export default function ZeroDteCommandClient() {
       const res = await fetch(`/api/zero-dte/harvest?${params.toString()}`, { cache: "no-store" });
       const json = (await res.json()) as HarvestResponse;
       setData(json);
-
-      if (json.recommendation) {
-        setOpeningIfMap((prev) => {
-          if (prev?.tradeDate === json.tradeDate) return prev;
-          return buildOpeningIfMapFromRecommendation(json.recommendation!, json.tradeDate, json.generatedAt);
-        });
+      if (json.recommendation && json.tradeDate) {
+        setOpeningMap(lockOpeningMap(json.tradeDate, json.generatedAt, json.recommendation));
       }
 
       if (!res.ok) setError(json.errors?.join(" ") || "0DTE harvest failed.");
@@ -118,12 +114,15 @@ export default function ZeroDteCommandClient() {
 
   function applySuggestion() {
     if (!rec) return;
+    const center = openingMap?.center ?? rec.suggestedCenter;
     setPosition((prev) => ({
       ...prev,
-      center: String(openingIfMap?.center ?? rec.suggestedCenter),
-      wingWidth: String(openingIfMap?.wingWidth ?? 50),
+      center: String(center),
+      wingWidth: "50",
     }));
   }
+
+  const executionRead = openingMap && rec ? getOpeningExecutionRead(openingMap, rec.spxPrice) : null;
 
   const spxMapRows = useMemo(() => {
     const rows = rec?.spxChainMap ?? [];
@@ -140,8 +139,8 @@ export default function ZeroDteCommandClient() {
   const positionReport = useMemo(() => {
     if (!rec || !data?.spx?.rows.length) return null;
 
-    const center = Number(position.center) > 0 ? Number(position.center) : openingIfMap?.center ?? rec.suggestedCenter;
-    const wingWidth = Number(position.wingWidth) > 0 ? Number(position.wingWidth) : openingIfMap?.wingWidth ?? 50;
+    const center = Number(position.center) > 0 ? Number(position.center) : rec.suggestedCenter;
+    const wingWidth = Number(position.wingWidth) > 0 ? Number(position.wingWidth) : rec.suggestedWingWidth;
 
     return buildIronFlyPositionReport({
       spxRows: data.spx.rows,
@@ -154,7 +153,7 @@ export default function ZeroDteCommandClient() {
       entryPutShortCredit: Number(position.entryPutShortCredit) || null,
       entryCallShortCredit: Number(position.entryCallShortCredit) || null,
     });
-  }, [data?.spx?.rows, openingIfMap, position, rec]);
+  }, [data?.spx?.rows, position, rec]);
 
   return (
     <div style={styles.shell}>
@@ -246,16 +245,38 @@ export default function ZeroDteCommandClient() {
                 </div>
                 <div style={styles.sourceText}>SPX-primary placement | SPY confirmation only</div>
               </div>
-              <SpxOiHistogram rows={spxMapRows} rec={rec} />
+              <SpxOiHistogram rows={spxMapRows} rec={rec} openingMap={openingMap} />
             </section>
 
-            <ZeroDteTradeSelectionPanel mood={data?.mood ?? null} tradeSelection={data?.tradeSelection ?? null} openingMapOverride={openingIfMap} />
+            {openingMap ? (
+              <section style={styles.heroCard}>
+                <div style={styles.cardHeaderRow}>
+                  <div>
+                    <h2 style={styles.sectionTitle}>Opening IF Map — Locked for {openingMap.tradeDate}</h2>
+                    <p style={styles.muted}>The first valid harvest locks the 50-point fly structure for the trading day. It is a battlefield map, not an automatic opening order.</p>
+                  </div>
+                  <button type="button" style={styles.secondaryButton} onClick={() => { resetOpeningMap(openingMap.tradeDate); const next = lockOpeningMap(openingMap.tradeDate, data?.generatedAt ?? new Date().toISOString(), rec); setOpeningMap(next); }}>Reset Opening Map</button>
+                </div>
+                <div style={styles.flyGrid}>
+                  <SetupBox label="Lower Wing" value={fmt(openingMap.lowerWing)} sub="fixed -50" />
+                  <SetupBox label="Center" value={fmt(openingMap.center)} sub="opening harvest" highlight />
+                  <SetupBox label="Upper Wing" value={fmt(openingMap.upperWing)} sub="fixed +50" />
+                </div>
+                <div style={styles.structureBox}>
+                  <div style={styles.smallCaps}>Current Execution Read</div>
+                  <div style={styles.structureText}>{executionRead?.mode ?? "WAIT"}</div>
+                  <div style={styles.muted}>{executionRead?.detail}</div>
+                </div>
+              </section>
+            ) : null}
+
+            <ZeroDteTradeSelectionPanel mood={data?.mood ?? null} tradeSelection={data?.tradeSelection ?? null} />
 
             <ZeroDteTosInputsPanel
               recommendation={rec}
               tradeSelection={data?.tradeSelection ?? null}
               generatedAt={data?.generatedAt ?? null}
-              openingMapOverride={openingIfMap}
+              openingMap={openingMap}
             />
 
             <section style={styles.grid4}>
@@ -269,28 +290,28 @@ export default function ZeroDteCommandClient() {
               <div style={styles.heroCard}>
                 <div style={styles.cardHeaderRow}>
                   <div>
-                    <h2 style={styles.sectionTitle}>SPX Iron Fly Placement</h2>
-                    <p style={styles.muted}>Center is SPX-primary: SPX gravity/pin + dealer pressure. SPY can confirm or warn, but it does not control the center.</p>
+                    <h2 style={styles.sectionTitle}>Opening SPX Iron Fly Map</h2>
+                    <p style={styles.muted}>The first valid harvest locks the center and fixed ±50 wings. Execute later only when credit-spread, pin, or edge-reversal conditions justify it.</p>
                   </div>
                   <ScoreBadge label="Confidence" score={rec.confidenceScore} />
                 </div>
 
                 <div style={styles.flyGrid}>
-                  <SetupBox label="Lower Wing" value={fmt(openingIfMap?.lowerWing ?? rec.suggestedCenter - 50)} sub="long put" />
-                  <SetupBox label="Center" value={fmt(openingIfMap?.center ?? rec.suggestedCenter)} sub="short call / short put" highlight />
-                  <SetupBox label="Upper Wing" value={fmt(openingIfMap?.upperWing ?? rec.suggestedCenter + 50)} sub="long call" />
+                  <SetupBox label="Lower Wing" value={fmt(openingMap?.lowerWing ?? rec.lowerWing)} sub="long put" />
+                  <SetupBox label="Center" value={fmt(openingMap?.center ?? rec.suggestedCenter)} sub="short call / short put" highlight />
+                  <SetupBox label="Upper Wing" value={fmt(openingMap?.upperWing ?? rec.upperWing)} sub="long call" />
                 </div>
 
                 <div style={styles.structureBox}>
                   <div style={styles.smallCaps}>Suggested SPX Iron Fly</div>
-                  <div style={styles.structureText}>{fmt(openingIfMap?.lowerWing ?? rec.suggestedCenter - 50)} / {fmt(openingIfMap?.center ?? rec.suggestedCenter)} / {fmt(openingIfMap?.upperWing ?? rec.suggestedCenter + 50)}</div>
-                  <div style={styles.muted}>Locked wing width: ±{fmt(openingIfMap?.wingWidth ?? 50)}</div>
+                  <div style={styles.structureText}>{fmt(openingMap?.lowerWing ?? rec.lowerWing)} / {fmt(openingMap?.center ?? rec.suggestedCenter)} / {fmt(openingMap?.upperWing ?? rec.upperWing)}</div>
+                  <div style={styles.muted}>Locked wing width: ±50</div>
                 </div>
               </div>
 
               <div style={styles.panelCard}>
                 <h2 style={styles.sectionTitle}>Placement Read</h2>
-                <p style={styles.muted}>Opening IF stays as the map. Prefer credit spreads during directional impulse; use the fly only at confirmed edge or center-pin conditions.</p>
+                <p style={styles.muted}>This is the opening placement logic. The live position cockpit below handles defense after entry.</p>
                 <div style={styles.managementBox}>{rec.management}</div>
                 <div style={styles.notesList}>{rec.notes.map((note, idx) => <div key={idx}>• {note}</div>)}</div>
               </div>
@@ -445,7 +466,7 @@ function PositionCockpit({
   );
 }
 
-function SpxOiHistogram({ rows, rec }: { rows: SpxOiMapRow[]; rec: ZeroDteRecommendation }) {
+function SpxOiHistogram({ rows, rec, openingMap }: { rows: SpxOiMapRow[]; rec: ZeroDteRecommendation; openingMap: ZeroDteOpeningMap | null }) {
   const chartRows = rows.filter((row) => Number.isFinite(row.strike));
 
   if (chartRows.length < 2) return <div style={styles.chartEmpty}>Not enough SPX OI rows to draw the chain map.</div>;
@@ -470,9 +491,9 @@ function SpxOiHistogram({ rows, rec }: { rows: SpxOiMapRow[]; rec: ZeroDteRecomm
 
   const markers = [
     { label: "SPOT", strike: rec.spxPrice, color: "#f8fafc", dash: "4 4" },
-    { label: "CENTER", strike: rec.suggestedCenter, color: "#fde047" },
-    { label: "LOWER", strike: rec.lowerWing, color: "#fb7185", dash: "3 5" },
-    { label: "UPPER", strike: rec.upperWing, color: "#34d399", dash: "3 5" },
+    { label: "CENTER", strike: openingMap?.center ?? rec.suggestedCenter, color: "#fde047" },
+    { label: "LOWER", strike: openingMap?.lowerWing ?? rec.lowerWing, color: "#fb7185", dash: "3 5" },
+    { label: "UPPER", strike: openingMap?.upperWing ?? rec.upperWing, color: "#34d399", dash: "3 5" },
     { label: "PIN", strike: rec.spx.strongestPin, color: "#67e8f9" },
     { label: "PUT WALL", strike: rec.spx.putWall, color: "#f472b6", dash: "6 4" },
     { label: "CALL WALL", strike: rec.spx.callWall, color: "#22c55e", dash: "6 4" },

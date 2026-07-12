@@ -842,6 +842,7 @@ export default function DashboardPage() {
   const [status, setStatus] = useState("READY");
   const [harvestOpen, setHarvestOpen] = useState(false);
   const [profiles, setProfiles] = useState<any[]>([]);
+  const [portfolioUpdatedAt, setPortfolioUpdatedAt] = useState<string | null>(null);
   const [expandedTickers, setExpandedTickers] = useState<Record<string, boolean>>({});
   const [newsPulses, setNewsPulses] = useState<DashboardNewsPulse[]>([]);
   const [newsLoading, setNewsLoading] = useState(false);
@@ -876,11 +877,34 @@ export default function DashboardPage() {
       // local UI state only
     }
 
-    try {
-      setProfiles(listPortfolioProfiles() as any[]);
-    } catch {
-      setProfiles([]);
-    }
+    const refreshPortfolio = () => {
+      try {
+        const next = listPortfolioProfiles() as any[];
+        setProfiles(next);
+        const latest = next.reduce((value, profile) => {
+          const stamp = typeof profile?.updatedAt === "string" ? profile.updatedAt : null;
+          return stamp && (!value || stamp > value) ? stamp : value;
+        }, null as string | null);
+        setPortfolioUpdatedAt(latest ?? new Date().toISOString());
+      } catch {
+        setProfiles([]);
+        setPortfolioUpdatedAt(null);
+      }
+    };
+
+    refreshPortfolio();
+    const onVisible = () => { if (document.visibilityState === "visible") refreshPortfolio(); };
+    window.addEventListener("focus", refreshPortfolio);
+    window.addEventListener("storage", refreshPortfolio);
+    window.addEventListener("wheeldesk:portfolio-updated", refreshPortfolio as EventListener);
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      window.removeEventListener("focus", refreshPortfolio);
+      window.removeEventListener("storage", refreshPortfolio);
+      window.removeEventListener("wheeldesk:portfolio-updated", refreshPortfolio as EventListener);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
 
   useEffect(() => {
@@ -1590,7 +1614,10 @@ export default function DashboardPage() {
         <section style={styles.portfolioPanel}>
           <div style={styles.panelStrip}>
             <span>Equities and Equity Options</span>
-            <span>Updated {new Date().toLocaleString()}</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span>Portfolio saved {portfolioUpdatedAt ? new Date(portfolioUpdatedAt).toLocaleString() : "—"}</span>
+              <button type="button" onClick={() => { try { const next = listPortfolioProfiles() as any[]; setProfiles(next); const latest = next.map((profile) => profile?.updatedAt).filter(Boolean).sort().at(-1) ?? new Date().toISOString(); setPortfolioUpdatedAt(latest); } catch { setProfiles([]); setPortfolioUpdatedAt(null); } }} style={{ border: "1px solid rgba(255,255,255,0.25)", background: "transparent", color: "inherit", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontWeight: 800 }}>Refresh</button>
+            </span>
           </div>
 
           <table style={styles.statementTable}>

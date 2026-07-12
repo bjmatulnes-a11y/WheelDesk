@@ -89,7 +89,7 @@ export async function GET(req: NextRequest) {
   const manualMoodPercent = optionalNumberParam(req, "mood");
   // spreadWidth is retained for backward compatibility, but the selector now treats it as maxWidth, not a forced width.
   const legacySpreadWidth = optionalNumberParam(req, "spreadWidth");
-  const maxWidth = optionalNumberParam(req, "maxWidth") ?? legacySpreadWidth ?? 40;
+  const maxWidth = optionalNumberParam(req, "maxWidth") ?? legacySpreadWidth ?? 50;
   const minWidth = optionalNumberParam(req, "minWidth") ?? 5;
   const maxRiskDollars = optionalNumberParam(req, "maxRisk");
   const minCredit = optionalNumberParam(req, "minCredit");
@@ -164,8 +164,6 @@ export async function GET(req: NextRequest) {
       minCredit,
       minCreditToRiskPct,
       riskMode,
-      tradeDate,
-      generatedAt: now.toISOString(),
     });
   } else {
     if (!spx?.rows.length) errors.push("No SPX option rows available after range/filtering.");
