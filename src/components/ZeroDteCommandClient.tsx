@@ -9,10 +9,12 @@ import { ZeroDteTradeSelectionPanel } from "./ZeroDteTradeSelectionPanel";
 import { ZeroDteStrikeFlowPanel } from "./ZeroDteStrikeFlowPanel";
 import { ZeroDteSystemDiagnosticsPanel } from "./ZeroDteSystemDiagnosticsPanel";
 import { ZeroDteTosInputsPanel } from "./ZeroDteTosInputsPanel";
+import { ZeroDteOpeningTradePlanPanel } from "./ZeroDteOpeningTradePlanPanel";
 import type { ZeroDteMoodRead } from "../lib/zeroDteMoodEngine";
 import { buildZeroDteTradeSelection, type ZeroDteTradeSelection } from "../lib/zeroDteTradeSelector";
 import { updateZeroDteStrikeFlow, type ZeroDteStrikeFlowRead } from "../lib/zeroDteStrikeFlow";
 import { getOpeningExecutionRead, lockOpeningMap, resetOpeningMap, type ZeroDteOpeningMap } from "../lib/zeroDteOpeningMap";
+import { lockOpeningTradePlan, resetOpeningTradePlan, type ZeroDteOpeningTradePlan } from "../lib/zeroDteOpeningTradePlan";
 
 type HarvestSymbolResult = {
   symbol: "SPX" | "SPY";
@@ -78,6 +80,9 @@ export default function ZeroDteCommandClient() {
   const [position, setPosition] = useState<PositionState>(defaultPosition);
   const [openingMap, setOpeningMap] = useState<ZeroDteOpeningMap | null>(null);
   const [strikeFlow, setStrikeFlow] = useState<ZeroDteStrikeFlowRead | null>(null);
+  const [openingTradePlan, setOpeningTradePlan] = useState<ZeroDteOpeningTradePlan | null>(null);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [secondsToRefresh, setSecondsToRefresh] = useState(60);
 
   async function load() {
     setLoading(true);
@@ -107,9 +112,7 @@ export default function ZeroDteCommandClient() {
           recommendation: json.recommendation,
         });
         setStrikeFlow(flow);
-        nextData = {
-          ...json,
-          tradeSelection: buildZeroDteTradeSelection({
+        const liveTradeSelection = buildZeroDteTradeSelection({
             recommendation: json.recommendation,
             spxRows: json.spx.rows,
             mood: json.mood ?? null,
@@ -119,9 +122,10 @@ export default function ZeroDteCommandClient() {
             minCredit: Number(minCredit) > 0 ? Number(minCredit) : null,
             riskMode,
             strikeFlow: flow,
-          }),
-        };
+          });
+        nextData = { ...json, tradeSelection: liveTradeSelection };
         setOpeningMap(lockOpeningMap(json.tradeDate, json.generatedAt, json.recommendation));
+        setOpeningTradePlan(lockOpeningTradePlan(json.tradeDate, json.generatedAt, liveTradeSelection));
       }
       setData(nextData);
 
@@ -137,6 +141,22 @@ export default function ZeroDteCommandClient() {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!autoRefresh) return;
+    setSecondsToRefresh(60);
+    const tick = window.setInterval(() => {
+      setSecondsToRefresh((current) => {
+        if (current <= 1) {
+          if (!loading) load();
+          return 60;
+        }
+        return current - 1;
+      });
+    }, 1000);
+    return () => window.clearInterval(tick);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRefresh, loading, expectedMove, rangePct, strictZeroDte, manualMood, riskMode, maxWidth, maxRisk, minCredit]);
 
   const rec = data?.recommendation;
 
@@ -196,7 +216,13 @@ export default function ZeroDteCommandClient() {
               SPX is the traded instrument. OI/dealer pressure place the iron fly and credit-spread short strikes. SPY is confirmation only.
             </p>
           </div>
-          <button onClick={load} disabled={loading} style={styles.primaryButton}>{loading ? "Harvesting…" : "Harvest 0DTE"}</button>
+          <div style={styles.headerActions}>
+            <label style={styles.autoRefreshLabel}>
+              <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
+              <span>Auto harvest {autoRefresh ? `(${secondsToRefresh}s)` : "off"}</span>
+            </label>
+            <button onClick={load} disabled={loading} style={styles.primaryButton}>{loading ? "Harvesting…" : "Harvest Now"}</button>
+          </div>
         </header>
 
         <section style={styles.controlsGrid}>
@@ -300,6 +326,17 @@ export default function ZeroDteCommandClient() {
             ) : null}
 
             <ZeroDteStrikeFlowPanel flow={strikeFlow} />
+
+            <ZeroDteOpeningTradePlanPanel
+              plan={openingTradePlan}
+              liveSelection={data?.tradeSelection ?? null}
+              strikeFlow={strikeFlow}
+              onReset={() => {
+                if (!data?.tradeDate || !data.tradeSelection) return;
+                resetOpeningTradePlan(data.tradeDate);
+                setOpeningTradePlan(lockOpeningTradePlan(data.tradeDate, data.generatedAt, data.tradeSelection));
+              }}
+            />
 
             <ZeroDteTradeSelectionPanel mood={data?.mood ?? null} tradeSelection={data?.tradeSelection ?? null} strikeFlow={strikeFlow} />
 
@@ -707,6 +744,8 @@ const styles: Record<string, React.CSSProperties> = {
   shell: { minHeight: "100vh", display: "flex", background: "#07111f", color: "#f8fafc" },
   main: { flex: 1, minWidth: 0, padding: 24, maxWidth: 1500, margin: "0 auto" },
   header: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, borderBottom: "1px solid rgba(56,189,248,0.24)", paddingBottom: 18, marginBottom: 16 },
+  headerActions: { display: "flex", gap: 10, alignItems: "center" },
+  autoRefreshLabel: { display: "flex", gap: 7, alignItems: "center", color: "#cbd5e1", fontSize: 12, fontWeight: 800 },
   eyebrow: { color: "#22d3ee", fontSize: 12, fontWeight: 900, letterSpacing: "0.32em", textTransform: "uppercase" },
   title: { margin: "6px 0 4px", fontSize: 34, lineHeight: 1.05, fontWeight: 950 },
   subtitle: { maxWidth: 900, margin: 0, color: "#cbd5e1", fontSize: 14, lineHeight: 1.5 },

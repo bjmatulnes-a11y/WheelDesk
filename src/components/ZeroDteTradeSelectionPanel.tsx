@@ -24,13 +24,13 @@ export function ZeroDteTradeSelectionPanel({
     <section style={styles.card}>
       <div style={styles.headerRow}>
         <div>
-          <h2 style={styles.title}>SPX Credit Spread Strike Selector</h2>
+          <h2 style={styles.title}>Live Credit-Spread Scan</h2>
           <p style={styles.muted}>
-            Width is now optimized across candidate spreads. The selector tests short strikes and multiple widths, then ranks by SPX OI protection, expected-move cushion, actual credit/risk, delta, liquidity, dealer pressure, and SPY confirmation.
+            This live scan updates execution context, confidence, flow, and current pricing. It does not replace the locked opening put/call strikes unless you deliberately rebuild today's trade map.
           </p>
         </div>
         <div style={styles.badgeWrap}>
-          <div style={styles.smallCaps}>Preferred</div>
+          <div style={styles.smallCaps}>Live directional read</div>
           <div style={{ ...styles.badgeValue, color: preferredSide === "put" ? "#34d399" : preferredSide === "call" ? "#fb7185" : "#fde047" }}>
             {preferredSide === "put" ? "Put spread" : preferredSide === "call" ? "Call spread" : "Review"}
           </div>
