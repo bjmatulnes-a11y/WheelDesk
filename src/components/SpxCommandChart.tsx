@@ -25,85 +25,6 @@ type Candle = {
   low: number;
   close: number;
   volume: number;
-  executionCard: {
-    borderRadius: 13,
-    padding: 16,
-    textAlign: "center",
-    border: "1px solid #26394b",
-  },
-  executionHarvest: {
-    background: "linear-gradient(160deg, rgba(22,199,132,.24), rgba(4,33,24,.8))",
-    borderColor: "rgba(22,199,132,.55)",
-  },
-  executionWatch: {
-    background: "linear-gradient(160deg, rgba(245,197,66,.22), rgba(38,31,8,.85))",
-    borderColor: "rgba(245,197,66,.5)",
-  },
-  executionManage: {
-    background: "linear-gradient(160deg, rgba(66,165,245,.22), rgba(8,27,43,.85))",
-    borderColor: "rgba(66,165,245,.5)",
-  },
-  executionAvoid: {
-    background: "linear-gradient(160deg, rgba(234,57,67,.22), rgba(42,9,12,.85))",
-    borderColor: "rgba(234,57,67,.5)",
-  },
-  executionAction: {
-    fontSize: 28,
-    fontWeight: 950,
-    marginTop: 5,
-  },
-  reasonList: {
-    display: "grid",
-    gap: 7,
-    marginTop: 14,
-    textAlign: "left",
-  },
-  reasonItem: {
-    display: "flex",
-    gap: 7,
-    alignItems: "flex-start",
-    fontSize: 10,
-    color: "#d4dde5",
-    lineHeight: 1.35,
-  },
-  reasonDot: {
-    width: 6,
-    height: 6,
-    borderRadius: "50%",
-    background: "#55d6ff",
-    marginTop: 4,
-    flex: "0 0 auto",
-  },
-  breakdownList: {
-    display: "grid",
-    gap: 10,
-  },
-  breakdownRow: {
-    display: "grid",
-    gap: 4,
-  },
-  breakdownHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 8,
-    color: "#8ea2b5",
-    fontSize: 9,
-  },
-  breakdownTrack: {
-    height: 6,
-    borderRadius: 999,
-    background: "#122333",
-    overflow: "hidden",
-  },
-  breakdownFill: {
-    height: "100%",
-    borderRadius: 999,
-    background: "linear-gradient(90deg,#196e9c,#20c997)",
-  },
-  premiumSection: {
-    marginTop: 12,
-  },
-
 };
 
 type PriceHistoryResponse = {
@@ -113,85 +34,6 @@ type PriceHistoryResponse = {
   previousClose?: number | null;
   candles?: Candle[];
   error?: string;
-  executionCard: {
-    borderRadius: 13,
-    padding: 16,
-    textAlign: "center",
-    border: "1px solid #26394b",
-  },
-  executionHarvest: {
-    background: "linear-gradient(160deg, rgba(22,199,132,.24), rgba(4,33,24,.8))",
-    borderColor: "rgba(22,199,132,.55)",
-  },
-  executionWatch: {
-    background: "linear-gradient(160deg, rgba(245,197,66,.22), rgba(38,31,8,.85))",
-    borderColor: "rgba(245,197,66,.5)",
-  },
-  executionManage: {
-    background: "linear-gradient(160deg, rgba(66,165,245,.22), rgba(8,27,43,.85))",
-    borderColor: "rgba(66,165,245,.5)",
-  },
-  executionAvoid: {
-    background: "linear-gradient(160deg, rgba(234,57,67,.22), rgba(42,9,12,.85))",
-    borderColor: "rgba(234,57,67,.5)",
-  },
-  executionAction: {
-    fontSize: 28,
-    fontWeight: 950,
-    marginTop: 5,
-  },
-  reasonList: {
-    display: "grid",
-    gap: 7,
-    marginTop: 14,
-    textAlign: "left",
-  },
-  reasonItem: {
-    display: "flex",
-    gap: 7,
-    alignItems: "flex-start",
-    fontSize: 10,
-    color: "#d4dde5",
-    lineHeight: 1.35,
-  },
-  reasonDot: {
-    width: 6,
-    height: 6,
-    borderRadius: "50%",
-    background: "#55d6ff",
-    marginTop: 4,
-    flex: "0 0 auto",
-  },
-  breakdownList: {
-    display: "grid",
-    gap: 10,
-  },
-  breakdownRow: {
-    display: "grid",
-    gap: 4,
-  },
-  breakdownHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 8,
-    color: "#8ea2b5",
-    fontSize: 9,
-  },
-  breakdownTrack: {
-    height: 6,
-    borderRadius: 999,
-    background: "#122333",
-    overflow: "hidden",
-  },
-  breakdownFill: {
-    height: "100%",
-    borderRadius: 999,
-    background: "linear-gradient(90deg,#196e9c,#20c997)",
-  },
-  premiumSection: {
-    marginTop: 12,
-  },
-
 };
 
 type HarvestSymbol = {
@@ -202,85 +44,6 @@ type HarvestSymbol = {
   isZeroDte?: boolean;
   rows: ZeroDteChainRow[];
   source: "schwab" | "yahoo";
-  executionCard: {
-    borderRadius: 13,
-    padding: 16,
-    textAlign: "center",
-    border: "1px solid #26394b",
-  },
-  executionHarvest: {
-    background: "linear-gradient(160deg, rgba(22,199,132,.24), rgba(4,33,24,.8))",
-    borderColor: "rgba(22,199,132,.55)",
-  },
-  executionWatch: {
-    background: "linear-gradient(160deg, rgba(245,197,66,.22), rgba(38,31,8,.85))",
-    borderColor: "rgba(245,197,66,.5)",
-  },
-  executionManage: {
-    background: "linear-gradient(160deg, rgba(66,165,245,.22), rgba(8,27,43,.85))",
-    borderColor: "rgba(66,165,245,.5)",
-  },
-  executionAvoid: {
-    background: "linear-gradient(160deg, rgba(234,57,67,.22), rgba(42,9,12,.85))",
-    borderColor: "rgba(234,57,67,.5)",
-  },
-  executionAction: {
-    fontSize: 28,
-    fontWeight: 950,
-    marginTop: 5,
-  },
-  reasonList: {
-    display: "grid",
-    gap: 7,
-    marginTop: 14,
-    textAlign: "left",
-  },
-  reasonItem: {
-    display: "flex",
-    gap: 7,
-    alignItems: "flex-start",
-    fontSize: 10,
-    color: "#d4dde5",
-    lineHeight: 1.35,
-  },
-  reasonDot: {
-    width: 6,
-    height: 6,
-    borderRadius: "50%",
-    background: "#55d6ff",
-    marginTop: 4,
-    flex: "0 0 auto",
-  },
-  breakdownList: {
-    display: "grid",
-    gap: 10,
-  },
-  breakdownRow: {
-    display: "grid",
-    gap: 4,
-  },
-  breakdownHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 8,
-    color: "#8ea2b5",
-    fontSize: 9,
-  },
-  breakdownTrack: {
-    height: 6,
-    borderRadius: 999,
-    background: "#122333",
-    overflow: "hidden",
-  },
-  breakdownFill: {
-    height: "100%",
-    borderRadius: 999,
-    background: "linear-gradient(90deg,#196e9c,#20c997)",
-  },
-  premiumSection: {
-    marginTop: 12,
-  },
-
 };
 
 type HarvestResponse = {
@@ -292,85 +55,6 @@ type HarvestResponse = {
   recommendation?: ZeroDteRecommendation;
   errors?: string[];
   provider?: string;
-  executionCard: {
-    borderRadius: 13,
-    padding: 16,
-    textAlign: "center",
-    border: "1px solid #26394b",
-  },
-  executionHarvest: {
-    background: "linear-gradient(160deg, rgba(22,199,132,.24), rgba(4,33,24,.8))",
-    borderColor: "rgba(22,199,132,.55)",
-  },
-  executionWatch: {
-    background: "linear-gradient(160deg, rgba(245,197,66,.22), rgba(38,31,8,.85))",
-    borderColor: "rgba(245,197,66,.5)",
-  },
-  executionManage: {
-    background: "linear-gradient(160deg, rgba(66,165,245,.22), rgba(8,27,43,.85))",
-    borderColor: "rgba(66,165,245,.5)",
-  },
-  executionAvoid: {
-    background: "linear-gradient(160deg, rgba(234,57,67,.22), rgba(42,9,12,.85))",
-    borderColor: "rgba(234,57,67,.5)",
-  },
-  executionAction: {
-    fontSize: 28,
-    fontWeight: 950,
-    marginTop: 5,
-  },
-  reasonList: {
-    display: "grid",
-    gap: 7,
-    marginTop: 14,
-    textAlign: "left",
-  },
-  reasonItem: {
-    display: "flex",
-    gap: 7,
-    alignItems: "flex-start",
-    fontSize: 10,
-    color: "#d4dde5",
-    lineHeight: 1.35,
-  },
-  reasonDot: {
-    width: 6,
-    height: 6,
-    borderRadius: "50%",
-    background: "#55d6ff",
-    marginTop: 4,
-    flex: "0 0 auto",
-  },
-  breakdownList: {
-    display: "grid",
-    gap: 10,
-  },
-  breakdownRow: {
-    display: "grid",
-    gap: 4,
-  },
-  breakdownHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 8,
-    color: "#8ea2b5",
-    fontSize: 9,
-  },
-  breakdownTrack: {
-    height: 6,
-    borderRadius: 999,
-    background: "#122333",
-    overflow: "hidden",
-  },
-  breakdownFill: {
-    height: "100%",
-    borderRadius: 999,
-    background: "linear-gradient(90deg,#196e9c,#20c997)",
-  },
-  premiumSection: {
-    marginTop: 12,
-  },
-
 };
 
 type OverlayKey =
@@ -396,85 +80,6 @@ const DEFAULT_OVERLAYS: Record<OverlayKey, boolean> = {
   expectedMove: true,
   forecast: true,
   heatmap: true,
-  executionCard: {
-    borderRadius: 13,
-    padding: 16,
-    textAlign: "center",
-    border: "1px solid #26394b",
-  },
-  executionHarvest: {
-    background: "linear-gradient(160deg, rgba(22,199,132,.24), rgba(4,33,24,.8))",
-    borderColor: "rgba(22,199,132,.55)",
-  },
-  executionWatch: {
-    background: "linear-gradient(160deg, rgba(245,197,66,.22), rgba(38,31,8,.85))",
-    borderColor: "rgba(245,197,66,.5)",
-  },
-  executionManage: {
-    background: "linear-gradient(160deg, rgba(66,165,245,.22), rgba(8,27,43,.85))",
-    borderColor: "rgba(66,165,245,.5)",
-  },
-  executionAvoid: {
-    background: "linear-gradient(160deg, rgba(234,57,67,.22), rgba(42,9,12,.85))",
-    borderColor: "rgba(234,57,67,.5)",
-  },
-  executionAction: {
-    fontSize: 28,
-    fontWeight: 950,
-    marginTop: 5,
-  },
-  reasonList: {
-    display: "grid",
-    gap: 7,
-    marginTop: 14,
-    textAlign: "left",
-  },
-  reasonItem: {
-    display: "flex",
-    gap: 7,
-    alignItems: "flex-start",
-    fontSize: 10,
-    color: "#d4dde5",
-    lineHeight: 1.35,
-  },
-  reasonDot: {
-    width: 6,
-    height: 6,
-    borderRadius: "50%",
-    background: "#55d6ff",
-    marginTop: 4,
-    flex: "0 0 auto",
-  },
-  breakdownList: {
-    display: "grid",
-    gap: 10,
-  },
-  breakdownRow: {
-    display: "grid",
-    gap: 4,
-  },
-  breakdownHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 8,
-    color: "#8ea2b5",
-    fontSize: 9,
-  },
-  breakdownTrack: {
-    height: 6,
-    borderRadius: 999,
-    background: "#122333",
-    overflow: "hidden",
-  },
-  breakdownFill: {
-    height: "100%",
-    borderRadius: 999,
-    background: "linear-gradient(90deg,#196e9c,#20c997)",
-  },
-  premiumSection: {
-    marginTop: 12,
-  },
-
 };
 
 const OVERLAY_LABELS: Array<[OverlayKey, string]> = [
@@ -815,11 +420,7 @@ export default function SpxCommandChart() {
   useEffect(() => {
     if (!harvest?.tradeDate || !harvest.generatedAt) return;
     setPremiumHistory((current) => {
-      const next = appendPremiumPoint(
-        current,
-        harvest.generatedAt,
-        simulatedCredit,
-      );
+      const next = appendPremiumPoint(current, harvest.generatedAt, simulatedCredit);
       savePremiumHistory(harvest.tradeDate, next);
       return next;
     });
@@ -827,6 +428,7 @@ export default function SpxCommandChart() {
 
   const liveExecutionRead: ExecutionRead | null = useMemo(() => {
     if (!recommendation || !harvest?.generatedAt) return null;
+
     return buildExecutionRead({
       recommendation,
       rows: spxRows,
@@ -1073,10 +675,7 @@ export default function SpxCommandChart() {
                   : "—"
               }
             />
-            <RailRow
-              label="SPX Rows"
-              value={String(spxRows.length)}
-            />
+            <RailRow label="SPX Rows" value={String(spxRows.length)} />
             <RailRow
               label="Expiration"
               value={harvest?.spx?.expirationDate ?? "—"}
@@ -1136,17 +735,7 @@ export default function SpxCommandChart() {
         </div>
       ) : null}
 
-      {harvest?.tradeDate &&
-      harvest.generatedAt &&
-      recommendation &&
-      harvest.spx?.rows?.length ? (
-        <ExecutionCockpit
-          tradeDate={harvest.tradeDate}
-          generatedAt={harvest.generatedAt}
-          recommendation={recommendation}
-          rows={harvest.spx.rows}
-        />
-      ) : null}
+      
 
       <div style={styles.premiumSection}>
         <PremiumHistoryPanel
