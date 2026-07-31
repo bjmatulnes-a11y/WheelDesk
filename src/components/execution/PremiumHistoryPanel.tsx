@@ -21,6 +21,7 @@ export function PremiumHistoryPanel({
   const hostRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Area"> | null>(null);
+  const hasInitialFitRef = useRef(false);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -72,7 +73,10 @@ export function PremiumHistoryPanel({
         value: point.credit,
       })),
     );
-    chartRef.current?.timeScale().fitContent();
+    if (!hasInitialFitRef.current && history.length) {
+      chartRef.current?.timeScale().fitContent();
+      hasInitialFitRef.current = true;
+    }
   }, [history]);
 
   return (

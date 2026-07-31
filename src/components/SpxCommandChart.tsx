@@ -12,7 +12,11 @@ import {
 } from "lightweight-charts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ZeroDteChainRow, ZeroDteRecommendation } from "../lib/zeroDteOiIntelligence";
-import { ExecutionCockpit } from "./execution/ExecutionCockpit";
+import { PremiumHistoryPanel } from "./execution/PremiumHistoryPanel";
+import { buildExecutionRead } from "../lib/execution/engine";
+import { appendPremiumPoint, estimateIronFlyCredit } from "../lib/execution/premium";
+import { loadPremiumHistory, savePremiumHistory } from "../lib/execution/storage";
+import type { ExecutionRead, PremiumPoint } from "../lib/execution/types";
 
 type Candle = {
   time: number;
@@ -21,6 +25,85 @@ type Candle = {
   low: number;
   close: number;
   volume: number;
+  executionCard: {
+    borderRadius: 13,
+    padding: 16,
+    textAlign: "center",
+    border: "1px solid #26394b",
+  },
+  executionHarvest: {
+    background: "linear-gradient(160deg, rgba(22,199,132,.24), rgba(4,33,24,.8))",
+    borderColor: "rgba(22,199,132,.55)",
+  },
+  executionWatch: {
+    background: "linear-gradient(160deg, rgba(245,197,66,.22), rgba(38,31,8,.85))",
+    borderColor: "rgba(245,197,66,.5)",
+  },
+  executionManage: {
+    background: "linear-gradient(160deg, rgba(66,165,245,.22), rgba(8,27,43,.85))",
+    borderColor: "rgba(66,165,245,.5)",
+  },
+  executionAvoid: {
+    background: "linear-gradient(160deg, rgba(234,57,67,.22), rgba(42,9,12,.85))",
+    borderColor: "rgba(234,57,67,.5)",
+  },
+  executionAction: {
+    fontSize: 28,
+    fontWeight: 950,
+    marginTop: 5,
+  },
+  reasonList: {
+    display: "grid",
+    gap: 7,
+    marginTop: 14,
+    textAlign: "left",
+  },
+  reasonItem: {
+    display: "flex",
+    gap: 7,
+    alignItems: "flex-start",
+    fontSize: 10,
+    color: "#d4dde5",
+    lineHeight: 1.35,
+  },
+  reasonDot: {
+    width: 6,
+    height: 6,
+    borderRadius: "50%",
+    background: "#55d6ff",
+    marginTop: 4,
+    flex: "0 0 auto",
+  },
+  breakdownList: {
+    display: "grid",
+    gap: 10,
+  },
+  breakdownRow: {
+    display: "grid",
+    gap: 4,
+  },
+  breakdownHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 8,
+    color: "#8ea2b5",
+    fontSize: 9,
+  },
+  breakdownTrack: {
+    height: 6,
+    borderRadius: 999,
+    background: "#122333",
+    overflow: "hidden",
+  },
+  breakdownFill: {
+    height: "100%",
+    borderRadius: 999,
+    background: "linear-gradient(90deg,#196e9c,#20c997)",
+  },
+  premiumSection: {
+    marginTop: 12,
+  },
+
 };
 
 type PriceHistoryResponse = {
@@ -30,6 +113,85 @@ type PriceHistoryResponse = {
   previousClose?: number | null;
   candles?: Candle[];
   error?: string;
+  executionCard: {
+    borderRadius: 13,
+    padding: 16,
+    textAlign: "center",
+    border: "1px solid #26394b",
+  },
+  executionHarvest: {
+    background: "linear-gradient(160deg, rgba(22,199,132,.24), rgba(4,33,24,.8))",
+    borderColor: "rgba(22,199,132,.55)",
+  },
+  executionWatch: {
+    background: "linear-gradient(160deg, rgba(245,197,66,.22), rgba(38,31,8,.85))",
+    borderColor: "rgba(245,197,66,.5)",
+  },
+  executionManage: {
+    background: "linear-gradient(160deg, rgba(66,165,245,.22), rgba(8,27,43,.85))",
+    borderColor: "rgba(66,165,245,.5)",
+  },
+  executionAvoid: {
+    background: "linear-gradient(160deg, rgba(234,57,67,.22), rgba(42,9,12,.85))",
+    borderColor: "rgba(234,57,67,.5)",
+  },
+  executionAction: {
+    fontSize: 28,
+    fontWeight: 950,
+    marginTop: 5,
+  },
+  reasonList: {
+    display: "grid",
+    gap: 7,
+    marginTop: 14,
+    textAlign: "left",
+  },
+  reasonItem: {
+    display: "flex",
+    gap: 7,
+    alignItems: "flex-start",
+    fontSize: 10,
+    color: "#d4dde5",
+    lineHeight: 1.35,
+  },
+  reasonDot: {
+    width: 6,
+    height: 6,
+    borderRadius: "50%",
+    background: "#55d6ff",
+    marginTop: 4,
+    flex: "0 0 auto",
+  },
+  breakdownList: {
+    display: "grid",
+    gap: 10,
+  },
+  breakdownRow: {
+    display: "grid",
+    gap: 4,
+  },
+  breakdownHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 8,
+    color: "#8ea2b5",
+    fontSize: 9,
+  },
+  breakdownTrack: {
+    height: 6,
+    borderRadius: 999,
+    background: "#122333",
+    overflow: "hidden",
+  },
+  breakdownFill: {
+    height: "100%",
+    borderRadius: 999,
+    background: "linear-gradient(90deg,#196e9c,#20c997)",
+  },
+  premiumSection: {
+    marginTop: 12,
+  },
+
 };
 
 type HarvestSymbol = {
@@ -40,6 +202,85 @@ type HarvestSymbol = {
   isZeroDte?: boolean;
   rows: ZeroDteChainRow[];
   source: "schwab" | "yahoo";
+  executionCard: {
+    borderRadius: 13,
+    padding: 16,
+    textAlign: "center",
+    border: "1px solid #26394b",
+  },
+  executionHarvest: {
+    background: "linear-gradient(160deg, rgba(22,199,132,.24), rgba(4,33,24,.8))",
+    borderColor: "rgba(22,199,132,.55)",
+  },
+  executionWatch: {
+    background: "linear-gradient(160deg, rgba(245,197,66,.22), rgba(38,31,8,.85))",
+    borderColor: "rgba(245,197,66,.5)",
+  },
+  executionManage: {
+    background: "linear-gradient(160deg, rgba(66,165,245,.22), rgba(8,27,43,.85))",
+    borderColor: "rgba(66,165,245,.5)",
+  },
+  executionAvoid: {
+    background: "linear-gradient(160deg, rgba(234,57,67,.22), rgba(42,9,12,.85))",
+    borderColor: "rgba(234,57,67,.5)",
+  },
+  executionAction: {
+    fontSize: 28,
+    fontWeight: 950,
+    marginTop: 5,
+  },
+  reasonList: {
+    display: "grid",
+    gap: 7,
+    marginTop: 14,
+    textAlign: "left",
+  },
+  reasonItem: {
+    display: "flex",
+    gap: 7,
+    alignItems: "flex-start",
+    fontSize: 10,
+    color: "#d4dde5",
+    lineHeight: 1.35,
+  },
+  reasonDot: {
+    width: 6,
+    height: 6,
+    borderRadius: "50%",
+    background: "#55d6ff",
+    marginTop: 4,
+    flex: "0 0 auto",
+  },
+  breakdownList: {
+    display: "grid",
+    gap: 10,
+  },
+  breakdownRow: {
+    display: "grid",
+    gap: 4,
+  },
+  breakdownHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 8,
+    color: "#8ea2b5",
+    fontSize: 9,
+  },
+  breakdownTrack: {
+    height: 6,
+    borderRadius: 999,
+    background: "#122333",
+    overflow: "hidden",
+  },
+  breakdownFill: {
+    height: "100%",
+    borderRadius: 999,
+    background: "linear-gradient(90deg,#196e9c,#20c997)",
+  },
+  premiumSection: {
+    marginTop: 12,
+  },
+
 };
 
 type HarvestResponse = {
@@ -51,6 +292,85 @@ type HarvestResponse = {
   recommendation?: ZeroDteRecommendation;
   errors?: string[];
   provider?: string;
+  executionCard: {
+    borderRadius: 13,
+    padding: 16,
+    textAlign: "center",
+    border: "1px solid #26394b",
+  },
+  executionHarvest: {
+    background: "linear-gradient(160deg, rgba(22,199,132,.24), rgba(4,33,24,.8))",
+    borderColor: "rgba(22,199,132,.55)",
+  },
+  executionWatch: {
+    background: "linear-gradient(160deg, rgba(245,197,66,.22), rgba(38,31,8,.85))",
+    borderColor: "rgba(245,197,66,.5)",
+  },
+  executionManage: {
+    background: "linear-gradient(160deg, rgba(66,165,245,.22), rgba(8,27,43,.85))",
+    borderColor: "rgba(66,165,245,.5)",
+  },
+  executionAvoid: {
+    background: "linear-gradient(160deg, rgba(234,57,67,.22), rgba(42,9,12,.85))",
+    borderColor: "rgba(234,57,67,.5)",
+  },
+  executionAction: {
+    fontSize: 28,
+    fontWeight: 950,
+    marginTop: 5,
+  },
+  reasonList: {
+    display: "grid",
+    gap: 7,
+    marginTop: 14,
+    textAlign: "left",
+  },
+  reasonItem: {
+    display: "flex",
+    gap: 7,
+    alignItems: "flex-start",
+    fontSize: 10,
+    color: "#d4dde5",
+    lineHeight: 1.35,
+  },
+  reasonDot: {
+    width: 6,
+    height: 6,
+    borderRadius: "50%",
+    background: "#55d6ff",
+    marginTop: 4,
+    flex: "0 0 auto",
+  },
+  breakdownList: {
+    display: "grid",
+    gap: 10,
+  },
+  breakdownRow: {
+    display: "grid",
+    gap: 4,
+  },
+  breakdownHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 8,
+    color: "#8ea2b5",
+    fontSize: 9,
+  },
+  breakdownTrack: {
+    height: 6,
+    borderRadius: 999,
+    background: "#122333",
+    overflow: "hidden",
+  },
+  breakdownFill: {
+    height: "100%",
+    borderRadius: 999,
+    background: "linear-gradient(90deg,#196e9c,#20c997)",
+  },
+  premiumSection: {
+    marginTop: 12,
+  },
+
 };
 
 type OverlayKey =
@@ -76,6 +396,85 @@ const DEFAULT_OVERLAYS: Record<OverlayKey, boolean> = {
   expectedMove: true,
   forecast: true,
   heatmap: true,
+  executionCard: {
+    borderRadius: 13,
+    padding: 16,
+    textAlign: "center",
+    border: "1px solid #26394b",
+  },
+  executionHarvest: {
+    background: "linear-gradient(160deg, rgba(22,199,132,.24), rgba(4,33,24,.8))",
+    borderColor: "rgba(22,199,132,.55)",
+  },
+  executionWatch: {
+    background: "linear-gradient(160deg, rgba(245,197,66,.22), rgba(38,31,8,.85))",
+    borderColor: "rgba(245,197,66,.5)",
+  },
+  executionManage: {
+    background: "linear-gradient(160deg, rgba(66,165,245,.22), rgba(8,27,43,.85))",
+    borderColor: "rgba(66,165,245,.5)",
+  },
+  executionAvoid: {
+    background: "linear-gradient(160deg, rgba(234,57,67,.22), rgba(42,9,12,.85))",
+    borderColor: "rgba(234,57,67,.5)",
+  },
+  executionAction: {
+    fontSize: 28,
+    fontWeight: 950,
+    marginTop: 5,
+  },
+  reasonList: {
+    display: "grid",
+    gap: 7,
+    marginTop: 14,
+    textAlign: "left",
+  },
+  reasonItem: {
+    display: "flex",
+    gap: 7,
+    alignItems: "flex-start",
+    fontSize: 10,
+    color: "#d4dde5",
+    lineHeight: 1.35,
+  },
+  reasonDot: {
+    width: 6,
+    height: 6,
+    borderRadius: "50%",
+    background: "#55d6ff",
+    marginTop: 4,
+    flex: "0 0 auto",
+  },
+  breakdownList: {
+    display: "grid",
+    gap: 10,
+  },
+  breakdownRow: {
+    display: "grid",
+    gap: 4,
+  },
+  breakdownHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 8,
+    color: "#8ea2b5",
+    fontSize: 9,
+  },
+  breakdownTrack: {
+    height: 6,
+    borderRadius: 999,
+    background: "#122333",
+    overflow: "hidden",
+  },
+  breakdownFill: {
+    height: "100%",
+    borderRadius: 999,
+    background: "linear-gradient(90deg,#196e9c,#20c997)",
+  },
+  premiumSection: {
+    marginTop: 12,
+  },
+
 };
 
 const OVERLAY_LABELS: Array<[OverlayKey, string]> = [
@@ -96,6 +495,7 @@ export default function SpxCommandChart() {
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const lineSeriesRef = useRef<Array<ISeriesApi<"Line">>>([]);
+  const hasInitialFitRef = useRef(false);
 
   const [candles, setCandles] = useState<Candle[]>([]);
   const [harvest, setHarvest] = useState<HarvestResponse | null>(null);
@@ -105,6 +505,7 @@ export default function SpxCommandChart() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [premiumHistory, setPremiumHistory] = useState<PremiumPoint[]>([]);
 
   const recommendation = harvest?.recommendation;
   const spxRows = harvest?.spx?.rows ?? [];
@@ -210,6 +611,10 @@ export default function SpxCommandChart() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    hasInitialFitRef.current = false;
+  }, [frequency]);
 
   useEffect(() => {
     if (!autoRefresh) return;
@@ -377,12 +782,59 @@ export default function SpxCommandChart() {
       }
     }
 
-    chart.timeScale().fitContent();
+    if (!hasInitialFitRef.current) {
+      chart.timeScale().fitContent();
+      hasInitialFitRef.current = true;
+    }
   }, [analytics, candles, overlays, recommendation]);
 
   function toggleOverlay(key: OverlayKey) {
     setOverlays((current) => ({ ...current, [key]: !current[key] }));
   }
+
+  function resetChartView() {
+    chartRef.current?.timeScale().fitContent();
+    hasInitialFitRef.current = true;
+  }
+
+  const simulatedCredit = useMemo(() => {
+    if (!recommendation || !spxRows.length) return null;
+    return estimateIronFlyCredit(spxRows, {
+      lowerWing: recommendation.lowerWing,
+      shortPut: recommendation.suggestedCenter,
+      shortCall: recommendation.suggestedCenter,
+      upperWing: recommendation.upperWing,
+    });
+  }, [recommendation, spxRows]);
+
+  useEffect(() => {
+    if (!harvest?.tradeDate) return;
+    setPremiumHistory(loadPremiumHistory(harvest.tradeDate));
+  }, [harvest?.tradeDate]);
+
+  useEffect(() => {
+    if (!harvest?.tradeDate || !harvest.generatedAt) return;
+    setPremiumHistory((current) => {
+      const next = appendPremiumPoint(
+        current,
+        harvest.generatedAt,
+        simulatedCredit,
+      );
+      savePremiumHistory(harvest.tradeDate, next);
+      return next;
+    });
+  }, [harvest?.generatedAt, harvest?.tradeDate, simulatedCredit]);
+
+  const liveExecutionRead: ExecutionRead | null = useMemo(() => {
+    if (!recommendation || !harvest?.generatedAt) return null;
+    return buildExecutionRead({
+      recommendation,
+      rows: spxRows,
+      generatedAt: harvest.generatedAt,
+      premiumHistory,
+      position: null,
+    });
+  }, [harvest?.generatedAt, premiumHistory, recommendation, spxRows]);
 
   return (
     <section style={styles.shell}>
@@ -419,6 +871,10 @@ export default function SpxCommandChart() {
             />
             Auto
           </label>
+
+          <button onClick={resetChartView} style={styles.secondaryButton}>
+            Reset View
+          </button>
 
           <button onClick={load} style={styles.refreshButton}>
             {loading ? "Loading…" : "Refresh"}
@@ -497,20 +953,110 @@ export default function SpxCommandChart() {
         <aside style={styles.sideRail}>
           <div
             style={{
-              ...styles.signalCard,
-              ...(commandRead?.zone === "HARVEST"
-                ? styles.signalHarvest
-                : commandRead?.zone === "WATCH"
-                  ? styles.signalWatch
-                  : styles.signalAvoid),
+              ...styles.executionCard,
+              ...(liveExecutionRead?.zone === "harvest"
+                ? styles.executionHarvest
+                : liveExecutionRead?.zone === "watch"
+                  ? styles.executionWatch
+                  : liveExecutionRead?.zone === "manage"
+                    ? styles.executionManage
+                    : styles.executionAvoid),
             }}
           >
-            <div style={styles.signalLabel}>Execution State</div>
-            <div style={styles.signalValue}>{commandRead?.zone ?? "WAIT"}</div>
-            <div style={styles.scoreValue}>
-              {commandRead?.harvestScore ?? 0}
+            <div style={styles.signalLabel}>Execution Engine</div>
+            <div style={styles.executionAction}>
+              {liveExecutionRead?.action ?? "WAIT"}
             </div>
-            <div style={styles.signalNote}>Harvest score</div>
+            <div style={styles.scoreValue}>
+              {liveExecutionRead?.confidence ?? 0}
+            </div>
+            <div style={styles.signalNote}>Confidence</div>
+
+            <div style={styles.reasonList}>
+              {(liveExecutionRead?.reasons ?? ["Building live execution context"])
+                .slice(0, 4)
+                .map((reason) => (
+                  <div key={reason} style={styles.reasonItem}>
+                    <span style={styles.reasonDot} />
+                    {reason}
+                  </div>
+                ))}
+            </div>
+          </div>
+
+          <div style={styles.railCard}>
+            <div style={styles.railTitle}>Live Iron Fly</div>
+            <RailRow
+              label="Center"
+              value={recommendation?.suggestedCenter?.toFixed(0) ?? "—"}
+            />
+            <RailRow
+              label="Wings"
+              value={
+                recommendation
+                  ? `${recommendation.lowerWing.toFixed(0)} / ${recommendation.upperWing.toFixed(0)}`
+                  : "—"
+              }
+            />
+            <RailRow
+              label="Current Credit"
+              value={
+                liveExecutionRead?.currentCredit == null
+                  ? "—"
+                  : liveExecutionRead.currentCredit.toFixed(2)
+              }
+            />
+            <RailRow
+              label="Peak Credit"
+              value={
+                liveExecutionRead?.peakCredit == null
+                  ? "—"
+                  : liveExecutionRead.peakCredit.toFixed(2)
+              }
+            />
+            <RailRow
+              label="Velocity"
+              value={
+                liveExecutionRead
+                  ? `${liveExecutionRead.premiumVelocityPerMinute >= 0 ? "+" : ""}${liveExecutionRead.premiumVelocityPerMinute.toFixed(3)}/m`
+                  : "—"
+              }
+            />
+            <RailRow
+              label="Off Peak"
+              value={
+                liveExecutionRead?.creditOffPeakPct == null
+                  ? "—"
+                  : `${liveExecutionRead.creditOffPeakPct.toFixed(1)}%`
+              }
+            />
+          </div>
+
+          <div style={styles.railCard}>
+            <div style={styles.railTitle}>Harvest Score</div>
+            <div style={styles.breakdownList}>
+              {(liveExecutionRead?.components ?? []).map((component) => (
+                <div key={component.key} style={styles.breakdownRow}>
+                  <div style={styles.breakdownHeader}>
+                    <span>{component.label}</span>
+                    <strong>
+                      {component.score.toFixed(1)}/{component.max}
+                    </strong>
+                  </div>
+                  <div style={styles.breakdownTrack}>
+                    <div
+                      style={{
+                        ...styles.breakdownFill,
+                        width: `${Math.max(
+                          0,
+                          Math.min(100, (component.score / component.max) * 100),
+                        )}%`,
+                      }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
 
           <div style={styles.railCard}>
@@ -522,8 +1068,8 @@ export default function SpxCommandChart() {
             <RailRow
               label="Center Distance"
               value={
-                commandRead
-                  ? `${commandRead.distanceToCenter.toFixed(1)} pts`
+                liveExecutionRead
+                  ? `${liveExecutionRead.centerDistance.toFixed(1)} pts`
                   : "—"
               }
             />
@@ -539,29 +1085,6 @@ export default function SpxCommandChart() {
               label="Feed"
               value={harvest?.provider?.toUpperCase() ?? "SCHWAB"}
             />
-          </div>
-
-          <div style={styles.railCard}>
-            <div style={styles.railTitle}>Premium Monitor</div>
-            <RailRow
-              label="ATM Straddle"
-              value={
-                recommendation?.expectedMove
-                  ? recommendation.expectedMove.toFixed(2)
-                  : "—"
-              }
-            />
-            <RailRow
-              label="Lower Wing"
-              value={recommendation?.lowerWing?.toFixed(0) ?? "—"}
-            />
-            <RailRow
-              label="Upper Wing"
-              value={recommendation?.upperWing?.toFixed(0) ?? "—"}
-            />
-            <div style={styles.placeholderGraph}>
-              <span>Premium stream attaches in WebSocket phase</span>
-            </div>
           </div>
         </aside>
       </div>
@@ -624,6 +1147,13 @@ export default function SpxCommandChart() {
           rows={harvest.spx.rows}
         />
       ) : null}
+
+      <div style={styles.premiumSection}>
+        <PremiumHistoryPanel
+          history={premiumHistory}
+          read={liveExecutionRead}
+        />
+      </div>
     </section>
   );
 }
@@ -773,6 +1303,15 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: "center",
     color: "#a9b8c7",
     fontSize: 12,
+  },
+  secondaryButton: {
+    background: "#0c1721",
+    color: "#dce8f2",
+    border: "1px solid #25394b",
+    borderRadius: 9,
+    padding: "10px 12px",
+    fontWeight: 750,
+    cursor: "pointer",
   },
   refreshButton: {
     background: "#177ddc",
@@ -1020,4 +1559,83 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#6f8295",
     fontSize: 10,
   },
+  executionCard: {
+    borderRadius: 13,
+    padding: 16,
+    textAlign: "center",
+    border: "1px solid #26394b",
+  },
+  executionHarvest: {
+    background: "linear-gradient(160deg, rgba(22,199,132,.24), rgba(4,33,24,.8))",
+    borderColor: "rgba(22,199,132,.55)",
+  },
+  executionWatch: {
+    background: "linear-gradient(160deg, rgba(245,197,66,.22), rgba(38,31,8,.85))",
+    borderColor: "rgba(245,197,66,.5)",
+  },
+  executionManage: {
+    background: "linear-gradient(160deg, rgba(66,165,245,.22), rgba(8,27,43,.85))",
+    borderColor: "rgba(66,165,245,.5)",
+  },
+  executionAvoid: {
+    background: "linear-gradient(160deg, rgba(234,57,67,.22), rgba(42,9,12,.85))",
+    borderColor: "rgba(234,57,67,.5)",
+  },
+  executionAction: {
+    fontSize: 28,
+    fontWeight: 950,
+    marginTop: 5,
+  },
+  reasonList: {
+    display: "grid",
+    gap: 7,
+    marginTop: 14,
+    textAlign: "left",
+  },
+  reasonItem: {
+    display: "flex",
+    gap: 7,
+    alignItems: "flex-start",
+    fontSize: 10,
+    color: "#d4dde5",
+    lineHeight: 1.35,
+  },
+  reasonDot: {
+    width: 6,
+    height: 6,
+    borderRadius: "50%",
+    background: "#55d6ff",
+    marginTop: 4,
+    flex: "0 0 auto",
+  },
+  breakdownList: {
+    display: "grid",
+    gap: 10,
+  },
+  breakdownRow: {
+    display: "grid",
+    gap: 4,
+  },
+  breakdownHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 8,
+    color: "#8ea2b5",
+    fontSize: 9,
+  },
+  breakdownTrack: {
+    height: 6,
+    borderRadius: 999,
+    background: "#122333",
+    overflow: "hidden",
+  },
+  breakdownFill: {
+    height: "100%",
+    borderRadius: 999,
+    background: "linear-gradient(90deg,#196e9c,#20c997)",
+  },
+  premiumSection: {
+    marginTop: 12,
+  },
+
 };
