@@ -12,6 +12,7 @@ import {
 } from "lightweight-charts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ZeroDteChainRow, ZeroDteRecommendation } from "../lib/zeroDteOiIntelligence";
+import { ExecutionCockpit } from "./execution/ExecutionCockpit";
 
 type Candle = {
   time: number;
@@ -610,6 +611,18 @@ export default function SpxCommandChart() {
             })}
           </div>
         </div>
+      ) : null}
+
+      {harvest?.tradeDate &&
+      harvest.generatedAt &&
+      recommendation &&
+      harvest.spx?.rows?.length ? (
+        <ExecutionCockpit
+          tradeDate={harvest.tradeDate}
+          generatedAt={harvest.generatedAt}
+          recommendation={recommendation}
+          rows={harvest.spx.rows}
+        />
       ) : null}
     </section>
   );
