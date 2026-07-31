@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ZeroDteChainRow, ZeroDteRecommendation } from "../lib/zeroDteOiIntelligence";
 import { PremiumHistoryPanel } from "./execution/PremiumHistoryPanel";
 import { AdvancedStrikeHeatmap } from "./AdvancedStrikeHeatmap";
+import { DealerAnalyticsPanel } from "./DealerAnalyticsPanel";
 import { buildExecutionRead } from "../lib/execution/engine";
 import { appendPremiumPoint, estimateIronFlyCredit } from "../lib/execution/premium";
 import { loadPremiumHistory, savePremiumHistory } from "../lib/execution/storage";
@@ -688,6 +689,25 @@ export default function SpxCommandChart() {
           </div>
         </aside>
       </div>
+
+      {recommendation && harvest?.tradeDate ? (
+        <DealerAnalyticsPanel
+          tradeDate={harvest.tradeDate}
+          generatedAt={harvest.generatedAt}
+          spot={currentPrice}
+          pressure={recommendation.dealerPressure}
+          spxPressure={recommendation.spxDealerPressure}
+          spyPressure={recommendation.spyDealerPressure}
+          pressureBias={recommendation.pressureBias}
+          source={recommendation.dealerPressureSource}
+          support={recommendation.spx.putWall}
+          resistance={recommendation.spx.callWall}
+          pin={recommendation.spx.strongestPin}
+          center={recommendation.suggestedCenter}
+          expectedMove={recommendation.expectedMove}
+          confidence={recommendation.confidenceScore}
+        />
+      ) : null}
 
       {overlays.heatmap && recommendation && harvest?.tradeDate ? (
         <AdvancedStrikeHeatmap
