@@ -113,7 +113,7 @@ export async function getSchwabAccessToken() {
   return refreshSchwabAccessToken(tokens.refresh_token);
 }
 
-async function schwabFetch<T>(path: string, retry = true): Promise<T> {
+export async function schwabFetch<T>(path: string, retry = true): Promise<T> {
   const accessToken = await getSchwabAccessToken();
   const response = await fetch(`${MARKET_BASE}${path}`, {
     headers: {
@@ -156,4 +156,43 @@ export async function fetchSchwabOptionChain(args: {
   });
 
   return schwabFetch<SchwabOptionChainResponse>(`/chains?${params.toString()}`);
+}
+
+export type SchwabPriceCandle = {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  datetime: number;
+};
+
+export type SchwabPriceHistoryResponse = {
+  symbol?: string;
+  empty?: boolean;
+  previousClose?: number;
+  previousCloseDate?: number;
+  candles?: SchwabPriceCandle[];
+};
+
+export async function fetchSchwabPriceHistory(args: {
+  symbol: string;
+  frequency?: 1 | 5 | 10 | 15 | 30;
+  startDate?: number;
+  endDate?: number;
+}): Promise<SchwabPriceHistoryResponse> {
+  const now = Date.now();
+  const params = new URLSearchParams({
+    symbol: args.symbol,
+    periodType: "day",
+    period: "1",
+    frequencyType: "minute",
+    frequency: String(args.frequency ?? 1),
+    startDate: String(args.startDate ?? now - 24 * 60 * 60 * 1000),
+    endDate: String(args.endDate ?? now),
+    needExtendedHoursData: "false",
+    needPreviousClose: "true",
+  });
+
+  return schwabFetch<SchwabPriceHistoryResponse>(`/pricehistory?${params.toString()}`);
 }
