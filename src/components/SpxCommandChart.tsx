@@ -15,6 +15,8 @@ import type { ZeroDteChainRow, ZeroDteRecommendation } from "../lib/zeroDteOiInt
 import { PremiumHistoryPanel } from "./execution/PremiumHistoryPanel";
 import { AdvancedStrikeHeatmap } from "./AdvancedStrikeHeatmap";
 import { DealerAnalyticsPanel } from "./DealerAnalyticsPanel";
+import { MapEnginePanel } from "./MapEnginePanel";
+import { useSessionMapManager } from "../lib/session/useSessionMapManager";
 import { buildExecutionRead } from "../lib/execution/engine";
 import { appendPremiumPoint, estimateIronFlyCredit } from "../lib/execution/premium";
 import { loadPremiumHistory, savePremiumHistory } from "../lib/execution/storage";
@@ -387,13 +389,32 @@ export default function SpxCommandChart() {
         horizontal(upper, "#20c997", 1, LineStyle.Dotted);
         horizontal(lower, "#20c997", 1, LineStyle.Dotted);
       }
+
+      if (mapManager.state) {
+        const opening = mapManager.state.opening;
+        horizontal(opening.center, "rgba(255,212,0,.42)", 1, LineStyle.Dashed);
+        horizontal(opening.lowerWing, "rgba(127,143,164,.36)", 1, LineStyle.Dashed);
+        horizontal(opening.upperWing, "rgba(127,143,164,.36)", 1, LineStyle.Dashed);
+
+        if (mapManager.state.phase === "TRANSITION" && mapManager.state.candidate) {
+          horizontal(mapManager.state.candidate.center, "#f5c542", 2, LineStyle.Dotted);
+          horizontal(mapManager.state.candidate.lowerWing, "#b89a36", 1, LineStyle.Dotted);
+          horizontal(mapManager.state.candidate.upperWing, "#b89a36", 1, LineStyle.Dotted);
+        }
+
+        if (mapManager.state.phase === "ACTIVE") {
+          horizontal(mapManager.state.active.center, "#71e0b4", 3);
+          horizontal(mapManager.state.active.lowerWing, "#2f9a78", 1);
+          horizontal(mapManager.state.active.upperWing, "#2f9a78", 1);
+        }
+      }
     }
 
     if (!hasInitialFitRef.current) {
       chart.timeScale().fitContent();
       hasInitialFitRef.current = true;
     }
-  }, [analytics, candles, overlays, recommendation]);
+  }, [analytics, candles, mapManager.state, overlays, recommendation]);
 
   function toggleOverlay(key: OverlayKey) {
     setOverlays((current) => ({ ...current, [key]: !current[key] }));
@@ -439,6 +460,18 @@ export default function SpxCommandChart() {
       position: null,
     });
   }, [harvest?.generatedAt, premiumHistory, recommendation, spxRows]);
+
+  const mapManager = useSessionMapManager({
+    tradeDate: harvest?.tradeDate,
+    generatedAt: harvest?.generatedAt,
+    recommendation,
+    rows: spxRows,
+  });
+
+  const controllingMap =
+    mapManager.state?.phase === "ACTIVE"
+      ? mapManager.state.active
+      : mapManager.state?.opening;
 
   return (
     <section style={styles.shell}>
@@ -690,6 +723,13 @@ export default function SpxCommandChart() {
         </aside>
       </div>
 
+      {mapManager.state ? (
+        <MapEnginePanel
+          state={mapManager.state}
+          onReset={mapManager.reset}
+        />
+      ) : null}
+
       {recommendation && harvest?.tradeDate ? (
         <DealerAnalyticsPanel
           tradeDate={harvest.tradeDate}
@@ -706,6 +746,9 @@ export default function SpxCommandChart() {
           center={recommendation.suggestedCenter}
           expectedMove={recommendation.expectedMove}
           confidence={recommendation.confidenceScore}
+          mapState={mapManager.state?.phase ?? "OPENING"}
+          openingPressure={mapManager.state?.opening.dealerPressure ?? null}
+          controllingPressure={controllingMap?.dealerPressure ?? null}
         />
       ) : null}
 
@@ -720,6 +763,8 @@ export default function SpxCommandChart() {
           pin={recommendation.spx.strongestPin}
           expectedMove={recommendation.expectedMove}
           rows={spxRows}
+          openingBaseline={mapManager.state?.opening.strikes ?? null}
+          mapState={mapManager.state?.phase ?? "OPENING"}
         />
       ) : null}
 

@@ -46,6 +46,9 @@ type Props = {
   center: number;
   expectedMove: number;
   confidence: number;
+  mapState: "OPENING" | "TRANSITION" | "ACTIVE";
+  openingPressure: number | null;
+  controllingPressure: number | null;
 };
 
 const historyKey = (tradeDate: string) =>
@@ -66,6 +69,9 @@ export function DealerAnalyticsPanel({
   center,
   expectedMove,
   confidence,
+  mapState,
+  openingPressure,
+  controllingPressure,
 }: Props) {
   const [history, setHistory] = useState<PressurePoint[]>([]);
 
@@ -129,6 +135,7 @@ export function DealerAnalyticsPanel({
           <Metric label="Direction" value={read.direction} />
           <Metric label="Regime" value={read.regime} />
           <Metric label="Stability" value={`${read.stability}%`} />
+          <Metric label="Map State" value={mapState} />
         </div>
       </div>
 
@@ -154,7 +161,19 @@ export function DealerAnalyticsPanel({
       <div style={styles.mainGrid}>
         <div style={styles.analysisCard}>
           <div style={styles.sectionTitle}>Pressure Behavior</div>
+          <ReadRow
+            label="Open"
+            value={openingPressure == null ? "—" : signed(openingPressure)}
+          />
           <ReadRow label="Current" value={signed(read.current)} />
+          <ReadRow
+            label="Change From Open"
+            value={
+              openingPressure == null
+                ? "—"
+                : signed(read.current - openingPressure)
+            }
+          />
           <ReadRow label="Change" value={signed(read.change)} />
           <ReadRow
             label="Velocity"
@@ -214,6 +233,12 @@ export function DealerAnalyticsPanel({
               source === "dealer-pressure-engine"
                 ? "DEALER ENGINE"
                 : "LOCAL PROXY"
+            }
+          />
+          <ReadRow
+            label="Controlling Map Pressure"
+            value={
+              controllingPressure == null ? "—" : signed(controllingPressure)
             }
           />
           <ReadRow

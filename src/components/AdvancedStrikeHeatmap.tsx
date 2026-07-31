@@ -37,6 +37,8 @@ type Props = {
   pin: number | null;
   expectedMove: number;
   rows: ZeroDteChainRow[];
+  openingBaseline: SnapshotMap | null;
+  mapState: "OPENING" | "TRANSITION" | "ACTIVE";
 };
 
 const roundStrike = (value: number) => Math.round(value / 5) * 5;
@@ -53,6 +55,8 @@ export function AdvancedStrikeHeatmap({
   pin,
   expectedMove,
   rows,
+  openingBaseline,
+  mapState,
 }: Props) {
   const [baseline, setBaseline] = useState<SnapshotMap>({});
   const [previous, setPrevious] = useState<SnapshotMap>({});
@@ -69,7 +73,11 @@ export function AdvancedStrikeHeatmap({
     const loadedBaseline = loadSnapshot(baselineKey);
     const loadedPrevious = loadSnapshot(previousKey);
     const nextBaseline =
-      Object.keys(loadedBaseline).length > 0 ? loadedBaseline : current;
+      openingBaseline && Object.keys(openingBaseline).length > 0
+        ? openingBaseline
+        : Object.keys(loadedBaseline).length > 0
+          ? loadedBaseline
+          : current;
 
     setBaseline(nextBaseline);
     setPrevious(
@@ -81,7 +89,7 @@ export function AdvancedStrikeHeatmap({
     }
 
     saveSnapshot(previousKey, current);
-  }, [tradeDate]);
+  }, [openingBaseline, tradeDate]);
 
   useEffect(() => {
     if (!Object.keys(current).length) return;
@@ -204,9 +212,16 @@ export function AdvancedStrikeHeatmap({
           />
           <Summary label="Aggregate Bias" value={aggregateBias} />
           <Summary
-            label="Session Baseline"
-            value={Object.keys(baseline).length ? "CAPTURED" : "BUILDING"}
+            label="Opening Baseline"
+            value={
+              openingBaseline && Object.keys(openingBaseline).length
+                ? "OPEN MAP"
+                : Object.keys(baseline).length
+                  ? "FALLBACK"
+                  : "BUILDING"
+            }
           />
+          <Summary label="Map State" value={mapState} />
         </div>
       </div>
 
@@ -343,8 +358,9 @@ export function AdvancedStrikeHeatmap({
       </div>
 
       <div style={styles.footer}>
-        Session Δ is WheelDesk change versus the first locally stored snapshot,
-        not official exchange-reported intraday open-interest change.
+        Session Δ compares the live strike structure to the shared Opening Map
+        baseline when available. It is not official exchange-reported intraday
+        open-interest change.
       </div>
     </section>
   );
