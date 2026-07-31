@@ -13,6 +13,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ZeroDteChainRow, ZeroDteRecommendation } from "../lib/zeroDteOiIntelligence";
 import { PremiumHistoryPanel } from "./execution/PremiumHistoryPanel";
+import { AdvancedStrikeHeatmap } from "./AdvancedStrikeHeatmap";
 import { buildExecutionRead } from "../lib/execution/engine";
 import { appendPremiumPoint, estimateIronFlyCredit } from "../lib/execution/premium";
 import { loadPremiumHistory, savePremiumHistory } from "../lib/execution/storage";
@@ -688,54 +689,19 @@ export default function SpxCommandChart() {
         </aside>
       </div>
 
-      {overlays.heatmap ? (
-        <div style={styles.heatmapCard}>
-          <div style={styles.heatmapHeader}>
-            <div>
-              <div style={styles.railTitle}>SPX OI / Gamma Heatmap</div>
-              <div style={styles.heatmapNote}>
-                Structural strike concentrations around current spot.
-              </div>
-            </div>
-            <div style={styles.timeStamp}>
-              Updated{" "}
-              {lastRefresh
-                ? new Date(lastRefresh).toLocaleTimeString()
-                : "—"}
-            </div>
-          </div>
-
-          <div style={styles.heatRows}>
-            {heatRows.map((row) => {
-              const maxScore = Math.max(...heatRows.map((item) => item.score), 1);
-              const pct = Math.max(4, (row.score / maxScore) * 100);
-              const isSpot =
-                Math.abs(row.strike - currentPrice) <= 2.5;
-              return (
-                <div key={row.strike} style={styles.heatRow}>
-                  <div style={styles.heatStrike}>
-                    {row.strike.toFixed(0)}
-                    {isSpot ? <span style={styles.spotBadge}>SPOT</span> : null}
-                  </div>
-                  <div style={styles.heatTrack}>
-                    <div
-                      style={{
-                        ...styles.heatFill,
-                        width: `${pct}%`,
-                      }}
-                    />
-                  </div>
-                  <div style={styles.heatValue}>
-                    {formatCompact(row.totalOi)}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
+      {overlays.heatmap && recommendation && harvest?.tradeDate ? (
+        <AdvancedStrikeHeatmap
+          tradeDate={harvest.tradeDate}
+          generatedAt={harvest.generatedAt}
+          spot={currentPrice}
+          center={recommendation.suggestedCenter}
+          callWall={recommendation.spx.callWall}
+          putWall={recommendation.spx.putWall}
+          pin={recommendation.spx.strongestPin}
+          expectedMove={recommendation.expectedMove}
+          rows={spxRows}
+        />
       ) : null}
-
-      
 
       <div style={styles.premiumSection}>
         <PremiumHistoryPanel
