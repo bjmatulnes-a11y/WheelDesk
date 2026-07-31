@@ -121,6 +121,18 @@ export default function SpxCommandChart() {
   const lastCandle = candles.at(-1);
   const currentPrice = recommendation?.spxPrice ?? harvest?.spx?.price ?? lastCandle?.close ?? 0;
 
+  const mapManager = useSessionMapManager({
+    tradeDate: harvest?.tradeDate,
+    generatedAt: harvest?.generatedAt,
+    recommendation,
+    rows: spxRows,
+  });
+
+  const controllingMap =
+    mapManager.state?.phase === "ACTIVE"
+      ? mapManager.state.active
+      : mapManager.state?.opening;
+
   const analytics = useMemo(() => {
     const ema9 = calculateEma(candles, 9);
     const ema20 = calculateEma(candles, 20);
@@ -460,18 +472,6 @@ export default function SpxCommandChart() {
       position: null,
     });
   }, [harvest?.generatedAt, premiumHistory, recommendation, spxRows]);
-
-  const mapManager = useSessionMapManager({
-    tradeDate: harvest?.tradeDate,
-    generatedAt: harvest?.generatedAt,
-    recommendation,
-    rows: spxRows,
-  });
-
-  const controllingMap =
-    mapManager.state?.phase === "ACTIVE"
-      ? mapManager.state.active
-      : mapManager.state?.opening;
 
   return (
     <section style={styles.shell}>

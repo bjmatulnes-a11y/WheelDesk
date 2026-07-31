@@ -258,7 +258,7 @@ export function updateSessionMapManager(
     const event: MapTransitionEvent = {
       timestamp: live.capturedAt,
       from: previous.phase,
-      to: "ACTIVE",
+      to: "ACTIVE" as SessionMapState,
       reason: reasons.join(" "),
       center: live.center,
       lowerWing: live.lowerWing,
@@ -291,12 +291,12 @@ export function updateSessionMapManager(
             {
               timestamp: live.capturedAt,
               from: previous.phase,
-              to: "TRANSITION",
+              to: "TRANSITION" as SessionMapState,
               reason: reasons.join(" "),
               center: live.center,
               lowerWing: live.lowerWing,
               upperWing: live.upperWing,
-            },
+            } satisfies MapTransitionEvent,
           ].slice(-40)
         : previous.events,
     };
