@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { exchangeSchwabCode } from "../../../../../lib/schwab/client";
+import { verifySchwabOAuthState } from "../../../../../lib/schwab/oauth-state";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -7,36 +8,44 @@ export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
   const code = request.nextUrl.searchParams.get("code");
   const returnedState = request.nextUrl.searchParams.get("state");
-  const storedState = request.cookies.get("schwab_oauth_state")?.value;
   const oauthError = request.nextUrl.searchParams.get("error");
+  const oauthErrorDescription = request.nextUrl.searchParams.get("error_description");
 
   if (oauthError) {
     return NextResponse.json(
-      { ok: false, error: `Schwab authorization failed: ${oauthError}` },
+      {
+        ok: false,
+        error: `Schwab authorization failed: ${oauthError}${
+          oauthErrorDescription ? ` — ${oauthErrorDescription}` : ""
+        }`,
+      },
       { status: 400 },
     );
   }
 
-  if (!code || !returnedState || !storedState || returnedState !== storedState) {
+  if (!code) {
     return NextResponse.json(
-      { ok: false, error: "Invalid or expired Schwab OAuth callback state." },
+      { ok: false, error: "Schwab callback did not include an authorization code." },
+      { status: 400 },
+    );
+  }
+
+  if (!verifySchwabOAuthState(returnedState)) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "Invalid or expired Schwab OAuth callback state. Start again from /api/brokers/schwab/connect.",
+      },
       { status: 400 },
     );
   }
 
   try {
     await exchangeSchwabCode(code);
-    const response = NextResponse.redirect(
-      new URL("/zero-dte?schwab=connected", request.url),
-    );
-    response.cookies.delete("schwab_oauth_state");
-    return response;
+    return NextResponse.redirect(new URL("/zero-dte?schwab=connected", request.url));
   } catch (error) {
     return NextResponse.json(
-      {
-        ok: false,
-        error: error instanceof Error ? error.message : String(error),
-      },
+      { ok: false, error: error instanceof Error ? error.message : String(error) },
       { status: 500 },
     );
   }
