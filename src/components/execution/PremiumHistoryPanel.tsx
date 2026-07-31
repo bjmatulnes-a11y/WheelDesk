@@ -8,7 +8,7 @@ import {
   type ISeriesApi,
   type UTCTimestamp,
 } from "lightweight-charts";
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { ExecutionRead, PremiumPoint } from "../../lib/execution/types";
 
 export function PremiumHistoryPanel({
@@ -22,6 +22,28 @@ export function PremiumHistoryPanel({
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Area"> | null>(null);
   const hasInitialFitRef = useRef(false);
+
+  const chartData = useMemo(() => {
+    const bySecond = new Map<number, number>();
+
+    for (const point of history) {
+      const timestampMs = Date.parse(point.timestamp);
+      if (!Number.isFinite(timestampMs) || !Number.isFinite(point.credit)) {
+        continue;
+      }
+
+      // Lightweight Charts requires strictly increasing, unique timestamps.
+      // Keep the newest premium value when multiple refreshes land in the same second.
+      bySecond.set(Math.floor(timestampMs / 1000), point.credit);
+    }
+
+    return [...bySecond.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([time, value]) => ({
+        time: time as UTCTimestamp,
+        value,
+      }));
+  }, [history]);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -67,17 +89,20 @@ export function PremiumHistoryPanel({
   }, []);
 
   useEffect(() => {
-    seriesRef.current?.setData(
-      history.map((point) => ({
-        time: Math.floor(Date.parse(point.timestamp) / 1000) as UTCTimestamp,
-        value: point.credit,
-      })),
-    );
-    if (!hasInitialFitRef.current && history.length) {
-      chartRef.current?.timeScale().fitContent();
-      hasInitialFitRef.current = true;
+    const series = seriesRef.current;
+    if (!series) return;
+
+    try {
+      series.setData(chartData);
+
+      if (!hasInitialFitRef.current && chartData.length) {
+        chartRef.current?.timeScale().fitContent();
+        hasInitialFitRef.current = true;
+      }
+    } catch (error) {
+      console.error("Premium history chart update failed", error, chartData);
     }
-  }, [history]);
+  }, [chartData]);
 
   return (
     <section style={styles.card}>

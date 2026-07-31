@@ -63,14 +63,16 @@ export function appendPremiumPoint(
       ? (credit - previous.credit) / elapsedMinutes
       : 0;
 
-  const next = [
-    ...history,
-    {
-      timestamp,
-      credit,
-      velocityPerMinute,
-    },
-  ];
+  const nextPoint = {
+    timestamp,
+    credit,
+    velocityPerMinute,
+  };
+
+  const next =
+    previous?.timestamp === timestamp
+      ? [...history.slice(0, -1), nextPoint]
+      : [...history, nextPoint];
 
   return next.slice(-360);
 }
