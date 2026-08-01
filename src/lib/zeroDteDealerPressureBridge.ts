@@ -3,11 +3,13 @@ import {
   type DealerPressureSummary,
 } from "./dealer-pressure-engine";
 import type { ZeroDteChainRow } from "./zeroDteOiIntelligence";
+import { buildZeroDteFlowState, type ZeroDteFlowStateRead } from "./zeroDteFlowState";
 
 export type ZeroDteDealerPressureRead = {
   source: "dealer-pressure-engine" | "local-fallback";
   signedPressure: number;
   summary: DealerPressureSummary | null;
+  flowState: ZeroDteFlowStateRead | null;
   notes: string[];
 };
 
@@ -36,18 +38,24 @@ export function buildZeroDteDealerPressureRead(
         source: "local-fallback",
         signedPressure: 0,
         summary: null,
+        flowState: null,
         notes: ["dealer-pressure-engine returned no summary for the 0DTE surface."],
       };
     }
 
+    const signedPressure = dealerSummaryToSignedPressure(summary);
+    const flowState = buildZeroDteFlowState({ summary, signedPressure });
+
     return {
       source: "dealer-pressure-engine",
-      signedPressure: dealerSummaryToSignedPressure(summary),
+      signedPressure,
       summary,
+      flowState,
       notes: [
         `Dealer engine regime: ${summary.regime}.`,
         `Hedge-flow bias: ${summary.hedgeFlowBias}.`,
         `Pin risk ${Math.round(summary.pinRiskScore)} / snap risk ${Math.round(summary.snapRiskScore)} / confidence ${Math.round(summary.confidenceScore)}.`,
+        `Flow state: ${flowState.label}; hose ${flowState.hoseScore}, viscosity ${flowState.viscosityScore}, release risk ${flowState.releaseRiskScore}.`,
       ],
     };
   } catch (error) {
@@ -55,6 +63,7 @@ export function buildZeroDteDealerPressureRead(
       source: "local-fallback",
       signedPressure: 0,
       summary: null,
+      flowState: null,
       notes: [
         `dealer-pressure-engine adapter failed: ${error instanceof Error ? error.message : "unknown error"}.`,
       ],

@@ -21,6 +21,7 @@ import { buildExecutionRead } from "../lib/execution/engine";
 import { appendPremiumPoint, estimateIronFlyCredit } from "../lib/execution/premium";
 import { loadPremiumHistory, savePremiumHistory } from "../lib/execution/storage";
 import type { ExecutionRead, PremiumPoint } from "../lib/execution/types";
+import { buildZeroDteLeastResistancePath } from "../lib/zeroDteLeastResistancePath";
 
 type Candle = {
   time: number;
@@ -71,6 +72,7 @@ type OverlayKey =
   | "center"
   | "expectedMove"
   | "forecast"
+  | "leastResistance"
   | "heatmap";
 
 const DEFAULT_OVERLAYS: Record<OverlayKey, boolean> = {
@@ -82,7 +84,8 @@ const DEFAULT_OVERLAYS: Record<OverlayKey, boolean> = {
   pin: true,
   center: true,
   expectedMove: true,
-  forecast: true,
+  forecast: false,
+  leastResistance: true,
   heatmap: true,
 };
 
@@ -95,7 +98,8 @@ const OVERLAY_LABELS: Array<[OverlayKey, string]> = [
   ["pin", "Pin"],
   ["center", "IF Center"],
   ["expectedMove", "Expected Move"],
-  ["forecast", "Forecast Band"],
+  ["forecast", "Legacy Forecast Band"],
+  ["leastResistance", "Least Resistance Path"],
   ["heatmap", "OI Heatmap"],
 ];
 
@@ -151,6 +155,15 @@ export default function SpxCommandChart() {
       .slice(0, 14)
       .sort((a, b) => b.strike - a.strike);
   }, [recommendation]);
+
+  const leastResistancePath = useMemo(() => {
+    if (!recommendation || !lastCandle) return null;
+    return buildZeroDteLeastResistancePath({
+      recommendation,
+      lastCandleTime: lastCandle.time,
+      candleFrequencyMinutes: frequency,
+    });
+  }, [frequency, lastCandle, recommendation]);
 
   const commandRead = useMemo(() => {
     if (!recommendation) return null;
@@ -402,6 +415,27 @@ export default function SpxCommandChart() {
         horizontal(lower, "#20c997", 1, LineStyle.Dotted);
       }
 
+      if (overlays.leastResistance && leastResistancePath) {
+        addLine(
+          leastResistancePath.points.map((point) => ({ time: point.time, value: point.crest })),
+          "rgba(32,201,151,.72)",
+          1,
+          LineStyle.Dotted,
+        );
+        addLine(
+          leastResistancePath.points.map((point) => ({ time: point.time, value: point.center })),
+          "#20c997",
+          3,
+          LineStyle.Solid,
+        );
+        addLine(
+          leastResistancePath.points.map((point) => ({ time: point.time, value: point.trough })),
+          "rgba(32,201,151,.72)",
+          1,
+          LineStyle.Dotted,
+        );
+      }
+
       if (mapManager.state) {
         const opening = mapManager.state.opening;
         horizontal(opening.center, "rgba(255,212,0,.42)", 1, LineStyle.Dashed);
@@ -426,7 +460,7 @@ export default function SpxCommandChart() {
       chart.timeScale().fitContent();
       hasInitialFitRef.current = true;
     }
-  }, [analytics, candles, mapManager.state, overlays, recommendation]);
+  }, [analytics, candles, leastResistancePath, mapManager.state, overlays, recommendation]);
 
   function toggleOverlay(key: OverlayKey) {
     setOverlays((current) => ({ ...current, [key]: !current[key] }));
@@ -555,6 +589,10 @@ export default function SpxCommandChart() {
           label="Expected Move"
           value={recommendation?.expectedMove?.toFixed(1) ?? "—"}
         />
+        <MetricCard
+          label="Path Bias"
+          value={leastResistancePath ? `${leastResistancePath.direction} · ${leastResistancePath.confidence}%` : "—"}
+        />
       </div>
 
       <div style={styles.overlayBar}>
@@ -583,7 +621,7 @@ export default function SpxCommandChart() {
             <LegendItem color="#2f80ed" text="Put Wall" />
             <LegendItem color="#f4f7fb" text="Pin" />
             <LegendItem color="#ffd400" text="IF Center" />
-            <LegendItem color="#20c997" text="Forecast" />
+            <LegendItem color="#20c997" text="Least-resistance center / crest / trough" />
           </div>
         </div>
 
