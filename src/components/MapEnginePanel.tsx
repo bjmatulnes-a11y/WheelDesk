@@ -84,6 +84,12 @@ export function MapEnginePanel({
         <StructureRankings map={controlling} />
       </div>
 
+      <StructureEvolution
+        opening={state.opening}
+        current={state.latest ?? controlling}
+        previous={state.previousLive}
+      />
+
       <div style={styles.reasonGrid}>
         <div style={styles.reasonCard}>
           <div style={styles.sectionTitle}>Current Read</div>
@@ -135,6 +141,187 @@ export function MapEnginePanel({
       ) : null}
     </section>
   );
+}
+
+
+type EvolutionStatus = "HOLDING" | "MIGRATING" | "STRENGTHENING" | "WEAKENING" | "BUILDING";
+
+function StructureEvolution({
+  opening,
+  current,
+  previous,
+}: {
+  opening: MarketMapSnapshot;
+  current: MarketMapSnapshot;
+  previous: MarketMapSnapshot | null;
+}) {
+  const openingStructure = opening.structure;
+  const currentStructure = current.structure;
+  const previousStructure = previous?.structure;
+
+  if (!openingStructure || !currentStructure) {
+    return (
+      <div style={styles.evolutionCard}>
+        <div style={styles.sectionTitle}>Structure Evolution</div>
+        <div style={styles.proxyNote}>
+          Structure evolution is rebuilding from the current Schwab chain.
+        </div>
+      </div>
+    );
+  }
+
+  const rows = currentStructure.levels.map((level) => {
+    const openLevel = openingStructure.levels.find(
+      (item) => item.key === level.key,
+    );
+    const previousLevel = previousStructure?.levels.find(
+      (item) => item.key === level.key,
+    );
+
+    const shift =
+      level.value == null || openLevel?.value == null
+        ? null
+        : level.value - openLevel.value;
+
+    const recentMove =
+      level.value == null || previousLevel?.value == null
+        ? null
+        : level.value - previousLevel.value;
+
+    const strengthDelta =
+      openLevel == null ? null : level.strength - openLevel.strength;
+
+    const status = classifyEvolution({
+      shift,
+      recentMove,
+      strengthDelta,
+      confidence: level.confidence,
+    });
+
+    return {
+      ...level,
+      shift,
+      recentMove,
+      strengthDelta,
+      status,
+    };
+  });
+
+  return (
+    <div style={styles.evolutionCard}>
+      <div style={styles.evolutionHeader}>
+        <div>
+          <div style={styles.sectionTitle}>Structure Evolution</div>
+          <div style={styles.proxyNote}>
+            Open, current, movement, strength and confidence for every structural object.
+          </div>
+        </div>
+        <div style={styles.evolutionSummary}>
+          <span>Dominant</span>
+          <strong>
+            {currentStructure.dominantLevel
+              ? `${labelKey(currentStructure.dominantLevel)} · ${
+                  currentStructure.dominantLevelValue?.toFixed(0) ?? "—"
+                }`
+              : "BUILDING"}
+          </strong>
+        </div>
+      </div>
+
+      <div style={styles.evolutionTable}>
+        <div style={styles.evolutionTableHeader}>
+          <span>Level</span>
+          <span>Open</span>
+          <span>Now</span>
+          <span>Move</span>
+          <span>Recent</span>
+          <span>Strength</span>
+          <span>Confidence</span>
+          <span>Status</span>
+        </div>
+
+        {rows.map((row) => (
+          <div key={row.key} style={styles.evolutionRow}>
+            <strong>{row.label}</strong>
+            <span>{formatLevel(row.value == null ? null : openingStructure.levels.find((item) => item.key === row.key)?.value ?? null)}</span>
+            <span>{formatLevel(row.value)}</span>
+            <span style={movementTone(row.shift)}>
+              {formatSigned(row.shift)}
+            </span>
+            <span style={movementTone(row.recentMove)}>
+              {formatSigned(row.recentMove)}
+            </span>
+            <span>
+              {row.strength}%{" "}
+              <em style={movementTone(row.strengthDelta)}>
+                {formatSigned(row.strengthDelta)}
+              </em>
+            </span>
+            <span>{row.confidence}%</span>
+            <span style={statusTone(row.status)}>{row.status}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function classifyEvolution(args: {
+  shift: number | null;
+  recentMove: number | null;
+  strengthDelta: number | null;
+  confidence: number;
+}): EvolutionStatus {
+  const { shift, recentMove, strengthDelta, confidence } = args;
+
+  if (confidence < 25) return "BUILDING";
+  if (strengthDelta != null && strengthDelta >= 8) return "STRENGTHENING";
+  if (strengthDelta != null && strengthDelta <= -8) return "WEAKENING";
+  if (
+    (shift != null && Math.abs(shift) >= 10) ||
+    (recentMove != null && Math.abs(recentMove) >= 5)
+  ) {
+    return "MIGRATING";
+  }
+  return "HOLDING";
+}
+
+function formatLevel(value: number | null) {
+  return value == null ? "—" : value.toFixed(0);
+}
+
+function formatSigned(value: number | null) {
+  if (value == null) return "—";
+  if (Math.abs(value) < 0.01) return "0";
+  return `${value > 0 ? "↑ +" : "↓ "}${Math.abs(value).toFixed(0)}`;
+}
+
+function movementTone(value: number | null): React.CSSProperties {
+  return {
+    color:
+      value == null || Math.abs(value) < 0.01
+        ? "#71879b"
+        : value > 0
+          ? "#71e0b4"
+          : "#ff8a93",
+    fontStyle: "normal",
+  };
+}
+
+function statusTone(status: EvolutionStatus): React.CSSProperties {
+  return {
+    color:
+      status === "STRENGTHENING"
+        ? "#71e0b4"
+        : status === "WEAKENING"
+          ? "#ff8a93"
+          : status === "MIGRATING"
+            ? "#f5c542"
+            : status === "HOLDING"
+              ? "#78dcff"
+              : "#71879b",
+    fontWeight: 850,
+  };
 }
 
 function StructureColumn({
@@ -481,5 +668,52 @@ const styles: Record<string, React.CSSProperties> = {
   rankingTitle: { color: "#6f8599", fontSize: 8, textTransform: "uppercase", letterSpacing: .7, marginTop: 10 },
   rankRow: { display: "flex", justifyContent: "space-between", gap: 8, borderTop: "1px solid #173047", padding: "6px 0", color: "#8da0b1", fontSize: 9 },
   proxyNote: { color: "#60778c", fontSize: 8, lineHeight: 1.4, marginTop: 10 },
+
+  evolutionCard: {
+    marginTop: 12,
+    background: "#0a1823",
+    border: "1px solid #183247",
+    borderRadius: 10,
+    padding: 10,
+  },
+  evolutionHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    flexWrap: "wrap",
+  },
+  evolutionSummary: {
+    display: "grid",
+    gap: 2,
+    minWidth: 160,
+    color: "#6f8599",
+    fontSize: 8,
+  },
+  evolutionTable: {
+    marginTop: 10,
+    overflowX: "auto",
+  },
+  evolutionTableHeader: {
+    display: "grid",
+    gridTemplateColumns: "minmax(135px,1.4fr) repeat(7,minmax(72px,1fr))",
+    gap: 8,
+    minWidth: 820,
+    color: "#60778c",
+    fontSize: 8,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    padding: "0 6px 6px",
+  },
+  evolutionRow: {
+    display: "grid",
+    gridTemplateColumns: "minmax(135px,1.4fr) repeat(7,minmax(72px,1fr))",
+    gap: 8,
+    minWidth: 820,
+    borderTop: "1px solid #173047",
+    padding: "7px 6px",
+    color: "#91a4b5",
+    fontSize: 9,
+    alignItems: "center",
+  },
 
 };

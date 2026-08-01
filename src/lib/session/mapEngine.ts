@@ -50,6 +50,8 @@ export type SessionMapManagerState = {
   opening: MarketMapSnapshot;
   candidate: MarketMapSnapshot | null;
   active: MarketMapSnapshot;
+  latest: MarketMapSnapshot;
+  previousLive: MarketMapSnapshot | null;
   confirmationCount: number;
   confirmationRequired: number;
   railBreached: "UPPER" | "LOWER" | "NONE";
@@ -83,7 +85,7 @@ export type ExistingOpenMapLike = Partial<{
   pinScore: number;
 }>;
 
-const key = (tradeDate: string) => `wheeldesk:session-map-manager:v2:${tradeDate}`;
+const key = (tradeDate: string) => `wheeldesk:session-map-manager:v3:${tradeDate}`;
 const legacyKeys = (tradeDate: string) => [
   `wheeldesk:open-map:${tradeDate}`,
   `wheeldesk:opening-map:${tradeDate}`,
@@ -148,6 +150,8 @@ export function initializeSessionMapManager(
     opening,
     candidate: null,
     active: opening,
+    latest: live,
+    previousLive: null,
     confirmationCount: 0,
     confirmationRequired: 5,
     railBreached: "NONE",
@@ -220,6 +224,8 @@ export function updateSessionMapManager(
 
   let next: SessionMapManagerState = {
     ...previous,
+    previousLive: previous.latest ?? null,
+    latest: live,
     railBreached,
     outsideMinutes:
       railBreached === "NONE"
@@ -337,6 +343,10 @@ function hydrateStoredSessionMapManager(
     ...stored,
     opening,
     active,
+    latest: hydrateSnapshot(stored.latest, live),
+    previousLive: stored.previousLive
+      ? hydrateSnapshot(stored.previousLive, live)
+      : null,
     candidate,
     reasons: Array.isArray(stored.reasons) ? stored.reasons : [],
     events: Array.isArray(stored.events) ? stored.events : [],
