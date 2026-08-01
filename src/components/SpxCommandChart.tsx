@@ -95,8 +95,8 @@ type OverlayKey =
 
 const DEFAULT_OVERLAYS: Record<OverlayKey, boolean> = {
   vwap: true,
-  ema9: true,
-  ema20: true,
+  ema9: false,
+  ema20: false,
   ema50: false,
   walls: true,
   pin: true,
