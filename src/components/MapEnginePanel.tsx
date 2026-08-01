@@ -1,6 +1,6 @@
 "use client";
 
-import type { SessionMapManagerState } from "../lib/session/mapEngine";
+import type { MarketMapSnapshot, SessionMapManagerState } from "../lib/session/mapEngine";
 
 export function MapEnginePanel({
   state,
@@ -69,6 +69,21 @@ export function MapEnginePanel({
         <MapColumn title="Candidate Map" map={candidate} candidate />
       </div>
 
+      <div style={styles.structureGrid}>
+        <StructureColumn
+          title="Opening Structure"
+          map={state.opening}
+          compareTo={state.opening}
+          faded
+        />
+        <StructureColumn
+          title={state.phase === "ACTIVE" ? "Active Structure" : "Controlling Structure"}
+          map={controlling}
+          compareTo={state.opening}
+        />
+        <StructureRankings map={controlling} />
+      </div>
+
       <div style={styles.reasonGrid}>
         <div style={styles.reasonCard}>
           <div style={styles.sectionTitle}>Current Read</div>
@@ -120,6 +135,86 @@ export function MapEnginePanel({
       ) : null}
     </section>
   );
+}
+
+function StructureColumn({
+  title,
+  map,
+  compareTo,
+  faded,
+}: {
+  title: string;
+  map: MarketMapSnapshot;
+  compareTo: MarketMapSnapshot;
+  faded?: boolean;
+}) {
+  const structure = map.structure;
+  return (
+    <div style={{ ...styles.mapColumn, opacity: faded ? 0.68 : 1 }}>
+      <div style={styles.sectionTitle}>{title}</div>
+      <StructureRow label="Gamma Flip" value={structure.gammaFlip} opening={compareTo.structure.gammaFlip} />
+      <StructureRow label="Zero Gamma" value={structure.zeroGamma} opening={compareTo.structure.zeroGamma} />
+      <StructureRow label="Dealer Neutral" value={structure.dealerNeutral} opening={compareTo.structure.dealerNeutral} />
+      <StructureRow label="Max Pain" value={structure.maxPain} opening={compareTo.structure.maxPain} />
+      <ScoreRow label="Call Wall Strength" value={structure.callWallStrength} />
+      <ScoreRow label="Put Wall Strength" value={structure.putWallStrength} />
+      <ScoreRow label="Pin Probability" value={structure.pinProbability} />
+      <ScoreRow label="Structure Confidence" value={structure.structuralConfidence} />
+    </div>
+  );
+}
+
+function StructureRankings({ map }: { map: MarketMapSnapshot }) {
+  const structure = map.structure;
+  return (
+    <div style={styles.mapColumn}>
+      <div style={styles.sectionTitle}>Dominant Structure</div>
+      <div style={styles.dominantValue}>
+        {structure.dominantLevel
+          ? `${labelKey(structure.dominantLevel)} · ${structure.dominantLevelValue?.toFixed(0) ?? "—"}`
+          : "BUILDING"}
+      </div>
+      <div style={styles.rankingTitle}>Support ranking</div>
+      {structure.supportRanking.slice(0, 3).map((level, index) => (
+        <RankRow key={level.key} index={index + 1} level={level.label} value={level.value} confidence={level.confidence} />
+      ))}
+      <div style={styles.rankingTitle}>Resistance ranking</div>
+      {structure.resistanceRanking.slice(0, 3).map((level, index) => (
+        <RankRow key={level.key} index={index + 1} level={level.label} value={level.value} confidence={level.confidence} />
+      ))}
+      <div style={styles.proxyNote}>Gamma/neutral levels are WheelDesk model proxies, not exchange-published dealer positions.</div>
+    </div>
+  );
+}
+
+function StructureRow({ label, value, opening }: { label: string; value: number | null; opening: number | null }) {
+  const shift = value == null || opening == null ? null : value - opening;
+  return (
+    <div style={styles.row}>
+      <span>{label}</span>
+      <strong>
+        {value == null ? "—" : value.toFixed(0)}
+        {shift != null && shift !== 0 ? <em style={styles.shift}> {shift > 0 ? "↑" : "↓"}{Math.abs(shift).toFixed(0)}</em> : null}
+      </strong>
+    </div>
+  );
+}
+
+function ScoreRow({ label, value }: { label: string; value: number }) {
+  return (
+    <div style={styles.scoreBlock}>
+      <div style={styles.scoreHeader}><span>{label}</span><strong>{value}%</strong></div>
+      <div style={styles.scoreTrack}><div style={{ ...styles.scoreFill, width: `${value}%` }} /></div>
+    </div>
+  );
+}
+
+function RankRow({ index, level, value, confidence }: { index: number; level: string; value: number | null; confidence: number }) {
+  return <div style={styles.rankRow}><span>{index}. {level}</span><strong>{value?.toFixed(0) ?? "—"} · {confidence}%</strong></div>;
+}
+
+function labelKey(value: string) {
+  return value.replace(/([A-Z])/g, " $1").replace(/^./, (letter) => letter.toUpperCase());
 }
 
 function MapColumn({
@@ -347,5 +442,20 @@ const styles: Record<string, React.CSSProperties> = {
     borderTop: "1px solid #142a3b",
     color: "#748a9e",
     fontSize: 9,
+  },  structureGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))",
+    gap: 10,
+    marginTop: 12,
   },
+  scoreBlock: { display: "grid", gap: 4, padding: "7px 0", borderTop: "1px solid #173047" },
+  scoreHeader: { display: "flex", justifyContent: "space-between", color: "#71879b", fontSize: 9 },
+  scoreTrack: { height: 7, borderRadius: 99, background: "#12283a", overflow: "hidden" },
+  scoreFill: { height: "100%", borderRadius: 99, background: "linear-gradient(90deg,#1c739c,#20c997)" },
+  shift: { color: "#55d6ff", fontStyle: "normal", fontSize: 8 },
+  dominantValue: { fontSize: 16, fontWeight: 900, color: "#edf5fb", margin: "8px 0 12px" },
+  rankingTitle: { color: "#6f8599", fontSize: 8, textTransform: "uppercase", letterSpacing: .7, marginTop: 10 },
+  rankRow: { display: "flex", justifyContent: "space-between", gap: 8, borderTop: "1px solid #173047", padding: "6px 0", color: "#8da0b1", fontSize: 9 },
+  proxyNote: { color: "#60778c", fontSize: 8, lineHeight: 1.4, marginTop: 10 },
+
 };

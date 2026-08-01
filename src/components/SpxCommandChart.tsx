@@ -73,6 +73,7 @@ type OverlayKey =
   | "expectedMove"
   | "forecast"
   | "leastResistance"
+  | "structure"
   | "heatmap";
 
 const DEFAULT_OVERLAYS: Record<OverlayKey, boolean> = {
@@ -86,6 +87,7 @@ const DEFAULT_OVERLAYS: Record<OverlayKey, boolean> = {
   expectedMove: true,
   forecast: false,
   leastResistance: true,
+  structure: true,
   heatmap: true,
 };
 
@@ -100,6 +102,7 @@ const OVERLAY_LABELS: Array<[OverlayKey, string]> = [
   ["expectedMove", "Expected Move"],
   ["forecast", "Legacy Forecast Band"],
   ["leastResistance", "Least Resistance Path"],
+  ["structure", "Structure Levels"],
   ["heatmap", "OI Heatmap"],
 ];
 
@@ -452,6 +455,19 @@ export default function SpxCommandChart() {
           horizontal(mapManager.state.active.center, "#71e0b4", 3);
           horizontal(mapManager.state.active.lowerWing, "#2f9a78", 1);
           horizontal(mapManager.state.active.upperWing, "#2f9a78", 1);
+        }
+
+        if (overlays.structure) {
+          const structure =
+            mapManager.state.phase === "ACTIVE"
+              ? mapManager.state.active.structure
+              : mapManager.state.phase === "TRANSITION" && mapManager.state.candidate
+                ? mapManager.state.candidate.structure
+                : mapManager.state.opening.structure;
+          horizontal(structure.gammaFlip, "#ff5fa2", 2, LineStyle.Dashed);
+          horizontal(structure.zeroGamma, "#bc7cff", 1, LineStyle.Dotted);
+          horizontal(structure.dealerNeutral, "#55d6ff", 2, LineStyle.Dashed);
+          horizontal(structure.maxPain, "#d8e2eb", 1, LineStyle.Dotted);
         }
       }
     }

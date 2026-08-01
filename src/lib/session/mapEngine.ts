@@ -1,4 +1,5 @@
 import type { ZeroDteChainRow, ZeroDteRecommendation } from "../zeroDteOiIntelligence";
+import { buildMarketStructureRead, type MarketStructureRead } from "./marketStructureEngine";
 
 export type SessionMapState = "OPENING" | "TRANSITION" | "ACTIVE";
 
@@ -29,6 +30,7 @@ export type MarketMapSnapshot = {
   dealerPressure: number;
   spxPressure: number;
   spyPressure: number;
+  structure: MarketStructureRead;
   strikes: Record<string, StrikeBaseline>;
 };
 
@@ -77,6 +79,8 @@ export type ExistingOpenMapLike = Partial<{
   spxDealerPressure: number;
   spyDealerPressure: number;
   rows: ZeroDteChainRow[];
+  gravity: number;
+  pinScore: number;
 }>;
 
 const key = (tradeDate: string) => `wheeldesk:session-map-manager:${tradeDate}`;
@@ -84,6 +88,7 @@ const legacyKeys = (tradeDate: string) => [
   `wheeldesk:open-map:${tradeDate}`,
   `wheeldesk:opening-map:${tradeDate}`,
   `wheeldesk:zero-dte:open-map:${tradeDate}`,
+  `wheeldesk_zero_dte_opening_map_v1_${tradeDate}`,
 ];
 
 export function buildLiveMapSnapshot(args: {
@@ -110,6 +115,14 @@ export function buildLiveMapSnapshot(args: {
     dealerPressure: recommendation.dealerPressure,
     spxPressure: recommendation.spxDealerPressure,
     spyPressure: recommendation.spyDealerPressure,
+    structure: buildMarketStructureRead({
+      spot: recommendation.spxPrice,
+      rows,
+      callWall: recommendation.spx.callWall,
+      putWall: recommendation.spx.putWall,
+      pin: recommendation.spx.strongestPin,
+      expectedMove: recommendation.expectedMove,
+    }),
     strikes: buildStrikeBaseline(rows),
   };
 }
@@ -372,6 +385,7 @@ function normalizeExistingOpenMap(
     dealerPressure: number(raw.dealerPressure, fallback.dealerPressure),
     spxPressure: number(raw.spxDealerPressure, fallback.spxPressure),
     spyPressure: number(raw.spyDealerPressure, fallback.spyPressure),
+    structure: fallback.structure,
     strikes:
       raw.rows?.length
         ? buildStrikeBaseline(raw.rows)
