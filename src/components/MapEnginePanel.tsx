@@ -149,13 +149,26 @@ function StructureColumn({
   faded?: boolean;
 }) {
   const structure = map.structure;
+  if (!structure) {
+    return (
+      <div style={{ ...styles.mapColumn, opacity: faded ? 0.68 : 1 }}>
+        <div style={styles.sectionTitle}>{title}</div>
+        <div style={styles.proxyNote}>
+          Structure is rebuilding from the current Schwab chain.
+        </div>
+      </div>
+    );
+  }
+
+  const openingStructure = compareTo.structure ?? structure;
+
   return (
     <div style={{ ...styles.mapColumn, opacity: faded ? 0.68 : 1 }}>
       <div style={styles.sectionTitle}>{title}</div>
-      <StructureRow label="Gamma Flip" value={structure.gammaFlip} opening={compareTo.structure.gammaFlip} />
-      <StructureRow label="Zero Gamma" value={structure.zeroGamma} opening={compareTo.structure.zeroGamma} />
-      <StructureRow label="Dealer Neutral" value={structure.dealerNeutral} opening={compareTo.structure.dealerNeutral} />
-      <StructureRow label="Max Pain" value={structure.maxPain} opening={compareTo.structure.maxPain} />
+      <StructureRow label="Gamma Flip" value={structure.gammaFlip} opening={openingStructure.gammaFlip} />
+      <StructureRow label="Zero Gamma" value={structure.zeroGamma} opening={openingStructure.zeroGamma} />
+      <StructureRow label="Dealer Neutral" value={structure.dealerNeutral} opening={openingStructure.dealerNeutral} />
+      <StructureRow label="Max Pain" value={structure.maxPain} opening={openingStructure.maxPain} />
       <ScoreRow label="Call Wall Strength" value={structure.callWallStrength} />
       <ScoreRow label="Put Wall Strength" value={structure.putWallStrength} />
       <ScoreRow label="Pin Probability" value={structure.pinProbability} />
@@ -166,6 +179,17 @@ function StructureColumn({
 
 function StructureRankings({ map }: { map: MarketMapSnapshot }) {
   const structure = map.structure;
+  if (!structure) {
+    return (
+      <div style={styles.mapColumn}>
+        <div style={styles.sectionTitle}>Dominant Structure</div>
+        <div style={styles.proxyNote}>
+          Structure is rebuilding from the current Schwab chain.
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={styles.mapColumn}>
       <div style={styles.sectionTitle}>Dominant Structure</div>

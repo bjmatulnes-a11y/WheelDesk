@@ -459,15 +459,18 @@ export default function SpxCommandChart() {
 
         if (overlays.structure) {
           const structure =
-            mapManager.state.phase === "ACTIVE"
-              ? mapManager.state.active.structure
+            (mapManager.state.phase === "ACTIVE"
+              ? mapManager.state.active?.structure
               : mapManager.state.phase === "TRANSITION" && mapManager.state.candidate
                 ? mapManager.state.candidate.structure
-                : mapManager.state.opening.structure;
-          horizontal(structure.gammaFlip, "#ff5fa2", 2, LineStyle.Dashed);
-          horizontal(structure.zeroGamma, "#bc7cff", 1, LineStyle.Dotted);
-          horizontal(structure.dealerNeutral, "#55d6ff", 2, LineStyle.Dashed);
-          horizontal(structure.maxPain, "#d8e2eb", 1, LineStyle.Dotted);
+                : mapManager.state.opening?.structure) ?? null;
+
+          if (structure) {
+            horizontal(structure.gammaFlip, "#ff5fa2", 2, LineStyle.Dashed);
+            horizontal(structure.zeroGamma, "#bc7cff", 1, LineStyle.Dotted);
+            horizontal(structure.dealerNeutral, "#55d6ff", 2, LineStyle.Dashed);
+            horizontal(structure.maxPain, "#d8e2eb", 1, LineStyle.Dotted);
+          }
         }
       }
     }

@@ -131,7 +131,11 @@ export function initializeSessionMapManager(
   live: MarketMapSnapshot,
 ): SessionMapManagerState {
   const stored = loadSessionMapManager(live.tradeDate);
-  if (stored) return stored;
+  if (stored) {
+    const hydrated = hydrateStoredSessionMapManager(stored, live);
+    saveSessionMapManager(hydrated);
+    return hydrated;
+  }
 
   const existingOpenMap = loadExistingOpenMap(live.tradeDate);
   const opening = existingOpenMap
@@ -317,6 +321,43 @@ export function updateSessionMapManager(
 
   saveSessionMapManager(next);
   return next;
+}
+
+function hydrateStoredSessionMapManager(
+  stored: SessionMapManagerState,
+  live: MarketMapSnapshot,
+): SessionMapManagerState {
+  const opening = hydrateSnapshot(stored.opening, live);
+  const active = hydrateSnapshot(stored.active, opening);
+  const candidate = stored.candidate
+    ? hydrateSnapshot(stored.candidate, live)
+    : null;
+
+  return {
+    ...stored,
+    opening,
+    active,
+    candidate,
+    reasons: Array.isArray(stored.reasons) ? stored.reasons : [],
+    events: Array.isArray(stored.events) ? stored.events : [],
+  };
+}
+
+function hydrateSnapshot(
+  snapshot: MarketMapSnapshot | null | undefined,
+  fallback: MarketMapSnapshot,
+): MarketMapSnapshot {
+  if (!snapshot) return fallback;
+
+  return {
+    ...fallback,
+    ...snapshot,
+    structure: snapshot.structure ?? fallback.structure,
+    strikes:
+      snapshot.strikes && Object.keys(snapshot.strikes).length
+        ? snapshot.strikes
+        : fallback.strikes,
+  };
 }
 
 export function loadSessionMapManager(
