@@ -161,6 +161,7 @@ export function buildZeroDteExecutionRead(args: {
   tradeSelection: ZeroDteTradeSelection;
   mapState: SessionMapManagerState;
   memory: ZeroDteExecutionMemory;
+  candidateOverride?: ExecutionCandidate | null;
 }): ZeroDteExecutionRead {
   const {
     tradeDate,
@@ -174,7 +175,10 @@ export function buildZeroDteExecutionRead(args: {
   } = args;
 
   const controlling = getControllingMarketMap(mapState);
-  const candidate = buildExecutionCandidate(tradeSelection, mapState);
+  const candidate =
+    args.candidateOverride === undefined
+      ? buildExecutionCandidate(tradeSelection, mapState)
+      : args.candidateOverride;
   const position = memory.position;
   const strategy = position?.strategy ?? candidate?.strategy ?? null;
   const setupKey = position?.setupKey ?? candidate?.setupKey ?? null;
@@ -396,8 +400,10 @@ export function sampleFromRead(
 export function buildExecutionCandidate(
   selection: ZeroDteTradeSelection,
   mapState: SessionMapManagerState,
+  strategyOverride?: ExecutionStrategy | null,
 ): ExecutionCandidate | null {
-  const strategy = normalizeExecutionStrategy(selection.tradeType);
+  const strategy =
+    strategyOverride ?? normalizeExecutionStrategy(selection.tradeType);
   if (!strategy) return null;
 
   const ranking = findRanking(selection.strategyRankings, strategy);
@@ -406,23 +412,39 @@ export function buildExecutionCandidate(
   let estimatedCredit: number | null = ranking?.estimatedCredit ?? null;
   let maxRiskDollars: number | null = ranking?.maxRiskDollars ?? null;
 
-  if (strategy === "iron-fly" && selection.ironFly) {
-    legs = [
-      { optionType: "put", action: "buy", strike: selection.ironFly.lowerWing },
-      { optionType: "put", action: "sell", strike: selection.ironFly.center },
-      { optionType: "call", action: "sell", strike: selection.ironFly.center },
-      { optionType: "call", action: "buy", strike: selection.ironFly.upperWing },
-    ];
-    if (maxRiskDollars === null && estimatedCredit !== null) {
-      maxRiskDollars = Math.max(
-        0,
-        Math.max(
-          selection.ironFly.center - selection.ironFly.lowerWing,
-          selection.ironFly.upperWing - selection.ironFly.center,
-        ) *
-          100 -
-          estimatedCredit * 100,
-      );
+  if (strategy === "iron-fly") {
+    const ironFly =
+      selection.ironFly ??
+      (selection.mapContext
+        ? {
+            center: selection.mapContext.controllingCenter,
+            lowerWing: selection.mapContext.controllingLowerWing,
+            upperWing: selection.mapContext.controllingUpperWing,
+            wingWidth: Math.abs(
+              selection.mapContext.controllingUpperWing -
+                selection.mapContext.controllingCenter,
+            ),
+          }
+        : null);
+
+    if (ironFly) {
+      legs = [
+        { optionType: "put", action: "buy", strike: ironFly.lowerWing },
+        { optionType: "put", action: "sell", strike: ironFly.center },
+        { optionType: "call", action: "sell", strike: ironFly.center },
+        { optionType: "call", action: "buy", strike: ironFly.upperWing },
+      ];
+      if (maxRiskDollars === null && estimatedCredit !== null) {
+        maxRiskDollars = Math.max(
+          0,
+          Math.max(
+            ironFly.center - ironFly.lowerWing,
+            ironFly.upperWing - ironFly.center,
+          ) *
+            100 -
+            estimatedCredit * 100,
+        );
+      }
     }
   }
 
@@ -461,7 +483,7 @@ export function buildExecutionCandidate(
   return {
     strategy,
     label: ranking?.label ?? selection.label,
-    setupKey: makeSetupKey(strategy, legs),
+    setupKey: makeExecutionSetupKey(strategy, legs),
     score: ranking?.score ?? selection.confidence,
     eligible: ranking?.eligible ?? selection.tradeType !== "no-trade",
     legs,
@@ -838,7 +860,10 @@ function normalizeExecutionStrategy(
   return null;
 }
 
-function makeSetupKey(strategy: ExecutionStrategy, legs: ExecutionLeg[]) {
+export function makeExecutionSetupKey(
+  strategy: ExecutionStrategy,
+  legs: ExecutionLeg[],
+) {
   return `${strategy}:${legs
     .map((leg) => `${leg.action[0]}${leg.optionType[0]}${leg.strike.toFixed(2)}`)
     .join("-")}`;

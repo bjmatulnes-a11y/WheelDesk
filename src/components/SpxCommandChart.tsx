@@ -6,8 +6,11 @@ import {
   LineSeries,
   LineStyle,
   createChart,
+  createSeriesMarkers,
   type IChartApi,
   type ISeriesApi,
+  type ISeriesMarkersPluginApi,
+  type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -20,14 +23,19 @@ import { MapEnginePanel } from "./MapEnginePanel";
 import { useSessionMapManager } from "../lib/session/useSessionMapManager";
 import { getControllingMarketMap } from "../lib/session/mapEngine";
 import {
+  buildExecutionCandidate,
   buildZeroDteExecutionRead,
   emptyExecutionMemory,
   sampleFromRead,
+  type ExecutionCandidate,
+  type ExecutionStrategy,
   type ZeroDteExecutionMemory,
   type ZeroDteExecutionRead,
 } from "../lib/zeroDteExecutionIntelligence";
 import {
+  closeExecutionPositionDb,
   loadExecutionMemoryDb,
+  openExecutionPositionDb,
   persistExecutionSample,
 } from "../lib/zeroDteExecutionRepository";
 import { ZeroDteExecutionIntelligencePanel } from "./ZeroDteExecutionIntelligencePanel";
@@ -37,6 +45,11 @@ import { updateZeroDteStrikeFlow, type ZeroDteStrikeFlowRead } from "../lib/zero
 import { buildZeroDteTradeSelection, type ZeroDteTradeSelection } from "../lib/zeroDteTradeSelector";
 import { orchestrateZeroDteStrategySelection } from "../lib/zeroDteStrategyOrchestrator";
 import { ZeroDteTradeSelectionPanel } from "./ZeroDteTradeSelectionPanel";
+import { ExecutionTradeDock } from "./execution/ExecutionTradeDock";
+import {
+  useExecutionSignalPaint,
+  type ExecutionSignalPaintFilter,
+} from "../lib/execution/useExecutionSignalPaint";
 
 type Candle = {
   time: number;
@@ -128,7 +141,9 @@ export default function SpxCommandChart() {
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const lineSeriesRef = useRef<Array<ISeriesApi<"Line">>>([]);
+  const signalMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const hasInitialFitRef = useRef(false);
+  const strategyInitializedForDateRef = useRef<string | null>(null);
 
   const [candles, setCandles] = useState<Candle[]>([]);
   const [harvest, setHarvest] = useState<HarvestResponse | null>(null);
@@ -143,6 +158,11 @@ export default function SpxCommandChart() {
   const executionSampleKeyRef = useRef<string | null>(null);
   const [openingMap, setOpeningMap] = useState<ZeroDteOpeningMap | null>(null);
   const [strikeFlow, setStrikeFlow] = useState<ZeroDteStrikeFlowRead | null>(null);
+  const [selectedExecutionStrategy, setSelectedExecutionStrategy] =
+    useState<ExecutionStrategy>("iron-fly");
+  const [executionBusy, setExecutionBusy] = useState(false);
+  const [signalPaintFilter, setSignalPaintFilter] =
+    useState<ExecutionSignalPaintFilter>("all");
 
   const recommendation = harvest?.recommendation;
   const spxRows = harvest?.spx?.rows ?? [];
@@ -213,6 +233,47 @@ export default function SpxCommandChart() {
       strikeFlow,
     });
   }, [baseTradeSelection, mapManager.state, recommendation, spxRows, strikeFlow]);
+
+  const executionCandidates = useMemo<
+    Partial<Record<ExecutionStrategy, ExecutionCandidate | null>>
+  >(() => {
+    if (!mapAwareTradeSelection || !mapManager.state) return {};
+    return {
+      "iron-fly": buildExecutionCandidate(
+        mapAwareTradeSelection,
+        mapManager.state,
+        "iron-fly",
+      ),
+      "put-credit-spread": buildExecutionCandidate(
+        mapAwareTradeSelection,
+        mapManager.state,
+        "put-credit-spread",
+      ),
+      "call-credit-spread": buildExecutionCandidate(
+        mapAwareTradeSelection,
+        mapManager.state,
+        "call-credit-spread",
+      ),
+    };
+  }, [mapAwareTradeSelection, mapManager.state]);
+
+  const recommendedExecutionCandidate = useMemo(() => {
+    if (!mapAwareTradeSelection || !mapManager.state) return null;
+    return buildExecutionCandidate(mapAwareTradeSelection, mapManager.state);
+  }, [mapAwareTradeSelection, mapManager.state]);
+
+  useEffect(() => {
+    const tradeDate = harvest?.tradeDate;
+    if (!tradeDate || !recommendedExecutionCandidate) return;
+    if (strategyInitializedForDateRef.current === tradeDate) return;
+    strategyInitializedForDateRef.current = tradeDate;
+    setSelectedExecutionStrategy(recommendedExecutionCandidate.strategy);
+  }, [harvest?.tradeDate, recommendedExecutionCandidate]);
+
+  useEffect(() => {
+    if (!executionMemory?.position) return;
+    setSelectedExecutionStrategy(executionMemory.position.strategy);
+  }, [executionMemory?.position]);
 
   const analytics = useMemo(() => {
     const ema9 = calculateEma(candles, 9);
@@ -382,11 +443,13 @@ export default function SpxCommandChart() {
 
     chartRef.current = chart;
     candleSeriesRef.current = candleSeries;
+    signalMarkersRef.current = createSeriesMarkers(candleSeries, []);
 
     return () => {
       chart.remove();
       chartRef.current = null;
       candleSeriesRef.current = null;
+      signalMarkersRef.current = null;
       lineSeriesRef.current = [];
     };
   }, []);
@@ -611,8 +674,64 @@ export default function SpxCommandChart() {
       tradeSelection: mapAwareTradeSelection,
       mapState: mapManager.state,
       memory: executionMemory,
+      candidateOverride:
+        executionCandidates[selectedExecutionStrategy] ?? null,
     });
   }, [
+    executionCandidates,
+    executionMemory,
+    harvest?.generatedAt,
+    harvest?.tradeDate,
+    mapAwareTradeSelection,
+    mapManager.state,
+    recommendation,
+    selectedExecutionStrategy,
+    spxRows,
+    strikeFlow,
+  ]);
+
+  const executionReadsForPaint = useMemo(() => {
+    const tradeDate = harvest?.tradeDate;
+    const generatedAt = harvest?.generatedAt;
+    const mapState = mapManager.state;
+    if (
+      !recommendation ||
+      !tradeDate ||
+      !generatedAt ||
+      !mapAwareTradeSelection ||
+      !mapState ||
+      !executionMemory
+    ) {
+      return [] as ZeroDteExecutionRead[];
+    }
+
+    const strategies: ExecutionStrategy[] = executionMemory.position
+      ? [executionMemory.position.strategy]
+      : [
+          "iron-fly",
+          "put-credit-spread",
+          "call-credit-spread",
+        ];
+
+    return strategies.flatMap((strategy) => {
+      const candidate = executionCandidates[strategy] ?? null;
+      if (!candidate && !executionMemory.position) return [];
+      return [
+        buildZeroDteExecutionRead({
+          tradeDate,
+          generatedAt,
+          recommendation,
+          spxRows,
+          strikeFlow,
+          tradeSelection: mapAwareTradeSelection,
+          mapState,
+          memory: executionMemory,
+          candidateOverride: candidate,
+        }),
+      ];
+    });
+  }, [
+    executionCandidates,
     executionMemory,
     harvest?.generatedAt,
     harvest?.tradeDate,
@@ -622,6 +741,38 @@ export default function SpxCommandChart() {
     spxRows,
     strikeFlow,
   ]);
+
+  const signalPaint = useExecutionSignalPaint({
+    tradeDate: harvest?.tradeDate,
+    frequencyMinutes: frequency,
+    candles,
+    reads: executionReadsForPaint,
+  });
+
+  const visibleExecutionSignals = useMemo(() => {
+    if (signalPaintFilter === "off") return [];
+    if (signalPaintFilter === "all") return signalPaint.signals;
+    return signalPaint.signals.filter(
+      (signal) => signal.strategy === signalPaintFilter,
+    );
+  }, [signalPaint.signals, signalPaintFilter]);
+
+  useEffect(() => {
+    const markerApi = signalMarkersRef.current;
+    if (!markerApi) return;
+
+    markerApi.setMarkers(
+      visibleExecutionSignals.map((signal) => ({
+        time: signal.candleTime as UTCTimestamp,
+        position: signal.kind === "SELL" ? "aboveBar" : "belowBar",
+        color: signal.kind === "SELL" ? "#16c784" : "#ea3943",
+        shape: signal.kind === "SELL" ? "arrowDown" : "arrowUp",
+        text: `${signal.kind} · ${shortStrategyLabel(signal.strategy)} · ${Math.round(
+          signal.confidence,
+        )}`,
+      })),
+    );
+  }, [visibleExecutionSignals]);
 
   useEffect(() => {
     if (
@@ -785,6 +936,42 @@ export default function SpxCommandChart() {
         ))}
       </div>
 
+      <div style={styles.signalPaintBar}>
+        <div style={styles.signalPaintTitle}>
+          <strong>Execution Paint</strong>
+          <span>Candle-close confirmed only</span>
+        </div>
+        <select
+          value={signalPaintFilter}
+          onChange={(event) =>
+            setSignalPaintFilter(
+              event.target.value as ExecutionSignalPaintFilter,
+            )
+          }
+          style={styles.signalPaintSelect}
+        >
+          <option value="all">All Strategies</option>
+          <option value="put-credit-spread">Put Credit</option>
+          <option value="call-credit-spread">Call Credit</option>
+          <option value="iron-fly">Iron Fly</option>
+          <option value="off">Off</option>
+        </select>
+        <div style={styles.signalPaintCount}>
+          <span style={{ color: "#16c784" }}>GREEN = SELL</span>
+          <span style={{ color: "#ea3943" }}>RED = BUY</span>
+          <span>
+            {visibleExecutionSignals.length} confirmed · {signalPaint.pendingCount} pending
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={signalPaint.clearToday}
+          style={styles.signalClearButton}
+        >
+          Clear Today
+        </button>
+      </div>
+
       {error ? <div style={styles.error}>{error}</div> : null}
 
       <div style={styles.commandGrid}>
@@ -836,51 +1023,115 @@ export default function SpxCommandChart() {
             </div>
           </div>
 
-          <div style={styles.railCard}>
-            <div style={styles.railTitle}>{liveExecutionRead?.strategyLabel ?? "Live Strategy"}</div>
-            <RailRow
-              label="Legs"
-              value={formatExecutionLegs(
-                liveExecutionRead?.position?.legs ?? liveExecutionRead?.candidate?.legs ?? [],
-              )}
-            />
-            <RailRow
-              label="Map"
-              value={liveExecutionRead ? `${liveExecutionRead.mapPhase} · ${liveExecutionRead.mapCenter.toFixed(0)}` : "—"}
-            />
-            <RailRow
-              label="Current Credit"
-              value={
-                liveExecutionRead?.currentCredit == null
-                  ? "—"
-                  : liveExecutionRead.currentCredit.toFixed(2)
+          <ExecutionTradeDock
+            read={liveExecutionRead}
+            candidates={executionCandidates}
+            selectedStrategy={selectedExecutionStrategy}
+            onStrategyChange={setSelectedExecutionStrategy}
+            busy={executionBusy}
+            error={executionDbError}
+            onOpen={async ({ candidate, entryCredit, quantity }) => {
+              if (
+                !harvest?.tradeDate ||
+                !harvest.spx?.expirationDate ||
+                !recommendation ||
+                !openingMap ||
+                !mapAwareTradeSelection ||
+                !mapManager.state ||
+                !executionMemory
+              ) {
+                setExecutionDbError(
+                  "Live session context is still building. Try the entry again after the next refresh.",
+                );
+                return;
               }
-            />
-            <RailRow
-              label="Peak Credit"
-              value={
-                liveExecutionRead?.peakCredit == null
-                  ? "—"
-                  : liveExecutionRead.peakCredit.toFixed(2)
+
+              setExecutionBusy(true);
+              try {
+                const openRead = buildZeroDteExecutionRead({
+                  tradeDate: harvest.tradeDate,
+                  generatedAt:
+                    harvest.generatedAt ?? new Date().toISOString(),
+                  recommendation,
+                  spxRows,
+                  strikeFlow,
+                  tradeSelection: mapAwareTradeSelection,
+                  mapState: mapManager.state,
+                  memory: executionMemory,
+                  candidateOverride: candidate,
+                });
+
+                if (!executionMemory.tradeDayId) {
+                  const bootstrapSample = sampleFromRead(
+                    openRead,
+                    recommendation.spxPrice,
+                  );
+                  if (!bootstrapSample) {
+                    throw new Error(
+                      "The selected legs do not have a complete live mark yet.",
+                    );
+                  }
+
+                  const initialized = await persistExecutionSample({
+                    tradeDate: harvest.tradeDate,
+                    expirationDate: harvest.spx.expirationDate,
+                    generatedAt: openRead.generatedAt,
+                    openingMap,
+                    openingPlan: null,
+                    recommendation,
+                    strikeFlow,
+                    read: openRead,
+                    sample: bootstrapSample,
+                  });
+                  setExecutionMemory(initialized);
+                }
+
+                const memory = await openExecutionPositionDb({
+                  tradeDate: harvest.tradeDate,
+                  entryTime: new Date().toISOString(),
+                  entryCredit,
+                  contracts: quantity,
+                  read: openRead,
+                  candidate,
+                });
+                setExecutionMemory(memory);
+                setSelectedExecutionStrategy(candidate.strategy);
+                setExecutionDbError(null);
+              } catch (openError) {
+                setExecutionDbError(
+                  openError instanceof Error
+                    ? openError.message
+                    : "Could not open execution position.",
+                );
+              } finally {
+                setExecutionBusy(false);
               }
-            />
-            <RailRow
-              label="Velocity"
-              value={
-                liveExecutionRead?.premiumVelocityPerMinute == null
-                  ? "—"
-                  : `${liveExecutionRead.premiumVelocityPerMinute >= 0 ? "+" : ""}${liveExecutionRead.premiumVelocityPerMinute.toFixed(3)}/m`
+            }}
+            onClose={async (exitDebit) => {
+              if (!harvest?.tradeDate || !liveExecutionRead) return;
+              setExecutionBusy(true);
+              try {
+                const memory = await closeExecutionPositionDb({
+                  tradeDate: harvest.tradeDate,
+                  exitTime: new Date().toISOString(),
+                  exitDebit,
+                  exitScore: liveExecutionRead.exitScore,
+                  reason: liveExecutionRead.action,
+                  emergencyExit: liveExecutionRead.emergencyExit,
+                });
+                setExecutionMemory(memory);
+                setExecutionDbError(null);
+              } catch (closeError) {
+                setExecutionDbError(
+                  closeError instanceof Error
+                    ? closeError.message
+                    : "Could not close execution position.",
+                );
+              } finally {
+                setExecutionBusy(false);
               }
-            />
-            <RailRow
-              label="From Peak"
-              value={
-                liveExecutionRead?.premiumFromPeakPct == null
-                  ? "—"
-                  : `${liveExecutionRead.premiumFromPeakPct.toFixed(1)}%`
-              }
-            />
-          </div>
+            }}
+          />
 
           <div style={styles.railCard}>
             <div style={styles.railTitle}>{liveExecutionRead?.position ? "Exit Score" : "Entry Score"}</div>
@@ -1020,18 +1271,10 @@ export default function SpxCommandChart() {
   );
 }
 
-function formatExecutionLegs(
-  legs: Array<{ optionType: "call" | "put"; action: "sell" | "buy"; strike: number }>,
-) {
-  if (!legs.length) return "—";
-  return legs
-    .map(
-      (leg) =>
-        `${leg.action === "sell" ? "S" : "B"}${leg.strike.toFixed(0)}${
-          leg.optionType === "put" ? "P" : "C"
-        }`,
-    )
-    .join(" · ");
+function shortStrategyLabel(strategy: ExecutionStrategy) {
+  if (strategy === "put-credit-spread") return "PUT";
+  if (strategy === "call-credit-spread") return "CALL";
+  return "IF";
 }
 
 function MetricCard({ label, value }: { label: string; value: string }) {
@@ -1243,6 +1486,50 @@ const styles: Record<string, React.CSSProperties> = {
     background: "#12324a",
     borderColor: "#2d709e",
   },
+  signalPaintBar: {
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 9,
+    marginBottom: 12,
+    background: "#08131d",
+    border: "1px solid #19344a",
+    borderRadius: 10,
+    padding: "8px 10px",
+  },
+  signalPaintTitle: {
+    display: "grid",
+    gap: 1,
+    minWidth: 145,
+    color: "#dce9f4",
+    fontSize: 11,
+  },
+  signalPaintSelect: {
+    background: "#071018",
+    color: "#eaf3fb",
+    border: "1px solid #2a4356",
+    borderRadius: 8,
+    padding: "7px 9px",
+    fontSize: 10,
+  },
+  signalPaintCount: {
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 10,
+    color: "#7890a4",
+    fontSize: 9,
+    marginLeft: "auto",
+  },
+  signalClearButton: {
+    background: "#0c1721",
+    color: "#b9c7d4",
+    border: "1px solid #2a4356",
+    borderRadius: 8,
+    padding: "7px 9px",
+    fontSize: 9,
+    cursor: "pointer",
+  },
   error: {
     background: "rgba(234,57,67,.1)",
     border: "1px solid rgba(234,57,67,.38)",
@@ -1253,7 +1540,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   commandGrid: {
     display: "grid",
-    gridTemplateColumns: "minmax(0, 1fr) 265px",
+    gridTemplateColumns: "minmax(0, 1fr) 325px",
     gap: 12,
   },
   chartPanel: {

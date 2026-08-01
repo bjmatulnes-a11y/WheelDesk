@@ -1,4 +1,5 @@
 import type {
+  ExecutionCandidate,
   ExecutionPremiumSample,
   ZeroDteExecutionMemory,
   ZeroDteExecutionRead,
@@ -71,15 +72,17 @@ export async function openExecutionPositionDb(args: {
   entryCredit: number;
   contracts: number;
   read: ZeroDteExecutionRead;
+  candidate?: ExecutionCandidate;
 }): Promise<ZeroDteExecutionMemory> {
-  if (!args.read.candidate) {
+  const candidate = args.candidate ?? args.read.candidate;
+  if (!candidate) {
     throw new Error("No executable strategy candidate is available to open.");
   }
 
   return call({
     action: "open",
     ...args,
-    candidate: args.read.candidate,
+    candidate,
     side: args.read.edge,
   });
 }
