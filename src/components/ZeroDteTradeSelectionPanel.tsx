@@ -18,13 +18,28 @@ export function ZeroDteTradeSelectionPanel({
   const book = tradeSelection?.creditSpreadBook ?? null;
   const put = book?.put ?? null;
   const call = book?.call ?? null;
-  const preferredSide = tradeSelection?.creditSpread?.side ?? book?.preferredSide ?? "none";
+  const preferredSide =
+    tradeSelection?.tradeType === "put-credit-spread"
+      ? "put"
+      : tradeSelection?.tradeType === "call-credit-spread"
+        ? "call"
+        : "none";
+  const finalTradeLabel =
+    tradeSelection?.tradeType === "put-credit-spread"
+      ? "Put spread"
+      : tradeSelection?.tradeType === "call-credit-spread"
+        ? "Call spread"
+        : tradeSelection?.tradeType === "iron-fly"
+          ? "Iron fly"
+          : tradeSelection?.tradeType === "no-trade"
+            ? "No trade"
+            : "Review";
 
   return (
     <section style={styles.card}>
       <div style={styles.headerRow}>
         <div>
-          <h2 style={styles.title}>Live Credit-Spread Scan</h2>
+          <h2 style={styles.title}>Live Strategy Scan</h2>
           <p style={styles.muted}>
             This live scan updates execution context, confidence, flow, and current pricing. It does not replace the locked opening put/call strikes unless you deliberately rebuild today's trade map.
           </p>
@@ -32,7 +47,7 @@ export function ZeroDteTradeSelectionPanel({
         <div style={styles.badgeWrap}>
           <div style={styles.smallCaps}>Live directional read</div>
           <div style={{ ...styles.badgeValue, color: preferredSide === "put" ? "#34d399" : preferredSide === "call" ? "#fb7185" : "#fde047" }}>
-            {preferredSide === "put" ? "Put spread" : preferredSide === "call" ? "Call spread" : "Review"}
+            {finalTradeLabel}
           </div>
           <div style={styles.sourceLine}>{tradeSelection?.selectionMode ?? "not selected"}</div>
         </div>
@@ -45,6 +60,10 @@ export function ZeroDteTradeSelectionPanel({
         <Metric title="Confidence" value={tradeSelection?.confidence == null ? "—" : `${tradeSelection.confidence}%`} tone={tone(tradeSelection?.confidence ?? 0)} />
         <Metric title="Flow Guard" value={!strikeFlow?.hasPriorSnapshot ? "Baseline" : `${strikeFlow.callWall.state} / ${strikeFlow.putWall.state}`} />
       </div>
+
+      {tradeSelection?.strategyRankings?.length ? (
+        <StrategyRankingBoard tradeSelection={tradeSelection} />
+      ) : null}
 
       <div style={styles.grid2}>
         <SpreadCard spread={put} preferred={preferredSide === "put"} />
@@ -61,6 +80,65 @@ export function ZeroDteTradeSelectionPanel({
         <CandidateTable title="Top Call Spread Candidates" spread={call} />
       </div>
     </section>
+  );
+}
+
+function StrategyRankingBoard({
+  tradeSelection,
+}: {
+  tradeSelection: ZeroDteTradeSelection;
+}) {
+  const map = tradeSelection.mapContext;
+  const rankings = tradeSelection.strategyRankings ?? [];
+
+  return (
+    <div style={styles.rankingCard}>
+      <div style={styles.rankingHeader}>
+        <div>
+          <div style={styles.smallCaps}>Layer 6 · Map-Aware Strategy Ranking</div>
+          <div style={styles.rankingTitle}>
+            {map
+              ? `${map.phase} · ${map.railBreached} rail · ${map.confirmationCount}/${map.confirmationRequired}`
+              : "Building map context"}
+          </div>
+        </div>
+        <div style={styles.mapCenter}>
+          <span>Controlling center</span>
+          <strong>{map?.controllingCenter?.toFixed(0) ?? "—"}</strong>
+        </div>
+      </div>
+
+      <div style={styles.rankingGrid}>
+        {rankings.map((ranking) => (
+          <div
+            key={ranking.tradeType}
+            style={{
+              ...styles.rankingRow,
+              ...(ranking.rank === 1 ? styles.rankingWinner : {}),
+              opacity: ranking.eligible ? 1 : 0.62,
+            }}
+          >
+            <div style={styles.rankNumber}>#{ranking.rank}</div>
+            <div style={styles.rankMain}>
+              <div style={styles.rankLabel}>
+                {ranking.label}
+                {!ranking.eligible ? <span style={styles.blockedPill}>Blocked</span> : null}
+              </div>
+              <div style={styles.rankStrikes}>{ranking.strikes}</div>
+              <div style={styles.rankReason}>
+                {(ranking.blockers[0] ?? ranking.reasons[0] ?? "Building context")}
+              </div>
+            </div>
+            <div style={styles.rankMetrics}>
+              <strong style={{ color: tone(ranking.score) }}>{ranking.score}</strong>
+              <span>M {ranking.mapAlignment}</span>
+              <span>D {ranking.dealerAlignment}</span>
+              <span>F {ranking.flowAlignment}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -241,4 +319,95 @@ const styles: Record<string, React.CSSProperties> = {
   tr: { borderBottom: "1px solid rgba(30,58,95,0.6)" },
   td: { color: "#cbd5e1", padding: "8px 10px", whiteSpace: "nowrap" },
   tdStrong: { color: "#67e8f9", padding: "8px 10px", fontWeight: 900, whiteSpace: "nowrap" },
+  rankingCard: {
+    marginTop: 14,
+    background: "#081521",
+    border: "1px solid #1d3b53",
+    borderRadius: 14,
+    padding: 14,
+  },
+  rankingHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    alignItems: "center",
+    flexWrap: "wrap",
+  },
+  rankingTitle: {
+    marginTop: 4,
+    color: "#e6f1f8",
+    fontWeight: 850,
+    fontSize: 15,
+  },
+  mapCenter: {
+    display: "grid",
+    gap: 2,
+    color: "#6f8599",
+    fontSize: 10,
+    textAlign: "right",
+  },
+  rankingGrid: {
+    display: "grid",
+    gap: 8,
+    marginTop: 12,
+  },
+  rankingRow: {
+    display: "grid",
+    gridTemplateColumns: "44px minmax(0, 1fr) auto",
+    gap: 10,
+    alignItems: "center",
+    background: "#0b1a27",
+    border: "1px solid #19364b",
+    borderRadius: 10,
+    padding: "10px 12px",
+  },
+  rankingWinner: {
+    borderColor: "rgba(103,232,249,.72)",
+    boxShadow: "0 0 0 1px rgba(103,232,249,.08) inset",
+  },
+  rankNumber: {
+    color: "#67e8f9",
+    fontWeight: 900,
+    fontSize: 16,
+  },
+  rankMain: {
+    minWidth: 0,
+  },
+  rankLabel: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    color: "#f8fafc",
+    fontWeight: 850,
+  },
+  blockedPill: {
+    color: "#fda4af",
+    border: "1px solid rgba(251,113,133,.45)",
+    borderRadius: 999,
+    padding: "2px 6px",
+    fontSize: 8,
+    textTransform: "uppercase",
+  },
+  rankStrikes: {
+    color: "#9fb2c4",
+    fontSize: 11,
+    marginTop: 2,
+  },
+  rankReason: {
+    color: "#6f8599",
+    fontSize: 10,
+    marginTop: 4,
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
+  rankMetrics: {
+    display: "grid",
+    gridTemplateColumns: "repeat(4, auto)",
+    gap: 7,
+    color: "#73899c",
+    fontSize: 9,
+    alignItems: "center",
+  },
+
 };

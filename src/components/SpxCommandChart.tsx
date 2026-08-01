@@ -12,16 +12,23 @@ import {
 } from "lightweight-charts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ZeroDteChainRow, ZeroDteRecommendation } from "../lib/zeroDteOiIntelligence";
+import type { ZeroDteMoodRead } from "../lib/zeroDteMoodEngine";
 import { PremiumHistoryPanel } from "./execution/PremiumHistoryPanel";
 import { AdvancedStrikeHeatmap } from "./AdvancedStrikeHeatmap";
 import { DealerAnalyticsPanel } from "./DealerAnalyticsPanel";
 import { MapEnginePanel } from "./MapEnginePanel";
 import { useSessionMapManager } from "../lib/session/useSessionMapManager";
+import { getControllingMarketMap } from "../lib/session/mapEngine";
 import { buildExecutionRead } from "../lib/execution/engine";
 import { appendPremiumPoint, estimateIronFlyCredit } from "../lib/execution/premium";
 import { loadPremiumHistory, savePremiumHistory } from "../lib/execution/storage";
 import type { ExecutionRead, PremiumPoint } from "../lib/execution/types";
 import { buildZeroDteLeastResistancePath } from "../lib/zeroDteLeastResistancePath";
+import { lockOpeningMap, type ZeroDteOpeningMap } from "../lib/zeroDteOpeningMap";
+import { updateZeroDteStrikeFlow, type ZeroDteStrikeFlowRead } from "../lib/zeroDteStrikeFlow";
+import { buildZeroDteTradeSelection, type ZeroDteTradeSelection } from "../lib/zeroDteTradeSelector";
+import { orchestrateZeroDteStrategySelection } from "../lib/zeroDteStrategyOrchestrator";
+import { ZeroDteTradeSelectionPanel } from "./ZeroDteTradeSelectionPanel";
 
 type Candle = {
   time: number;
@@ -58,6 +65,8 @@ type HarvestResponse = {
   spx?: HarvestSymbol;
   spy?: HarvestSymbol;
   recommendation?: ZeroDteRecommendation;
+  mood?: ZeroDteMoodRead;
+  tradeSelection?: ZeroDteTradeSelection;
   errors?: string[];
   provider?: string;
 };
@@ -122,6 +131,8 @@ export default function SpxCommandChart() {
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [premiumHistory, setPremiumHistory] = useState<PremiumPoint[]>([]);
+  const [openingMap, setOpeningMap] = useState<ZeroDteOpeningMap | null>(null);
+  const [strikeFlow, setStrikeFlow] = useState<ZeroDteStrikeFlowRead | null>(null);
 
   const recommendation = harvest?.recommendation;
   const spxRows = harvest?.spx?.rows ?? [];
@@ -133,12 +144,65 @@ export default function SpxCommandChart() {
     generatedAt: harvest?.generatedAt,
     recommendation,
     rows: spxRows,
+    openingMap,
   });
 
-  const controllingMap =
-    mapManager.state?.phase === "ACTIVE"
-      ? mapManager.state.active
-      : mapManager.state?.opening;
+  const controllingMap = mapManager.state
+    ? getControllingMarketMap(mapManager.state)
+    : null;
+
+  useEffect(() => {
+    if (
+      !harvest?.tradeDate ||
+      !harvest.generatedAt ||
+      !recommendation ||
+      !harvest.spx?.rows.length
+    ) {
+      return;
+    }
+
+    const locked = lockOpeningMap(
+      harvest.tradeDate,
+      harvest.generatedAt,
+      recommendation,
+      harvest.spx.rows,
+    );
+    setOpeningMap(locked);
+    setStrikeFlow(
+      updateZeroDteStrikeFlow({
+        tradeDate: harvest.tradeDate,
+        generatedAt: harvest.generatedAt,
+        expiration: harvest.spx.expirationDate,
+        spxPrice: harvest.spx.price,
+        rows: harvest.spx.rows,
+        recommendation,
+      }),
+    );
+  }, [harvest?.generatedAt, harvest?.spx, harvest?.tradeDate, recommendation]);
+
+  const baseTradeSelection = useMemo(() => {
+    if (!recommendation || !spxRows.length) return harvest?.tradeSelection ?? null;
+    return buildZeroDteTradeSelection({
+      recommendation,
+      spxRows,
+      mood: harvest?.mood ?? null,
+      maxWidth: 50,
+      minWidth: 5,
+      riskMode: "balanced",
+      strikeFlow,
+    });
+  }, [harvest?.mood, harvest?.tradeSelection, recommendation, spxRows, strikeFlow]);
+
+  const mapAwareTradeSelection = useMemo(() => {
+    if (!baseTradeSelection || !recommendation) return baseTradeSelection;
+    return orchestrateZeroDteStrategySelection({
+      baseSelection: baseTradeSelection,
+      recommendation,
+      spxRows,
+      mapState: mapManager.state,
+      strikeFlow,
+    });
+  }, [baseTradeSelection, mapManager.state, recommendation, spxRows, strikeFlow]);
 
   const analytics = useMemo(() => {
     const ema9 = calculateEma(candles, 9);
@@ -384,27 +448,27 @@ export default function SpxCommandChart() {
 
     if (recommendation) {
       if (overlays.walls) {
-        horizontal(recommendation.spx.callWall, "#ff8a34", 2);
-        horizontal(recommendation.spx.putWall, "#2f80ed", 2);
+        horizontal(controllingMap?.callWall ?? recommendation.spx.callWall, "#ff8a34", 2);
+        horizontal(controllingMap?.putWall ?? recommendation.spx.putWall, "#2f80ed", 2);
       }
 
       if (overlays.pin) {
-        horizontal(recommendation.spx.strongestPin, "#f4f7fb", 2, LineStyle.Dashed);
+        horizontal(controllingMap?.pin ?? recommendation.spx.strongestPin, "#f4f7fb", 2, LineStyle.Dashed);
       }
 
       if (overlays.center) {
-        horizontal(recommendation.suggestedCenter, "#ffd400", 3);
+        horizontal(controllingMap?.center ?? recommendation.suggestedCenter, "#ffd400", 3);
       }
 
       if (overlays.expectedMove) {
         horizontal(
-          recommendation.spxPrice + recommendation.expectedMove,
+          (controllingMap?.spot ?? recommendation.spxPrice) + (controllingMap?.expectedMove ?? recommendation.expectedMove),
           "#7f8fa4",
           1,
           LineStyle.Dashed,
         );
         horizontal(
-          recommendation.spxPrice - recommendation.expectedMove,
+          (controllingMap?.spot ?? recommendation.spxPrice) - (controllingMap?.expectedMove ?? recommendation.expectedMove),
           "#7f8fa4",
           1,
           LineStyle.Dashed,
@@ -479,7 +543,7 @@ export default function SpxCommandChart() {
       chart.timeScale().fitContent();
       hasInitialFitRef.current = true;
     }
-  }, [analytics, candles, leastResistancePath, mapManager.state, overlays, recommendation]);
+  }, [analytics, candles, controllingMap, leastResistancePath, mapManager.state, overlays, recommendation]);
 
   function toggleOverlay(key: OverlayKey) {
     setOverlays((current) => ({ ...current, [key]: !current[key] }));
@@ -491,14 +555,14 @@ export default function SpxCommandChart() {
   }
 
   const simulatedCredit = useMemo(() => {
-    if (!recommendation || !spxRows.length) return null;
+    if (!controllingMap || !spxRows.length) return null;
     return estimateIronFlyCredit(spxRows, {
-      lowerWing: recommendation.lowerWing,
-      shortPut: recommendation.suggestedCenter,
-      shortCall: recommendation.suggestedCenter,
-      upperWing: recommendation.upperWing,
+      lowerWing: controllingMap.lowerWing,
+      shortPut: controllingMap.center,
+      shortCall: controllingMap.center,
+      upperWing: controllingMap.upperWing,
     });
-  }, [recommendation, spxRows]);
+  }, [controllingMap, spxRows]);
 
   useEffect(() => {
     if (!harvest?.tradeDate) return;
@@ -515,16 +579,29 @@ export default function SpxCommandChart() {
   }, [harvest?.generatedAt, harvest?.tradeDate, simulatedCredit]);
 
   const liveExecutionRead: ExecutionRead | null = useMemo(() => {
-    if (!recommendation || !harvest?.generatedAt) return null;
+    if (!recommendation || !harvest?.generatedAt || !controllingMap) return null;
+
+    const controllingRecommendation: ZeroDteRecommendation = {
+      ...recommendation,
+      suggestedCenter: controllingMap.center,
+      lowerWing: controllingMap.lowerWing,
+      upperWing: controllingMap.upperWing,
+      spx: {
+        ...recommendation.spx,
+        callWall: controllingMap.callWall,
+        putWall: controllingMap.putWall,
+        strongestPin: controllingMap.pin,
+      },
+    };
 
     return buildExecutionRead({
-      recommendation,
+      recommendation: controllingRecommendation,
       rows: spxRows,
       generatedAt: harvest.generatedAt,
       premiumHistory,
       position: null,
     });
-  }, [harvest?.generatedAt, premiumHistory, recommendation, spxRows]);
+  }, [controllingMap, harvest?.generatedAt, premiumHistory, recommendation, spxRows]);
 
   return (
     <section style={styles.shell}>
@@ -575,8 +652,8 @@ export default function SpxCommandChart() {
       <div style={styles.metricGrid}>
         <MetricCard label="SPX" value={currentPrice ? currentPrice.toFixed(2) : "—"} />
         <MetricCard
-          label="IF Center"
-          value={recommendation?.suggestedCenter?.toFixed(0) ?? "—"}
+          label="Controlling Center"
+          value={controllingMap?.center?.toFixed(0) ?? recommendation?.suggestedCenter?.toFixed(0) ?? "—"}
         />
         <MetricCard
           label="Put Wall"
@@ -682,14 +759,16 @@ export default function SpxCommandChart() {
             <div style={styles.railTitle}>Live Iron Fly</div>
             <RailRow
               label="Center"
-              value={recommendation?.suggestedCenter?.toFixed(0) ?? "—"}
+              value={controllingMap?.center?.toFixed(0) ?? recommendation?.suggestedCenter?.toFixed(0) ?? "—"}
             />
             <RailRow
               label="Wings"
               value={
-                recommendation
-                  ? `${recommendation.lowerWing.toFixed(0)} / ${recommendation.upperWing.toFixed(0)}`
-                  : "—"
+                controllingMap
+                  ? `${controllingMap.lowerWing.toFixed(0)} / ${controllingMap.upperWing.toFixed(0)}`
+                  : recommendation
+                    ? `${recommendation.lowerWing.toFixed(0)} / ${recommendation.upperWing.toFixed(0)}`
+                    : "—"
               }
             />
             <RailRow
@@ -787,6 +866,14 @@ export default function SpxCommandChart() {
         />
       ) : null}
 
+      {mapAwareTradeSelection ? (
+        <ZeroDteTradeSelectionPanel
+          mood={harvest?.mood ?? null}
+          tradeSelection={mapAwareTradeSelection}
+          strikeFlow={strikeFlow}
+        />
+      ) : null}
+
       {recommendation && harvest?.tradeDate ? (
         <DealerAnalyticsPanel
           tradeDate={harvest.tradeDate}
@@ -797,11 +884,11 @@ export default function SpxCommandChart() {
           spyPressure={recommendation.spyDealerPressure}
           pressureBias={recommendation.pressureBias}
           source={recommendation.dealerPressureSource}
-          support={recommendation.spx.putWall}
-          resistance={recommendation.spx.callWall}
-          pin={recommendation.spx.strongestPin}
-          center={recommendation.suggestedCenter}
-          expectedMove={recommendation.expectedMove}
+          support={controllingMap?.putWall ?? recommendation.spx.putWall}
+          resistance={controllingMap?.callWall ?? recommendation.spx.callWall}
+          pin={controllingMap?.pin ?? recommendation.spx.strongestPin}
+          center={controllingMap?.center ?? recommendation.suggestedCenter}
+          expectedMove={controllingMap?.expectedMove ?? recommendation.expectedMove}
           confidence={recommendation.confidenceScore}
           mapState={mapManager.state?.phase ?? "OPENING"}
           openingPressure={mapManager.state?.opening.dealerPressure ?? null}
@@ -814,11 +901,11 @@ export default function SpxCommandChart() {
           tradeDate={harvest.tradeDate}
           generatedAt={harvest.generatedAt}
           spot={currentPrice}
-          center={recommendation.suggestedCenter}
-          callWall={recommendation.spx.callWall}
-          putWall={recommendation.spx.putWall}
-          pin={recommendation.spx.strongestPin}
-          expectedMove={recommendation.expectedMove}
+          center={controllingMap?.center ?? recommendation.suggestedCenter}
+          callWall={controllingMap?.callWall ?? recommendation.spx.callWall}
+          putWall={controllingMap?.putWall ?? recommendation.spx.putWall}
+          pin={controllingMap?.pin ?? recommendation.spx.strongestPin}
+          expectedMove={controllingMap?.expectedMove ?? recommendation.expectedMove}
           rows={spxRows}
           openingBaseline={mapManager.state?.opening.strikes ?? null}
           mapState={mapManager.state?.phase ?? "OPENING"}

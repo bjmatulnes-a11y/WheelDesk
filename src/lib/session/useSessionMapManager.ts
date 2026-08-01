@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { ZeroDteChainRow, ZeroDteRecommendation } from "../zeroDteOiIntelligence";
+import type { ZeroDteOpeningMap } from "../zeroDteOpeningMap";
 import {
   buildLiveMapSnapshot,
   initializeSessionMapManager,
@@ -15,8 +16,9 @@ export function useSessionMapManager(args: {
   generatedAt: string | null | undefined;
   recommendation: ZeroDteRecommendation | null | undefined;
   rows: ZeroDteChainRow[];
+  openingMap?: ZeroDteOpeningMap | null;
 }) {
-  const { tradeDate, generatedAt, recommendation, rows } = args;
+  const { tradeDate, generatedAt, recommendation, rows, openingMap = null } = args;
   const [state, setState] = useState<SessionMapManagerState | null>(null);
 
   const live = useMemo(() => {
@@ -36,11 +38,34 @@ export function useSessionMapManager(args: {
       const initialized =
         current?.tradeDate === live.tradeDate
           ? current
-          : initializeSessionMapManager(live);
+          : initializeSessionMapManager(live, openingMap);
 
       return updateSessionMapManager(initialized, live);
     });
+    // The live snapshot is the only update clock. Keeping openingMap out of this
+    // dependency list prevents one Schwab harvest from counting twice when the
+    // persisted opening object is reloaded into React state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [live]);
+
+  useEffect(() => {
+    if (!live || !openingMap) return;
+
+    setState((current) => {
+      const needsInitialization = !current || current.tradeDate !== live.tradeDate;
+      const openingWasFallback =
+        current?.tradeDate === live.tradeDate &&
+        current.opening.source === "first-live-fallback";
+
+      if (!needsInitialization && !openingWasFallback) return current;
+
+      resetSessionMapManager(live.tradeDate);
+      return updateSessionMapManager(
+        initializeSessionMapManager(live, openingMap),
+        live,
+      );
+    });
+  }, [live, openingMap]);
 
   return {
     state,

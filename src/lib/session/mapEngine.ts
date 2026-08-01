@@ -1,5 +1,6 @@
 import type { ZeroDteChainRow, ZeroDteRecommendation } from "../zeroDteOiIntelligence";
 import { buildMarketStructureRead, type MarketStructureRead } from "./marketStructureEngine";
+import { loadOpeningMap, type ZeroDteOpeningMap } from "../zeroDteOpeningMap";
 
 export type SessionMapState = "OPENING" | "TRANSITION" | "ACTIVE";
 
@@ -64,6 +65,8 @@ export type ExistingOpenMapLike = Partial<{
   tradeDate: string;
   generatedAt: string;
   capturedAt: string;
+  lockedAt: string;
+  version: number;
   spxPrice: number;
   spot: number;
   suggestedCenter: number;
@@ -80,16 +83,20 @@ export type ExistingOpenMapLike = Partial<{
   dealerPressure: number;
   spxDealerPressure: number;
   spyDealerPressure: number;
+  spxPressure: number;
+  spyPressure: number;
   rows: ZeroDteChainRow[];
+  structure: MarketStructureRead;
   gravity: number;
   pinScore: number;
 }>;
 
-const key = (tradeDate: string) => `wheeldesk:session-map-manager:v3:${tradeDate}`;
+const key = (tradeDate: string) => `wheeldesk:session-map-manager:v4:${tradeDate}`;
 const legacyKeys = (tradeDate: string) => [
   `wheeldesk:open-map:${tradeDate}`,
   `wheeldesk:opening-map:${tradeDate}`,
   `wheeldesk:zero-dte:open-map:${tradeDate}`,
+  `wheeldesk_zero_dte_opening_map_v2_${tradeDate}`,
   `wheeldesk_zero_dte_opening_map_v1_${tradeDate}`,
 ];
 
@@ -131,6 +138,7 @@ export function buildLiveMapSnapshot(args: {
 
 export function initializeSessionMapManager(
   live: MarketMapSnapshot,
+  explicitOpeningMap?: ZeroDteOpeningMap | null,
 ): SessionMapManagerState {
   const stored = loadSessionMapManager(live.tradeDate);
   if (stored) {
@@ -139,7 +147,8 @@ export function initializeSessionMapManager(
     return hydrated;
   }
 
-  const existingOpenMap = loadExistingOpenMap(live.tradeDate);
+  const existingOpenMap =
+    explicitOpeningMap ?? loadOpeningMap(live.tradeDate) ?? loadExistingOpenMap(live.tradeDate);
   const opening = existingOpenMap
     ? normalizeExistingOpenMap(existingOpenMap, live)
     : { ...live, source: "first-live-fallback" as const };
@@ -329,6 +338,14 @@ export function updateSessionMapManager(
   return next;
 }
 
+export function getControllingMarketMap(
+  state: SessionMapManagerState,
+): MarketMapSnapshot {
+  if (state.phase === "ACTIVE") return state.active;
+  if (state.phase === "TRANSITION" && state.candidate) return state.candidate;
+  return state.opening;
+}
+
 function hydrateStoredSessionMapManager(
   stored: SessionMapManagerState,
   live: MarketMapSnapshot,
@@ -422,7 +439,7 @@ function normalizeExistingOpenMap(
   return {
     tradeDate: raw.tradeDate ?? fallback.tradeDate,
     capturedAt:
-      raw.generatedAt ?? raw.capturedAt ?? fallback.capturedAt,
+      raw.generatedAt ?? raw.capturedAt ?? raw.lockedAt ?? fallback.capturedAt,
     source: "open-map",
     spot: number(raw.spxPrice ?? raw.spot, fallback.spot),
     center,
@@ -434,9 +451,21 @@ function normalizeExistingOpenMap(
     expectedMove: number(raw.expectedMove, fallback.expectedMove),
     confidence: number(raw.confidenceScore ?? raw.confidence, fallback.confidence),
     dealerPressure: number(raw.dealerPressure, fallback.dealerPressure),
-    spxPressure: number(raw.spxDealerPressure, fallback.spxPressure),
-    spyPressure: number(raw.spyDealerPressure, fallback.spyPressure),
-    structure: fallback.structure,
+    spxPressure: number(raw.spxDealerPressure ?? raw.spxPressure, fallback.spxPressure),
+    spyPressure: number(raw.spyDealerPressure ?? raw.spyPressure, fallback.spyPressure),
+    structure:
+      "structure" in raw && raw.structure
+        ? raw.structure as MarketStructureRead
+        : raw.rows?.length
+          ? buildMarketStructureRead({
+              spot: number(raw.spxPrice ?? raw.spot, fallback.spot),
+              rows: raw.rows,
+              callWall: nullable(raw.callWall, fallback.callWall),
+              putWall: nullable(raw.putWall, fallback.putWall),
+              pin: nullable(raw.pin ?? raw.strongestPin, fallback.pin),
+              expectedMove: number(raw.expectedMove, fallback.expectedMove),
+            })
+          : fallback.structure,
     strikes:
       raw.rows?.length
         ? buildStrikeBaseline(raw.rows)
@@ -444,7 +473,7 @@ function normalizeExistingOpenMap(
   };
 }
 
-function buildStrikeBaseline(
+export function buildStrikeBaseline(
   rows: ZeroDteChainRow[],
 ): Record<string, StrikeBaseline> {
   const map = new Map<number, StrikeBaseline>();

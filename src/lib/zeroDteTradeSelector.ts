@@ -19,6 +19,38 @@ export type ZeroDteSelectedTradeType =
   | "two-sided-credit-spread-review"
   | "no-trade";
 
+export type ZeroDteStrategyRanking = {
+  rank: number;
+  tradeType: Extract<
+    ZeroDteSelectedTradeType,
+    "put-credit-spread" | "call-credit-spread" | "iron-fly" | "no-trade"
+  >;
+  label: string;
+  score: number;
+  eligible: boolean;
+  mapAlignment: number;
+  dealerAlignment: number;
+  flowAlignment: number;
+  strikes: string;
+  estimatedCredit: number | null;
+  maxRiskDollars: number | null;
+  creditToRiskPct: number | null;
+  reasons: string[];
+  blockers: string[];
+};
+
+export type ZeroDteMapContext = {
+  phase: "OPENING" | "TRANSITION" | "ACTIVE";
+  railBreached: "UPPER" | "LOWER" | "NONE";
+  confirmationCount: number;
+  confirmationRequired: number;
+  controllingSource: "open-map" | "first-live-fallback" | "live";
+  controllingCenter: number;
+  controllingLowerWing: number;
+  controllingUpperWing: number;
+  centerShiftFromOpen: number;
+};
+
 export type ZeroDteTradeSelection = {
   tradeType: ZeroDteSelectedTradeType;
   label: string;
@@ -35,6 +67,9 @@ export type ZeroDteTradeSelection = {
   } | null;
   reasons: string[];
   warnings: string[];
+  orchestrationMode?: "map-aware";
+  mapContext?: ZeroDteMapContext;
+  strategyRankings?: ZeroDteStrategyRanking[];
 };
 
 export type BuildZeroDteTradeSelectionInput = {

@@ -11,8 +11,11 @@ import { ZeroDteSystemDiagnosticsPanel } from "./ZeroDteSystemDiagnosticsPanel";
 import { ZeroDteTosInputsPanel } from "./ZeroDteTosInputsPanel";
 import { ZeroDteOpeningTradePlanPanel } from "./ZeroDteOpeningTradePlanPanel";
 import { ZeroDteExecutionIntelligencePanel } from "./ZeroDteExecutionIntelligencePanel";
+import { MapEnginePanel } from "./MapEnginePanel";
 import type { ZeroDteMoodRead } from "../lib/zeroDteMoodEngine";
 import { buildZeroDteTradeSelection, type ZeroDteTradeSelection } from "../lib/zeroDteTradeSelector";
+import { useSessionMapManager } from "../lib/session/useSessionMapManager";
+import { orchestrateZeroDteStrategySelection } from "../lib/zeroDteStrategyOrchestrator";
 import { updateZeroDteStrikeFlow, type ZeroDteStrikeFlowRead } from "../lib/zeroDteStrikeFlow";
 import { getOpeningExecutionRead, lockOpeningMap, resetOpeningMap, type ZeroDteOpeningMap } from "../lib/zeroDteOpeningMap";
 import { lockOpeningTradePlan, resetOpeningTradePlan, type ZeroDteOpeningTradePlan } from "../lib/zeroDteOpeningTradePlan";
@@ -21,14 +24,15 @@ import { closeIfPositionDb, loadExecutionMemoryDb, openIfPositionDb, persistExec
 
 type HarvestSymbolResult = {
   symbol: "SPX" | "SPY";
-  yahooOptionSymbol: string;
-  yahooQuoteSymbol: string;
+  yahooOptionSymbol?: string;
+  yahooQuoteSymbol?: string;
+  providerSymbol?: string;
   price: number;
   expirationTimestamp: number;
   expirationDate: string;
   isZeroDte?: boolean;
   rows: ZeroDteChainRow[];
-  source: "yahoo";
+  source: "schwab" | "yahoo";
 };
 
 type QualityCheck = {
@@ -48,6 +52,7 @@ type HarvestResponse = {
   tradeSelection?: ZeroDteTradeSelection;
   errors: string[];
   qualityChecks?: QualityCheck[];
+  provider?: string;
 };
 
 type PositionState = {
@@ -105,7 +110,7 @@ export default function ZeroDteCommandClient() {
       if (Number(maxRisk) > 0) params.set("maxRisk", maxRisk);
       if (Number(minCredit) > 0) params.set("minCredit", minCredit);
 
-      const res = await fetch(`/api/zero-dte/harvest?${params.toString()}`, { cache: "no-store" });
+      const res = await fetch(`/api/zero-dte/harvest-schwab?${params.toString()}`, { cache: "no-store" });
       const json = (await res.json()) as HarvestResponse;
       let nextData = json;
       if (json.recommendation && json.tradeDate && json.spx?.rows?.length) {
@@ -130,7 +135,7 @@ export default function ZeroDteCommandClient() {
             strikeFlow: flow,
           });
         nextData = { ...json, tradeSelection: liveTradeSelection };
-        const lockedMap = lockOpeningMap(json.tradeDate, json.generatedAt, json.recommendation);
+        const lockedMap = lockOpeningMap(json.tradeDate, json.generatedAt, json.recommendation, json.spx.rows);
         setOpeningMap(lockedMap);
         const lockedPlan = lockOpeningTradePlan(json.tradeDate, json.generatedAt, liveTradeSelection);
         setOpeningTradePlan(lockedPlan);
@@ -178,6 +183,26 @@ export default function ZeroDteCommandClient() {
   }, [autoRefresh, loading, expectedMove, rangePct, strictZeroDte, manualMood, riskMode, maxWidth, maxRisk, minCredit]);
 
   const rec = data?.recommendation;
+  const spxRows = data?.spx?.rows ?? [];
+  const mapManager = useSessionMapManager({
+    tradeDate: data?.tradeDate,
+    generatedAt: data?.generatedAt,
+    recommendation: rec,
+    rows: spxRows,
+    openingMap,
+  });
+
+  const mapAwareTradeSelection = useMemo(() => {
+    if (!data?.tradeSelection || !rec) return data?.tradeSelection ?? null;
+    return orchestrateZeroDteStrategySelection({
+      baseSelection: data.tradeSelection,
+      recommendation: rec,
+      spxRows,
+      mapState: mapManager.state,
+      strikeFlow,
+    });
+  }, [data?.tradeSelection, mapManager.state, rec, spxRows, strikeFlow]);
+
 
   function applySuggestion() {
     if (!rec) return;
@@ -329,7 +354,17 @@ export default function ZeroDteCommandClient() {
                     <h2 style={styles.sectionTitle}>Opening IF Map — Locked for {openingMap.tradeDate}</h2>
                     <p style={styles.muted}>The first valid harvest locks the 50-point fly structure for the trading day. It is a battlefield map, not an automatic opening order.</p>
                   </div>
-                  <button type="button" style={styles.secondaryButton} onClick={() => { resetOpeningMap(openingMap.tradeDate); const next = lockOpeningMap(openingMap.tradeDate, data?.generatedAt ?? new Date().toISOString(), rec); setOpeningMap(next); }}>Reset Opening Map</button>
+                  <button type="button" style={styles.secondaryButton} onClick={() => {
+                    resetOpeningMap(openingMap.tradeDate);
+                    mapManager.reset();
+                    const next = lockOpeningMap(
+                      openingMap.tradeDate,
+                      data?.generatedAt ?? new Date().toISOString(),
+                      rec,
+                      data?.spx?.rows ?? [],
+                    );
+                    setOpeningMap(next);
+                  }}>Reset Opening Map</button>
                 </div>
                 <div style={styles.flyGrid}>
                   <SetupBox label="Lower Wing" value={fmt(openingMap.lowerWing)} sub="fixed -50" />
@@ -342,6 +377,10 @@ export default function ZeroDteCommandClient() {
                   <div style={styles.muted}>{executionRead?.detail}</div>
                 </div>
               </section>
+            ) : null}
+
+            {mapManager.state ? (
+              <MapEnginePanel state={mapManager.state} onReset={mapManager.reset} />
             ) : null}
 
             {executionDbError ? <ErrorPanel errors={[`Execution DB: ${executionDbError}`]} warning /> : null}
@@ -378,20 +417,20 @@ export default function ZeroDteCommandClient() {
 
             <ZeroDteOpeningTradePlanPanel
               plan={openingTradePlan}
-              liveSelection={data?.tradeSelection ?? null}
+              liveSelection={mapAwareTradeSelection}
               strikeFlow={strikeFlow}
               onReset={() => {
-                if (!data?.tradeDate || !data.tradeSelection) return;
+                if (!data?.tradeDate || !mapAwareTradeSelection) return;
                 resetOpeningTradePlan(data.tradeDate);
-                setOpeningTradePlan(lockOpeningTradePlan(data.tradeDate, data.generatedAt, data.tradeSelection));
+                setOpeningTradePlan(lockOpeningTradePlan(data.tradeDate, data.generatedAt, mapAwareTradeSelection));
               }}
             />
 
-            <ZeroDteTradeSelectionPanel mood={data?.mood ?? null} tradeSelection={data?.tradeSelection ?? null} strikeFlow={strikeFlow} />
+            <ZeroDteTradeSelectionPanel mood={data?.mood ?? null} tradeSelection={mapAwareTradeSelection} strikeFlow={strikeFlow} />
 
             <ZeroDteTosInputsPanel
               recommendation={rec}
-              tradeSelection={data?.tradeSelection ?? null}
+              tradeSelection={mapAwareTradeSelection}
               generatedAt={data?.generatedAt ?? null}
               openingMap={openingMap}
             />
