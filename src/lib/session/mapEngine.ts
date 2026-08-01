@@ -83,7 +83,7 @@ export type ExistingOpenMapLike = Partial<{
   pinScore: number;
 }>;
 
-const key = (tradeDate: string) => `wheeldesk:session-map-manager:${tradeDate}`;
+const key = (tradeDate: string) => `wheeldesk:session-map-manager:v2:${tradeDate}`;
 const legacyKeys = (tradeDate: string) => [
   `wheeldesk:open-map:${tradeDate}`,
   `wheeldesk:opening-map:${tradeDate}`,

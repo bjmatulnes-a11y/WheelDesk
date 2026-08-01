@@ -165,10 +165,10 @@ function StructureColumn({
   return (
     <div style={{ ...styles.mapColumn, opacity: faded ? 0.68 : 1 }}>
       <div style={styles.sectionTitle}>{title}</div>
-      <StructureRow label="Gamma Flip" value={structure.gammaFlip} opening={openingStructure.gammaFlip} />
-      <StructureRow label="Zero Gamma" value={structure.zeroGamma} opening={openingStructure.zeroGamma} />
-      <StructureRow label="Dealer Neutral" value={structure.dealerNeutral} opening={openingStructure.dealerNeutral} />
-      <StructureRow label="Max Pain" value={structure.maxPain} opening={openingStructure.maxPain} />
+      <StructureRow label="Gamma Flip" value={structure?.gammaFlip ?? null} opening={openingStructure?.gammaFlip ?? null} />
+      <StructureRow label="Zero Gamma" value={structure?.zeroGamma ?? null} opening={openingStructure?.zeroGamma ?? null} />
+      <StructureRow label="Dealer Neutral" value={structure?.dealerNeutral ?? null} opening={openingStructure?.dealerNeutral ?? null} />
+      <StructureRow label="Max Pain" value={structure?.maxPain ?? null} opening={openingStructure?.maxPain ?? null} />
       <ScoreRow label="Call Wall Strength" value={structure.callWallStrength} />
       <ScoreRow label="Put Wall Strength" value={structure.putWallStrength} />
       <ScoreRow label="Pin Probability" value={structure.pinProbability} />

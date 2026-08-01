@@ -466,10 +466,10 @@ export default function SpxCommandChart() {
                 : mapManager.state.opening?.structure) ?? null;
 
           if (structure) {
-            horizontal(structure.gammaFlip, "#ff5fa2", 2, LineStyle.Dashed);
-            horizontal(structure.zeroGamma, "#bc7cff", 1, LineStyle.Dotted);
-            horizontal(structure.dealerNeutral, "#55d6ff", 2, LineStyle.Dashed);
-            horizontal(structure.maxPain, "#d8e2eb", 1, LineStyle.Dotted);
+            horizontal(structure?.gammaFlip ?? null, "#ff5fa2", 2, LineStyle.Dashed);
+            horizontal(structure?.zeroGamma ?? null, "#bc7cff", 1, LineStyle.Dotted);
+            horizontal(structure?.dealerNeutral ?? null, "#55d6ff", 2, LineStyle.Dashed);
+            horizontal(structure?.maxPain ?? null, "#d8e2eb", 1, LineStyle.Dotted);
           }
         }
       }
