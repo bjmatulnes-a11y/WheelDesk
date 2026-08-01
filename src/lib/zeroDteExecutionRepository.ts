@@ -1,11 +1,99 @@
-import type { IfPremiumSample, ZeroDteExecutionMemory, ZeroDteExecutionRead } from "./zeroDteExecutionIntelligence";
+import type {
+  ExecutionPremiumSample,
+  ZeroDteExecutionMemory,
+  ZeroDteExecutionRead,
+} from "./zeroDteExecutionIntelligence";
 import type { ZeroDteOpeningMap } from "./zeroDteOpeningMap";
 import type { ZeroDteOpeningTradePlan } from "./zeroDteOpeningTradePlan";
 import type { ZeroDteRecommendation } from "./zeroDteOiIntelligence";
 import type { ZeroDteStrikeFlowRead } from "./zeroDteStrikeFlow";
 
-async function call(body:Record<string,unknown>):Promise<ZeroDteExecutionMemory>{const r=await fetch("/api/zero-dte/execution-v2",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body),cache:"no-store"});const j=await r.json();if(!r.ok||!j.ok)throw new Error(j.error||"Execution persistence failed");return j.memory as ZeroDteExecutionMemory;}
-export async function loadExecutionMemoryDb(tradeDate:string):Promise<ZeroDteExecutionMemory>{const r=await fetch(`/api/zero-dte/execution-v2?tradeDate=${encodeURIComponent(tradeDate)}`,{cache:"no-store"});const j=await r.json();if(!r.ok||!j.ok)throw new Error(j.error||"Execution history load failed");return j.memory;}
-export async function persistExecutionSample(args:{tradeDate:string;expirationDate:string|null;generatedAt:string;openingMap:ZeroDteOpeningMap;openingPlan:ZeroDteOpeningTradePlan|null;recommendation:ZeroDteRecommendation;strikeFlow:ZeroDteStrikeFlowRead|null;read:ZeroDteExecutionRead;sample:IfPremiumSample}):Promise<ZeroDteExecutionMemory>{return call({action:"sample",...args,openingPlan:args.openingPlan,flowState:args.read.edge==="upper"?args.strikeFlow?.callWall.state:args.read.edge==="lower"?args.strikeFlow?.putWall.state:"center"});}
-export async function openIfPositionDb(args:{tradeDate:string;entryTime:string;entryCredit:number;contracts:number;side:string;read:ZeroDteExecutionRead}):Promise<ZeroDteExecutionMemory>{return call({action:"open",...args});}
-export async function closeIfPositionDb(args:{tradeDate:string;exitTime:string;exitDebit:number;buybackScore:number;reason?:string}):Promise<ZeroDteExecutionMemory>{return call({action:"close",...args});}
+async function call(body: Record<string, unknown>): Promise<ZeroDteExecutionMemory> {
+  const response = await fetch("/api/zero-dte/execution-v2", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  const json = await response.json();
+  if (!response.ok || !json.ok) {
+    throw new Error(json.error || "Execution persistence failed");
+  }
+  return json.memory as ZeroDteExecutionMemory;
+}
+
+export async function loadExecutionMemoryDb(
+  tradeDate: string,
+): Promise<ZeroDteExecutionMemory> {
+  const response = await fetch(
+    `/api/zero-dte/execution-v2?tradeDate=${encodeURIComponent(tradeDate)}`,
+    { cache: "no-store" },
+  );
+  const json = await response.json();
+  if (!response.ok || !json.ok) {
+    throw new Error(json.error || "Execution history load failed");
+  }
+  return json.memory as ZeroDteExecutionMemory;
+}
+
+export async function persistExecutionSample(args: {
+  tradeDate: string;
+  expirationDate: string | null;
+  generatedAt: string;
+  openingMap: ZeroDteOpeningMap;
+  openingPlan: ZeroDteOpeningTradePlan | null;
+  recommendation: ZeroDteRecommendation;
+  strikeFlow: ZeroDteStrikeFlowRead | null;
+  read: ZeroDteExecutionRead;
+  sample: ExecutionPremiumSample;
+}): Promise<ZeroDteExecutionMemory> {
+  const flowState =
+    args.read.strategy === "put-credit-spread"
+      ? args.strikeFlow?.putWall.state
+      : args.read.strategy === "call-credit-spread"
+        ? args.strikeFlow?.callWall.state
+        : args.read.edge === "upper"
+          ? args.strikeFlow?.callWall.state
+          : args.read.edge === "lower"
+            ? args.strikeFlow?.putWall.state
+            : "center";
+
+  return call({
+    action: "sample",
+    ...args,
+    flowState,
+  });
+}
+
+export async function openExecutionPositionDb(args: {
+  tradeDate: string;
+  entryTime: string;
+  entryCredit: number;
+  contracts: number;
+  read: ZeroDteExecutionRead;
+}): Promise<ZeroDteExecutionMemory> {
+  if (!args.read.candidate) {
+    throw new Error("No executable strategy candidate is available to open.");
+  }
+
+  return call({
+    action: "open",
+    ...args,
+    candidate: args.read.candidate,
+    side: args.read.edge,
+  });
+}
+
+export async function closeExecutionPositionDb(args: {
+  tradeDate: string;
+  exitTime: string;
+  exitDebit: number;
+  exitScore: number;
+  reason?: string;
+  emergencyExit?: boolean;
+}): Promise<ZeroDteExecutionMemory> {
+  return call({
+    action: "close",
+    ...args,
+  });
+}

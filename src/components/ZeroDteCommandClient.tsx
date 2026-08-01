@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { WheelDeskSideNav } from "./WheelDeskSideNav";
 import type { SpxOiMapRow, SpyAlignmentRow, ZeroDteChainRow, ZeroDteRecommendation } from "../lib/zeroDteOiIntelligence";
@@ -20,7 +20,7 @@ import { updateZeroDteStrikeFlow, type ZeroDteStrikeFlowRead } from "../lib/zero
 import { getOpeningExecutionRead, lockOpeningMap, resetOpeningMap, type ZeroDteOpeningMap } from "../lib/zeroDteOpeningMap";
 import { lockOpeningTradePlan, resetOpeningTradePlan, type ZeroDteOpeningTradePlan } from "../lib/zeroDteOpeningTradePlan";
 import { buildZeroDteExecutionRead, emptyExecutionMemory, sampleFromRead, type ZeroDteExecutionMemory, type ZeroDteExecutionRead } from "../lib/zeroDteExecutionIntelligence";
-import { closeIfPositionDb, loadExecutionMemoryDb, openIfPositionDb, persistExecutionSample } from "../lib/zeroDteExecutionRepository";
+import { closeExecutionPositionDb, loadExecutionMemoryDb, openExecutionPositionDb, persistExecutionSample } from "../lib/zeroDteExecutionRepository";
 
 type HarvestSymbolResult = {
   symbol: "SPX" | "SPY";
@@ -92,8 +92,9 @@ export default function ZeroDteCommandClient() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [secondsToRefresh, setSecondsToRefresh] = useState(60);
   const [executionIntelligence, setExecutionIntelligence] = useState<ZeroDteExecutionRead | null>(null);
-  const [executionMemory, setExecutionMemory] = useState<ZeroDteExecutionMemory | null>(null);
+  const [, setExecutionMemory] = useState<ZeroDteExecutionMemory | null>(null);
   const [executionDbError, setExecutionDbError] = useState<string | null>(null);
+  const executionSyncKeyRef = useRef<string | null>(null);
 
   async function load() {
     setLoading(true);
@@ -139,17 +140,9 @@ export default function ZeroDteCommandClient() {
         setOpeningMap(lockedMap);
         const lockedPlan = lockOpeningTradePlan(json.tradeDate, json.generatedAt, liveTradeSelection);
         setOpeningTradePlan(lockedPlan);
-        try {
-          const dbMemory = await loadExecutionMemoryDb(json.tradeDate).catch(() => emptyExecutionMemory(json.tradeDate));
-          const preliminary = buildZeroDteExecutionRead({ tradeDate: json.tradeDate, generatedAt: json.generatedAt, openingMap: lockedMap, recommendation: json.recommendation, spxRows: json.spx.rows, strikeFlow: flow, memory: dbMemory });
-          const sample = sampleFromRead(preliminary, json.recommendation.spxPrice);
-          const savedMemory = sample ? await persistExecutionSample({ tradeDate: json.tradeDate, expirationDate: json.spx.expirationDate, generatedAt: json.generatedAt, openingMap: lockedMap, openingPlan: lockedPlan, recommendation: json.recommendation, strikeFlow: flow, read: preliminary, sample }) : dbMemory;
-          setExecutionMemory(savedMemory);
-          setExecutionIntelligence(buildZeroDteExecutionRead({ tradeDate: json.tradeDate, generatedAt: json.generatedAt, openingMap: lockedMap, recommendation: json.recommendation, spxRows: json.spx.rows, strikeFlow: flow, memory: savedMemory }));
-          setExecutionDbError(null);
-        } catch (executionError) {
-          setExecutionDbError(executionError instanceof Error ? executionError.message : "Execution database sync failed.");
-        }
+      }
+      if (data?.tradeDate && nextData?.tradeDate && data.tradeDate !== nextData.tradeDate) {
+        executionSyncKeyRef.current = null;
       }
       setData(nextData);
 
@@ -203,6 +196,105 @@ export default function ZeroDteCommandClient() {
     });
   }, [data?.tradeSelection, mapManager.state, rec, spxRows, strikeFlow]);
 
+  useEffect(() => {
+    if (
+      !data?.tradeDate ||
+      !data.generatedAt ||
+      !data.spx?.expirationDate ||
+      !openingMap ||
+      !openingTradePlan ||
+      !rec ||
+      !mapAwareTradeSelection ||
+      !mapManager.state ||
+      !spxRows.length
+    ) {
+      return;
+    }
+
+    const syncKey = [
+      data.tradeDate,
+      data.generatedAt,
+      mapAwareTradeSelection.tradeType,
+      mapManager.state.phase,
+      mapManager.state.confirmationCount,
+      mapManager.state.railBreached,
+    ].join(":");
+
+    if (executionSyncKeyRef.current === syncKey) return;
+    executionSyncKeyRef.current = syncKey;
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const dbMemory = await loadExecutionMemoryDb(data.tradeDate).catch(() =>
+          emptyExecutionMemory(data.tradeDate),
+        );
+        const preliminary = buildZeroDteExecutionRead({
+          tradeDate: data.tradeDate,
+          generatedAt: data.generatedAt,
+          recommendation: rec,
+          spxRows,
+          strikeFlow,
+          tradeSelection: mapAwareTradeSelection,
+          mapState: mapManager.state!,
+          memory: dbMemory,
+        });
+        const sample = sampleFromRead(preliminary, rec.spxPrice);
+        const savedMemory = sample
+          ? await persistExecutionSample({
+              tradeDate: data.tradeDate,
+              expirationDate: data.spx?.expirationDate ?? null,
+              generatedAt: data.generatedAt,
+              openingMap,
+              openingPlan: openingTradePlan,
+              recommendation: rec,
+              strikeFlow,
+              read: preliminary,
+              sample,
+            })
+          : dbMemory;
+
+        if (cancelled) return;
+        setExecutionMemory(savedMemory);
+        setExecutionIntelligence(
+          buildZeroDteExecutionRead({
+            tradeDate: data.tradeDate,
+            generatedAt: data.generatedAt,
+            recommendation: rec,
+            spxRows,
+            strikeFlow,
+            tradeSelection: mapAwareTradeSelection,
+            mapState: mapManager.state!,
+            memory: savedMemory,
+          }),
+        );
+        setExecutionDbError(null);
+      } catch (executionError) {
+        if (cancelled) return;
+        executionSyncKeyRef.current = null;
+        setExecutionDbError(
+          executionError instanceof Error
+            ? executionError.message
+            : "Execution database sync failed.",
+        );
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    data?.generatedAt,
+    data?.spx?.expirationDate,
+    data?.tradeDate,
+    mapAwareTradeSelection,
+    mapManager.state,
+    openingMap,
+    openingTradePlan,
+    rec,
+    spxRows,
+    strikeFlow,
+  ]);
 
   function applySuggestion() {
     if (!rec) return;
@@ -388,27 +480,27 @@ export default function ZeroDteCommandClient() {
               read={executionIntelligence}
               quantity={Number(position.quantity) || 1}
               onOpen={async (entryCredit, quantity) => {
-                if (!data?.tradeDate || !data.generatedAt || !executionIntelligence || !openingMap || !rec || !data.spx) return;
+                if (!data?.tradeDate || !data.generatedAt || !executionIntelligence || !openingMap || !rec || !data.spx || !mapAwareTradeSelection || !mapManager.state) return;
                 try {
-                  const memory = await openIfPositionDb({ tradeDate: data.tradeDate, entryTime: new Date().toISOString(), entryCredit, contracts: quantity, side: executionIntelligence.edge, read: executionIntelligence });
+                  const memory = await openExecutionPositionDb({ tradeDate: data.tradeDate, entryTime: new Date().toISOString(), entryCredit, contracts: quantity, read: executionIntelligence });
                   setExecutionMemory(memory);
-                  setExecutionIntelligence(buildZeroDteExecutionRead({ tradeDate: data.tradeDate, generatedAt: new Date().toISOString(), openingMap, recommendation: rec, spxRows: data.spx.rows, strikeFlow, memory }));
+                  setExecutionIntelligence(buildZeroDteExecutionRead({ tradeDate: data.tradeDate, generatedAt: new Date().toISOString(), recommendation: rec, spxRows: data.spx.rows, strikeFlow, tradeSelection: mapAwareTradeSelection!, mapState: mapManager.state!, memory }));
                 } catch (e) { setExecutionDbError(e instanceof Error ? e.message : "Could not open DB position."); }
               }}
               onClose={async (exitDebit) => {
-                if (!data?.tradeDate || !executionIntelligence || !openingMap || !rec || !data.spx) return;
+                if (!data?.tradeDate || !executionIntelligence || !openingMap || !rec || !data.spx || !mapAwareTradeSelection || !mapManager.state) return;
                 try {
-                  const memory = await closeIfPositionDb({ tradeDate: data.tradeDate, exitTime: new Date().toISOString(), exitDebit, buybackScore: executionIntelligence.buybackScore, reason: executionIntelligence.action });
+                  const memory = await closeExecutionPositionDb({ tradeDate: data.tradeDate, exitTime: new Date().toISOString(), exitDebit, exitScore: executionIntelligence.exitScore, reason: executionIntelligence.action, emergencyExit: executionIntelligence.emergencyExit });
                   setExecutionMemory(memory);
-                  setExecutionIntelligence(buildZeroDteExecutionRead({ tradeDate: data.tradeDate, generatedAt: new Date().toISOString(), openingMap, recommendation: rec, spxRows: data.spx.rows, strikeFlow, memory }));
+                  setExecutionIntelligence(buildZeroDteExecutionRead({ tradeDate: data.tradeDate, generatedAt: new Date().toISOString(), recommendation: rec, spxRows: data.spx.rows, strikeFlow, tradeSelection: mapAwareTradeSelection!, mapState: mapManager.state!, memory }));
                 } catch (e) { setExecutionDbError(e instanceof Error ? e.message : "Could not close DB position."); }
               }}
               onReset={async () => {
-                if (!data?.tradeDate || !openingMap || !rec || !data.spx) return;
+                if (!data?.tradeDate || !openingMap || !rec || !data.spx || !mapAwareTradeSelection || !mapManager.state) return;
                 try {
                   const memory = await loadExecutionMemoryDb(data.tradeDate);
                   setExecutionMemory(memory);
-                  setExecutionIntelligence(buildZeroDteExecutionRead({ tradeDate: data.tradeDate, generatedAt: new Date().toISOString(), openingMap, recommendation: rec, spxRows: data.spx.rows, strikeFlow, memory }));
+                  setExecutionIntelligence(buildZeroDteExecutionRead({ tradeDate: data.tradeDate, generatedAt: new Date().toISOString(), recommendation: rec, spxRows: data.spx.rows, strikeFlow, tradeSelection: mapAwareTradeSelection!, mapState: mapManager.state!, memory }));
                 } catch (e) { setExecutionDbError(e instanceof Error ? e.message : "Could not reload DB execution memory."); }
               }}
             />

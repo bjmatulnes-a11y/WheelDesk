@@ -1,6 +1,43 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseServer } from "../../../../lib/supabase-server";
-import type { ZeroDteExecutionMemory } from "../../../../lib/zeroDteExecutionIntelligence";
+
+type LegacyExecutionPremiumSample = {
+  timestamp: string;
+  spot: number;
+  credit: number;
+  sellScore: number;
+  buybackScore: number;
+  springProbability: number;
+  opportunityScore: number;
+};
+
+type LegacyExecutionPosition = {
+  id: string;
+  openedAt: string;
+  entryCredit: number;
+  quantity: number;
+  entrySellScore: number;
+  entrySpringProbability: number;
+  entryOpportunityScore: number;
+  side: "upper" | "lower" | "center";
+};
+
+type LegacyExecutionClosedTrade = LegacyExecutionPosition & {
+  closedAt: string;
+  exitDebit: number;
+  buybackScore: number;
+  pnlDollars: number;
+  durationMinutes: number;
+};
+
+type LegacyZeroDteExecutionMemory = {
+  tradeDate: string;
+  tradeDayId: string | null;
+  samples: LegacyExecutionPremiumSample[];
+  position: LegacyExecutionPosition | null;
+  closedTrades: LegacyExecutionClosedTrade[];
+  cooldownUntil: string | null;
+};
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,7 +54,7 @@ const numeric = (value: unknown): number | null => {
   return null;
 };
 
-async function loadMemory(tradeDate: string): Promise<ZeroDteExecutionMemory> {
+async function loadMemory(tradeDate: string): Promise<LegacyZeroDteExecutionMemory> {
   const { data: day, error: dayError } = await supabaseServer
     .from("zero_dte_execution_trade_days")
     .select("id")
@@ -112,8 +149,8 @@ async function loadMemory(tradeDate: string): Promise<ZeroDteExecutionMemory> {
       springProbability: Number(row.spring_probability),
       opportunityScore: Number(row.opportunity_score),
     })),
-    position: position as ZeroDteExecutionMemory["position"],
-    closedTrades: closedTrades as ZeroDteExecutionMemory["closedTrades"],
+    position: position as LegacyZeroDteExecutionMemory["position"],
+    closedTrades: closedTrades as LegacyZeroDteExecutionMemory["closedTrades"],
     cooldownUntil,
   };
 }

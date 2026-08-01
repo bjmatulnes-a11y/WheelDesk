@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseServer } from "../../../../lib/supabase-server";
-import type { ZeroDteExecutionMemory } from "../../../../lib/zeroDteExecutionIntelligence";
+import type {
+  ExecutionClosedTrade,
+  ExecutionLeg,
+  ExecutionPositionMemory,
+  ExecutionPremiumSample,
+  ExecutionStrategy,
+  ZeroDteExecutionMemory,
+} from "../../../../lib/zeroDteExecutionIntelligence";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,10 +24,90 @@ const numeric = (value: unknown): number | null => {
   return null;
 };
 
+const textArray = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+
+const normalizeStrategy = (value: unknown): ExecutionStrategy => {
+  if (value === "put-credit-spread" || value === "put_credit_spread") {
+    return "put-credit-spread";
+  }
+  if (value === "call-credit-spread" || value === "call_credit_spread") {
+    return "call-credit-spread";
+  }
+  return "iron-fly";
+};
+
+const normalizePhase = (value: unknown): "OPENING" | "TRANSITION" | "ACTIVE" =>
+  value === "TRANSITION" || value === "ACTIVE" ? value : "OPENING";
+
+const normalizeRail = (value: unknown): "UPPER" | "LOWER" | "NONE" =>
+  value === "UPPER" || value === "LOWER" ? value : "NONE";
+
+const normalizeSide = (value: unknown): "upper" | "lower" | "center" =>
+  value === "upper" || value === "lower" ? value : "center";
+
+const normalizeLegs = (value: unknown): ExecutionLeg[] => {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const leg = item as Partial<ExecutionLeg>;
+    const strike = numeric(leg.strike);
+    if (
+      strike === null ||
+      (leg.optionType !== "call" && leg.optionType !== "put") ||
+      (leg.action !== "sell" && leg.action !== "buy")
+    ) {
+      return [];
+    }
+    return [{ optionType: leg.optionType, action: leg.action, strike }];
+  });
+};
+
+function legacyLegs(strategy: ExecutionStrategy, day: any): ExecutionLeg[] {
+  if (strategy === "put-credit-spread") {
+    const shortStrike = numeric(day.locked_put_short);
+    const longStrike = numeric(day.locked_put_long);
+    return shortStrike !== null && longStrike !== null
+      ? [
+          { optionType: "put", action: "sell", strike: shortStrike },
+          { optionType: "put", action: "buy", strike: longStrike },
+        ]
+      : [];
+  }
+  if (strategy === "call-credit-spread") {
+    const shortStrike = numeric(day.locked_call_short);
+    const longStrike = numeric(day.locked_call_long);
+    return shortStrike !== null && longStrike !== null
+      ? [
+          { optionType: "call", action: "sell", strike: shortStrike },
+          { optionType: "call", action: "buy", strike: longStrike },
+        ]
+      : [];
+  }
+
+  const center = numeric(day.opening_if_center);
+  const lowerWing = numeric(day.lower_wing);
+  const upperWing = numeric(day.upper_wing);
+  return center !== null && lowerWing !== null && upperWing !== null
+    ? [
+        { optionType: "put", action: "buy", strike: lowerWing },
+        { optionType: "put", action: "sell", strike: center },
+        { optionType: "call", action: "sell", strike: center },
+        { optionType: "call", action: "buy", strike: upperWing },
+      ]
+    : [];
+}
+
+function makeSetupKey(strategy: ExecutionStrategy, legs: ExecutionLeg[]) {
+  return `${strategy}:${legs
+    .map((leg) => `${leg.action[0]}${leg.optionType[0]}${leg.strike.toFixed(2)}`)
+    .join("-")}`;
+}
+
 async function loadMemory(tradeDate: string): Promise<ZeroDteExecutionMemory> {
   const { data: day, error: dayError } = await supabaseServer
     .from("zero_dte_execution_trade_days")
-    .select("id")
+    .select("*")
     .eq("trade_date", tradeDate)
     .eq("symbol", "SPX")
     .maybeSingle();
@@ -41,12 +128,10 @@ async function loadMemory(tradeDate: string): Promise<ZeroDteExecutionMemory> {
   const [samplesResult, openResult, closedResult] = await Promise.all([
     supabaseServer
       .from("zero_dte_execution_score_history")
-      .select(
-        "sampled_at,spx_price,if_credit,sell_score,buyback_score,spring_probability,opportunity_score",
-      )
+      .select("*")
       .eq("trade_day_id", day.id)
       .order("sampled_at", { ascending: true })
-      .limit(240),
+      .limit(720),
     supabaseServer
       .from("zero_dte_execution_positions")
       .select("*")
@@ -66,32 +151,38 @@ async function loadMemory(tradeDate: string): Promise<ZeroDteExecutionMemory> {
   if (openResult.error) throw openResult.error;
   if (closedResult.error) throw closedResult.error;
 
-  const open = openResult.data;
-  const position = open
-    ? {
-        id: open.id,
-        openedAt: open.entry_time,
-        entryCredit: Number(open.entry_credit),
-        quantity: Number(open.contracts),
-        entrySellScore: Number(open.entry_sell_score ?? 0),
-        entrySpringProbability: Number(open.entry_spring_probability ?? 0),
-        entryOpportunityScore: Number(open.entry_opportunity_score ?? 0),
-        side: open.setup_side,
-      }
-    : null;
+  const mapPosition = (row: any): ExecutionPositionMemory => {
+    const strategy = normalizeStrategy(row.strategy);
+    const legs = normalizeLegs(row.legs);
+    const finalLegs = legs.length ? legs : legacyLegs(strategy, day);
+    return {
+      id: row.id,
+      strategy,
+      label: row.strategy_label ?? strategy.replaceAll("-", " "),
+      setupKey: row.setup_key ?? makeSetupKey(strategy, finalLegs),
+      legs: finalLegs,
+      openedAt: row.entry_time,
+      entryCredit: Number(row.entry_credit),
+      quantity: Number(row.contracts),
+      maxRiskDollars: numeric(row.max_risk_dollars),
+      entryScore: Number(row.entry_score ?? row.entry_sell_score ?? 0),
+      entryMapPhase: normalizePhase(row.entry_map_phase),
+      entryMapCenter: Number(row.entry_map_center ?? day.opening_if_center ?? 0),
+      entryRailBreached: normalizeRail(row.entry_rail_breached),
+      entryReasons: textArray(row.entry_reasons),
+      side: normalizeSide(row.setup_side),
+    };
+  };
 
-  const closedTrades = (closedResult.data ?? []).map((row) => ({
-    id: row.id,
-    openedAt: row.entry_time,
-    entryCredit: Number(row.entry_credit),
-    quantity: Number(row.contracts),
-    entrySellScore: Number(row.entry_sell_score ?? 0),
-    entrySpringProbability: Number(row.entry_spring_probability ?? 0),
-    entryOpportunityScore: Number(row.entry_opportunity_score ?? 0),
-    side: row.setup_side,
+  const position = openResult.data ? mapPosition(openResult.data) : null;
+
+  const closedTrades: ExecutionClosedTrade[] = (closedResult.data ?? []).map((row: any) => ({
+    ...mapPosition(row),
     closedAt: row.exit_time,
     exitDebit: Number(row.exit_debit ?? 0),
-    buybackScore: Number(row.exit_buyback_score ?? 0),
+    exitScore: Number(row.exit_score ?? row.exit_buyback_score ?? 0),
+    exitReason: row.exit_reason ?? null,
+    emergencyExit: Boolean(row.exit_emergency),
     pnlDollars: Number(row.realized_pnl ?? 0),
     durationMinutes: Number(row.duration_minutes ?? 0),
   }));
@@ -100,20 +191,30 @@ async function loadMemory(tradeDate: string): Promise<ZeroDteExecutionMemory> {
     ? new Date(Date.parse(closedTrades[0].closedAt) + 15 * 60_000).toISOString()
     : null;
 
+  const samples: ExecutionPremiumSample[] = (samplesResult.data ?? []).map((row: any) => {
+    const strategy = normalizeStrategy(row.strategy);
+    const fallbackLegs = legacyLegs(strategy, day);
+    return {
+      timestamp: row.sampled_at,
+      spot: Number(row.spx_price),
+      strategy,
+      setupKey: row.setup_key ?? makeSetupKey(strategy, fallbackLegs),
+      credit: Number(row.strategy_credit ?? row.if_credit ?? 0),
+      entryScore: Number(row.entry_score ?? row.sell_score ?? 0),
+      exitScore: Number(row.exit_score ?? row.buyback_score ?? 0),
+      mapPhase: normalizePhase(row.map_phase),
+      mapCenter: Number(row.map_center ?? day.opening_if_center ?? 0),
+      railBreached: normalizeRail(row.rail_breached),
+      lifecycle: row.lifecycle ?? "WAIT",
+    } as ExecutionPremiumSample;
+  });
+
   return {
     tradeDate,
     tradeDayId: day.id,
-    samples: (samplesResult.data ?? []).map((row) => ({
-      timestamp: row.sampled_at,
-      spot: Number(row.spx_price),
-      credit: Number(row.if_credit),
-      sellScore: Number(row.sell_score),
-      buybackScore: Number(row.buyback_score),
-      springProbability: Number(row.spring_probability),
-      opportunityScore: Number(row.opportunity_score),
-    })),
-    position: position as ZeroDteExecutionMemory["position"],
-    closedTrades: closedTrades as ZeroDteExecutionMemory["closedTrades"],
+    samples,
+    position,
+    closedTrades,
     cooldownUntil,
   };
 }
@@ -128,7 +229,7 @@ async function upsertTradeDay(body: any): Promise<string> {
     symbol: "SPX",
     expiration_date: body.expirationDate,
     opening_if_center: openingMap.center,
-    opening_if_width: 50,
+    opening_if_width: openingMap.wingWidth ?? 50,
     lower_wing: openingMap.lowerWing,
     upper_wing: openingMap.upperWing,
     opening_put_wall: openingMap.putWall,
@@ -174,7 +275,6 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-
     if (!body.tradeDate) return err("Missing tradeDate", 400);
 
     if (body.action === "sample") {
@@ -182,7 +282,7 @@ export async function POST(request: NextRequest) {
       const { data: openPosition, error: openError } = await supabaseServer
         .from("zero_dte_execution_positions")
         .select("id")
-            .eq("trade_day_id", tradeDayId)
+        .eq("trade_day_id", tradeDayId)
         .eq("state", "open")
         .maybeSingle();
 
@@ -193,15 +293,20 @@ export async function POST(request: NextRequest) {
         .from("zero_dte_execution_score_history")
         .upsert(
           {
-                    trade_day_id: tradeDayId,
+            trade_day_id: tradeDayId,
             position_id: openPosition?.id ?? null,
             sampled_at: sample.timestamp,
             spx_price: sample.spot,
             if_credit: sample.credit,
-            sell_score: sample.sellScore,
-            buyback_score: sample.buybackScore,
-            spring_probability: sample.springProbability,
-            opportunity_score: sample.opportunityScore,
+            strategy_credit: sample.credit,
+            strategy: sample.strategy,
+            setup_key: sample.setupKey,
+            sell_score: sample.entryScore,
+            buyback_score: sample.exitScore,
+            entry_score: sample.entryScore,
+            exit_score: sample.exitScore,
+            spring_probability: body.read.entryScore,
+            opportunity_score: body.read.confidence,
             dealer_pressure: body.recommendation.dealerPressure,
             strike_flow_state: body.flowState,
             premium_efficiency: body.read.currentCredit
@@ -210,6 +315,13 @@ export async function POST(request: NextRequest) {
             peak_credit: body.read.peakCredit,
             credit_velocity: body.read.premiumVelocityPerMinute,
             edge: body.read.edge,
+            map_phase: sample.mapPhase,
+            map_center: sample.mapCenter,
+            rail_breached: sample.railBreached,
+            lifecycle: sample.lifecycle,
+            premium_expansion_pct: body.read.premiumExpansionPct,
+            premium_from_peak_pct: body.read.premiumFromPeakPct,
+            emergency_exit: body.read.emergencyExit,
           },
           { onConflict: "trade_day_id,sampled_at" },
         );
@@ -228,19 +340,36 @@ export async function POST(request: NextRequest) {
     }
 
     if (body.action === "open") {
+      if (memory.position) return err("An execution position is already open", 409);
+      const candidate = body.candidate;
+      if (!candidate) return err("Missing execution candidate", 400);
+      const entryCredit = numeric(body.entryCredit);
+      if (entryCredit === null || entryCredit <= 0) return err("Invalid entry credit", 400);
+      const legs = normalizeLegs(candidate.legs);
+      if (!legs.length) return err("Execution candidate has no valid legs", 400);
+
       const { error } = await supabaseServer
         .from("zero_dte_execution_positions")
         .insert({
-                trade_day_id: memory.tradeDayId,
-          strategy: "iron_fly",
+          trade_day_id: memory.tradeDayId,
+          strategy: candidate.strategy,
+          strategy_label: candidate.label,
+          setup_key: candidate.setupKey,
+          legs,
           state: "open",
           entry_time: body.entryTime,
-          entry_credit: numeric(body.entryCredit),
+          entry_credit: entryCredit,
           contracts: Math.max(1, Math.floor(numeric(body.contracts) ?? 1)),
-          setup_side: body.side,
-          entry_sell_score: body.read.sellScore,
-          entry_spring_probability: body.read.springProbability,
-          entry_opportunity_score: body.read.opportunityScore,
+          setup_side: normalizeSide(body.side),
+          max_risk_dollars: numeric(candidate.maxRiskDollars),
+          entry_score: numeric(body.read?.entryScore),
+          entry_sell_score: numeric(body.read?.entryScore),
+          entry_spring_probability: numeric(body.read?.entryScore),
+          entry_opportunity_score: numeric(body.read?.confidence),
+          entry_map_phase: candidate.mapPhase,
+          entry_map_center: numeric(candidate.mapCenter),
+          entry_rail_breached: candidate.railBreached,
+          entry_reasons: candidate.reasons ?? [],
         });
 
       if (error) throw error;
@@ -252,10 +381,10 @@ export async function POST(request: NextRequest) {
     }
 
     if (body.action === "close") {
-      if (!memory.position) return err("No open IF position", 409);
+      if (!memory.position) return err("No open execution position", 409);
 
       const exitDebit = numeric(body.exitDebit);
-      if (exitDebit === null) return err("Invalid exit debit", 400);
+      if (exitDebit === null || exitDebit < 0) return err("Invalid exit debit", 400);
 
       const pnl =
         (memory.position.entryCredit - exitDebit) *
@@ -272,7 +401,10 @@ export async function POST(request: NextRequest) {
           state: "closed",
           exit_time: body.exitTime,
           exit_debit: exitDebit,
-          exit_buyback_score: numeric(body.buybackScore),
+          exit_score: numeric(body.exitScore),
+          exit_buyback_score: numeric(body.exitScore),
+          exit_reason: body.reason ?? null,
+          exit_emergency: Boolean(body.emergencyExit),
           realized_pnl: pnl,
           duration_minutes: durationMinutes,
           updated_at: new Date().toISOString(),
@@ -289,7 +421,7 @@ export async function POST(request: NextRequest) {
             exit_time: body.exitTime,
             exit_debit: exitDebit,
             realized_pnl: pnl,
-            buyback_score: numeric(body.buybackScore),
+            buyback_score: numeric(body.exitScore),
             hold_minutes: durationMinutes,
             reason: body.reason ?? null,
           },

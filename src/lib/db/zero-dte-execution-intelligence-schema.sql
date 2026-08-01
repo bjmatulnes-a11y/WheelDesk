@@ -29,7 +29,10 @@ CREATE TABLE IF NOT EXISTS zero_dte_execution_trade_days (
 CREATE TABLE IF NOT EXISTS zero_dte_execution_positions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   trade_day_id UUID NOT NULL REFERENCES zero_dte_execution_trade_days(id) ON DELETE CASCADE,
-  strategy TEXT NOT NULL DEFAULT 'iron_fly',
+  strategy TEXT NOT NULL DEFAULT 'iron-fly',
+  strategy_label TEXT,
+  setup_key TEXT,
+  legs JSONB NOT NULL DEFAULT '[]'::jsonb,
   state TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','closed','cancelled')),
   entry_time TIMESTAMPTZ NOT NULL,
   exit_time TIMESTAMPTZ,
@@ -37,10 +40,19 @@ CREATE TABLE IF NOT EXISTS zero_dte_execution_positions (
   exit_debit NUMERIC,
   contracts INTEGER NOT NULL DEFAULT 1,
   setup_side TEXT NOT NULL DEFAULT 'center' CHECK (setup_side IN ('upper','lower','center')),
+  max_risk_dollars NUMERIC,
+  entry_score NUMERIC,
+  entry_map_phase TEXT,
+  entry_map_center NUMERIC,
+  entry_rail_breached TEXT,
+  entry_reasons JSONB NOT NULL DEFAULT '[]'::jsonb,
   entry_sell_score NUMERIC,
   entry_spring_probability NUMERIC,
   entry_opportunity_score NUMERIC,
   exit_buyback_score NUMERIC,
+  exit_score NUMERIC,
+  exit_reason TEXT,
+  exit_emergency BOOLEAN NOT NULL DEFAULT FALSE,
   realized_pnl NUMERIC,
   duration_minutes NUMERIC,
   notes TEXT,
@@ -59,6 +71,11 @@ CREATE TABLE IF NOT EXISTS zero_dte_execution_score_history (
   sampled_at TIMESTAMPTZ NOT NULL,
   spx_price NUMERIC NOT NULL,
   if_credit NUMERIC,
+  strategy TEXT NOT NULL DEFAULT 'iron-fly',
+  setup_key TEXT,
+  strategy_credit NUMERIC,
+  entry_score NUMERIC,
+  exit_score NUMERIC,
   sell_score NUMERIC NOT NULL,
   buyback_score NUMERIC NOT NULL DEFAULT 0,
   spring_probability NUMERIC NOT NULL,
@@ -69,6 +86,13 @@ CREATE TABLE IF NOT EXISTS zero_dte_execution_score_history (
   peak_credit NUMERIC,
   credit_velocity NUMERIC,
   edge TEXT,
+  map_phase TEXT,
+  map_center NUMERIC,
+  rail_breached TEXT,
+  lifecycle TEXT,
+  premium_expansion_pct NUMERIC,
+  premium_from_peak_pct NUMERIC,
+  emergency_exit BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE(trade_day_id, sampled_at)
 );
@@ -91,6 +115,10 @@ CREATE INDEX IF NOT EXISTS idx_zero_dte_execution_positions_time
   ON zero_dte_execution_positions(entry_time DESC);
 CREATE INDEX IF NOT EXISTS idx_zero_dte_execution_history_day_time
   ON zero_dte_execution_score_history(trade_day_id, sampled_at);
+CREATE INDEX IF NOT EXISTS idx_zero_dte_execution_history_setup
+  ON zero_dte_execution_score_history(trade_day_id, setup_key, sampled_at);
+CREATE INDEX IF NOT EXISTS idx_zero_dte_execution_positions_strategy
+  ON zero_dte_execution_positions(trade_day_id, strategy, entry_time DESC);
 
 -- These tables remain server-managed. RLS can stay enabled because the
 -- service-role client bypasses RLS; no browser policies are required.

@@ -9,14 +9,17 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import { useEffect, useMemo, useRef } from "react";
-import type { ExecutionRead, PremiumPoint } from "../../lib/execution/types";
+import type {
+  ExecutionPremiumSample,
+  ZeroDteExecutionRead,
+} from "../../lib/zeroDteExecutionIntelligence";
 
 export function PremiumHistoryPanel({
   history,
   read,
 }: {
-  history: PremiumPoint[];
-  read: ExecutionRead | null;
+  history: ExecutionPremiumSample[];
+  read: ZeroDteExecutionRead | null;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -24,16 +27,13 @@ export function PremiumHistoryPanel({
   const hasInitialFitRef = useRef(false);
 
   const chartData = useMemo(() => {
+    const setupKey = read?.setupKey;
     const bySecond = new Map<number, number>();
 
     for (const point of history) {
+      if (setupKey && point.setupKey !== setupKey) continue;
       const timestampMs = Date.parse(point.timestamp);
-      if (!Number.isFinite(timestampMs) || !Number.isFinite(point.credit)) {
-        continue;
-      }
-
-      // Lightweight Charts requires strictly increasing, unique timestamps.
-      // Keep the newest premium value when multiple refreshes land in the same second.
+      if (!Number.isFinite(timestampMs) || !Number.isFinite(point.credit)) continue;
       bySecond.set(Math.floor(timestampMs / 1000), point.credit);
     }
 
@@ -43,7 +43,7 @@ export function PremiumHistoryPanel({
         time: time as UTCTimestamp,
         value,
       }));
-  }, [history]);
+  }, [history, read?.setupKey]);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -92,15 +92,10 @@ export function PremiumHistoryPanel({
     const series = seriesRef.current;
     if (!series) return;
 
-    try {
-      series.setData(chartData);
-
-      if (!hasInitialFitRef.current && chartData.length) {
-        chartRef.current?.timeScale().fitContent();
-        hasInitialFitRef.current = true;
-      }
-    } catch (error) {
-      console.error("Premium history chart update failed", error, chartData);
+    series.setData(chartData);
+    if (!hasInitialFitRef.current && chartData.length) {
+      chartRef.current?.timeScale().fitContent();
+      hasInitialFitRef.current = true;
     }
   }, [chartData]);
 
@@ -108,8 +103,8 @@ export function PremiumHistoryPanel({
     <section style={styles.card}>
       <div style={styles.header}>
         <div>
-          <div style={styles.title}>Iron Fly Premium</div>
-          <div style={styles.subTitle}>Simulated live center-and-wing credit</div>
+          <div style={styles.title}>{read?.strategyLabel ?? "Strategy"} Premium</div>
+          <div style={styles.subTitle}>Exact-strike live credit/debit history for the controlling setup</div>
         </div>
         <div style={styles.metrics}>
           <Metric label="Current" value={fmt(read?.currentCredit)} />
@@ -117,18 +112,17 @@ export function PremiumHistoryPanel({
           <Metric
             label="Velocity"
             value={
-              read
-                ? `${read.premiumVelocityPerMinute >= 0 ? "+" : ""}${read.premiumVelocityPerMinute.toFixed(3)}/m`
-                : "—"
+              read?.premiumVelocityPerMinute == null
+                ? "—"
+                : `${read.premiumVelocityPerMinute >= 0 ? "+" : ""}${read.premiumVelocityPerMinute.toFixed(3)}/m`
             }
           />
           <Metric
-            label="Off Peak"
+            label="From Peak"
             value={
-              read?.creditOffPeakPct === null ||
-              read?.creditOffPeakPct === undefined
+              read?.premiumFromPeakPct == null
                 ? "—"
-                : `${read.creditOffPeakPct.toFixed(1)}%`
+                : `${read.premiumFromPeakPct.toFixed(1)}%`
             }
           />
         </div>

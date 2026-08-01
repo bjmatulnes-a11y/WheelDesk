@@ -19,10 +19,18 @@ import { DealerAnalyticsPanel } from "./DealerAnalyticsPanel";
 import { MapEnginePanel } from "./MapEnginePanel";
 import { useSessionMapManager } from "../lib/session/useSessionMapManager";
 import { getControllingMarketMap } from "../lib/session/mapEngine";
-import { buildExecutionRead } from "../lib/execution/engine";
-import { appendPremiumPoint, estimateIronFlyCredit } from "../lib/execution/premium";
-import { loadPremiumHistory, savePremiumHistory } from "../lib/execution/storage";
-import type { ExecutionRead, PremiumPoint } from "../lib/execution/types";
+import {
+  buildZeroDteExecutionRead,
+  emptyExecutionMemory,
+  sampleFromRead,
+  type ZeroDteExecutionMemory,
+  type ZeroDteExecutionRead,
+} from "../lib/zeroDteExecutionIntelligence";
+import {
+  loadExecutionMemoryDb,
+  persistExecutionSample,
+} from "../lib/zeroDteExecutionRepository";
+import { ZeroDteExecutionIntelligencePanel } from "./ZeroDteExecutionIntelligencePanel";
 import { buildZeroDteLeastResistancePath } from "../lib/zeroDteLeastResistancePath";
 import { lockOpeningMap, type ZeroDteOpeningMap } from "../lib/zeroDteOpeningMap";
 import { updateZeroDteStrikeFlow, type ZeroDteStrikeFlowRead } from "../lib/zeroDteStrikeFlow";
@@ -130,7 +138,9 @@ export default function SpxCommandChart() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [premiumHistory, setPremiumHistory] = useState<PremiumPoint[]>([]);
+  const [executionMemory, setExecutionMemory] = useState<ZeroDteExecutionMemory | null>(null);
+  const [executionDbError, setExecutionDbError] = useState<string | null>(null);
+  const executionSampleKeyRef = useRef<string | null>(null);
   const [openingMap, setOpeningMap] = useState<ZeroDteOpeningMap | null>(null);
   const [strikeFlow, setStrikeFlow] = useState<ZeroDteStrikeFlowRead | null>(null);
 
@@ -554,54 +564,123 @@ export default function SpxCommandChart() {
     hasInitialFitRef.current = true;
   }
 
-  const simulatedCredit = useMemo(() => {
-    if (!controllingMap || !spxRows.length) return null;
-    return estimateIronFlyCredit(spxRows, {
-      lowerWing: controllingMap.lowerWing,
-      shortPut: controllingMap.center,
-      shortCall: controllingMap.center,
-      upperWing: controllingMap.upperWing,
-    });
-  }, [controllingMap, spxRows]);
-
   useEffect(() => {
     if (!harvest?.tradeDate) return;
-    setPremiumHistory(loadPremiumHistory(harvest.tradeDate));
+    executionSampleKeyRef.current = null;
+    let cancelled = false;
+
+    void loadExecutionMemoryDb(harvest.tradeDate)
+      .then((memory) => {
+        if (cancelled) return;
+        setExecutionMemory(memory);
+        setExecutionDbError(null);
+      })
+      .catch((loadError) => {
+        if (cancelled) return;
+        setExecutionMemory(emptyExecutionMemory(harvest.tradeDate));
+        setExecutionDbError(
+          loadError instanceof Error
+            ? loadError.message
+            : "Execution memory load failed.",
+        );
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [harvest?.tradeDate]);
 
-  useEffect(() => {
-    if (!harvest?.tradeDate || !harvest.generatedAt) return;
-    setPremiumHistory((current) => {
-      const next = appendPremiumPoint(current, harvest.generatedAt, simulatedCredit);
-      savePremiumHistory(harvest.tradeDate, next);
-      return next;
-    });
-  }, [harvest?.generatedAt, harvest?.tradeDate, simulatedCredit]);
+  const liveExecutionRead: ZeroDteExecutionRead | null = useMemo(() => {
+    if (
+      !recommendation ||
+      !harvest?.tradeDate ||
+      !harvest.generatedAt ||
+      !mapAwareTradeSelection ||
+      !mapManager.state ||
+      !executionMemory
+    ) {
+      return null;
+    }
 
-  const liveExecutionRead: ExecutionRead | null = useMemo(() => {
-    if (!recommendation || !harvest?.generatedAt || !controllingMap) return null;
-
-    const controllingRecommendation: ZeroDteRecommendation = {
-      ...recommendation,
-      suggestedCenter: controllingMap.center,
-      lowerWing: controllingMap.lowerWing,
-      upperWing: controllingMap.upperWing,
-      spx: {
-        ...recommendation.spx,
-        callWall: controllingMap.callWall,
-        putWall: controllingMap.putWall,
-        strongestPin: controllingMap.pin,
-      },
-    };
-
-    return buildExecutionRead({
-      recommendation: controllingRecommendation,
-      rows: spxRows,
+    return buildZeroDteExecutionRead({
+      tradeDate: harvest.tradeDate,
       generatedAt: harvest.generatedAt,
-      premiumHistory,
-      position: null,
+      recommendation,
+      spxRows,
+      strikeFlow,
+      tradeSelection: mapAwareTradeSelection,
+      mapState: mapManager.state,
+      memory: executionMemory,
     });
-  }, [controllingMap, harvest?.generatedAt, premiumHistory, recommendation, spxRows]);
+  }, [
+    executionMemory,
+    harvest?.generatedAt,
+    harvest?.tradeDate,
+    mapAwareTradeSelection,
+    mapManager.state,
+    recommendation,
+    spxRows,
+    strikeFlow,
+  ]);
+
+  useEffect(() => {
+    if (
+      !liveExecutionRead ||
+      !openingMap ||
+      !recommendation ||
+      !harvest?.tradeDate ||
+      !harvest.generatedAt ||
+      !harvest.spx?.expirationDate
+    ) {
+      return;
+    }
+
+    const sample = sampleFromRead(liveExecutionRead, recommendation.spxPrice);
+    if (!sample) return;
+    const sampleKey = `${sample.timestamp}:${sample.setupKey}:${sample.lifecycle}`;
+    if (executionSampleKeyRef.current === sampleKey) return;
+    executionSampleKeyRef.current = sampleKey;
+    let cancelled = false;
+
+    void persistExecutionSample({
+      tradeDate: harvest.tradeDate,
+      expirationDate: harvest.spx.expirationDate,
+      generatedAt: harvest.generatedAt,
+      openingMap,
+      openingPlan: null,
+      recommendation,
+      strikeFlow,
+      read: liveExecutionRead,
+      sample,
+    })
+      .then((memory) => {
+        if (cancelled) return;
+        setExecutionMemory(memory);
+        setExecutionDbError(null);
+      })
+      .catch((persistError) => {
+        if (cancelled) return;
+        executionSampleKeyRef.current = null;
+        setExecutionDbError(
+          persistError instanceof Error
+            ? persistError.message
+            : "Execution memory sync failed.",
+        );
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    harvest?.generatedAt,
+    harvest?.spx?.expirationDate,
+    harvest?.tradeDate,
+    liveExecutionRead,
+    openingMap,
+    recommendation,
+    strikeFlow,
+  ]);
+
 
   return (
     <section style={styles.shell}>
@@ -725,18 +804,20 @@ export default function SpxCommandChart() {
           <div
             style={{
               ...styles.executionCard,
-              ...(liveExecutionRead?.zone === "harvest"
+              ...(liveExecutionRead?.lifecycle === "SELL_READY" ||
+              liveExecutionRead?.lifecycle === "BUYBACK_READY" ||
+              liveExecutionRead?.lifecycle === "EXITED"
                 ? styles.executionHarvest
-                : liveExecutionRead?.zone === "watch"
+                : liveExecutionRead?.lifecycle === "ARMED"
                   ? styles.executionWatch
-                  : liveExecutionRead?.zone === "manage"
+                  : liveExecutionRead?.position
                     ? styles.executionManage
                     : styles.executionAvoid),
             }}
           >
             <div style={styles.signalLabel}>Execution Engine</div>
             <div style={styles.executionAction}>
-              {liveExecutionRead?.action ?? "WAIT"}
+              {liveExecutionRead?.lifecycle.replaceAll("_", " ") ?? "WAIT"}
             </div>
             <div style={styles.scoreValue}>
               {liveExecutionRead?.confidence ?? 0}
@@ -756,20 +837,16 @@ export default function SpxCommandChart() {
           </div>
 
           <div style={styles.railCard}>
-            <div style={styles.railTitle}>Live Iron Fly</div>
+            <div style={styles.railTitle}>{liveExecutionRead?.strategyLabel ?? "Live Strategy"}</div>
             <RailRow
-              label="Center"
-              value={controllingMap?.center?.toFixed(0) ?? recommendation?.suggestedCenter?.toFixed(0) ?? "—"}
+              label="Legs"
+              value={formatExecutionLegs(
+                liveExecutionRead?.position?.legs ?? liveExecutionRead?.candidate?.legs ?? [],
+              )}
             />
             <RailRow
-              label="Wings"
-              value={
-                controllingMap
-                  ? `${controllingMap.lowerWing.toFixed(0)} / ${controllingMap.upperWing.toFixed(0)}`
-                  : recommendation
-                    ? `${recommendation.lowerWing.toFixed(0)} / ${recommendation.upperWing.toFixed(0)}`
-                    : "—"
-              }
+              label="Map"
+              value={liveExecutionRead ? `${liveExecutionRead.mapPhase} · ${liveExecutionRead.mapCenter.toFixed(0)}` : "—"}
             />
             <RailRow
               label="Current Credit"
@@ -790,30 +867,30 @@ export default function SpxCommandChart() {
             <RailRow
               label="Velocity"
               value={
-                liveExecutionRead
-                  ? `${liveExecutionRead.premiumVelocityPerMinute >= 0 ? "+" : ""}${liveExecutionRead.premiumVelocityPerMinute.toFixed(3)}/m`
-                  : "—"
+                liveExecutionRead?.premiumVelocityPerMinute == null
+                  ? "—"
+                  : `${liveExecutionRead.premiumVelocityPerMinute >= 0 ? "+" : ""}${liveExecutionRead.premiumVelocityPerMinute.toFixed(3)}/m`
               }
             />
             <RailRow
-              label="Off Peak"
+              label="From Peak"
               value={
-                liveExecutionRead?.creditOffPeakPct == null
+                liveExecutionRead?.premiumFromPeakPct == null
                   ? "—"
-                  : `${liveExecutionRead.creditOffPeakPct.toFixed(1)}%`
+                  : `${liveExecutionRead.premiumFromPeakPct.toFixed(1)}%`
               }
             />
           </div>
 
           <div style={styles.railCard}>
-            <div style={styles.railTitle}>Harvest Score</div>
+            <div style={styles.railTitle}>{liveExecutionRead?.position ? "Exit Score" : "Entry Score"}</div>
             <div style={styles.breakdownList}>
               {(liveExecutionRead?.components ?? []).map((component) => (
                 <div key={component.key} style={styles.breakdownRow}>
                   <div style={styles.breakdownHeader}>
                     <span>{component.label}</span>
                     <strong>
-                      {component.score.toFixed(1)}/{component.max}
+                      {component.value.toFixed(1)}/{component.max}
                     </strong>
                   </div>
                   <div style={styles.breakdownTrack}>
@@ -822,7 +899,7 @@ export default function SpxCommandChart() {
                         ...styles.breakdownFill,
                         width: `${Math.max(
                           0,
-                          Math.min(100, (component.score / component.max) * 100),
+                          Math.min(100, (component.value / component.max) * 100),
                         )}%`,
                       }}
                     />
@@ -865,6 +942,27 @@ export default function SpxCommandChart() {
           onReset={mapManager.reset}
         />
       ) : null}
+
+      {executionDbError ? <div style={styles.error}>Execution DB: {executionDbError}</div> : null}
+
+      <ZeroDteExecutionIntelligencePanel
+        read={liveExecutionRead}
+        readOnly
+        onReset={async () => {
+          if (!harvest?.tradeDate) return;
+          try {
+            const memory = await loadExecutionMemoryDb(harvest.tradeDate);
+            setExecutionMemory(memory);
+            setExecutionDbError(null);
+          } catch (reloadError) {
+            setExecutionDbError(
+              reloadError instanceof Error
+                ? reloadError.message
+                : "Execution memory reload failed.",
+            );
+          }
+        }}
+      />
 
       {mapAwareTradeSelection ? (
         <ZeroDteTradeSelectionPanel
@@ -914,12 +1012,26 @@ export default function SpxCommandChart() {
 
       <div style={styles.premiumSection}>
         <PremiumHistoryPanel
-          history={premiumHistory}
+          history={executionMemory?.samples ?? []}
           read={liveExecutionRead}
         />
       </div>
     </section>
   );
+}
+
+function formatExecutionLegs(
+  legs: Array<{ optionType: "call" | "put"; action: "sell" | "buy"; strike: number }>,
+) {
+  if (!legs.length) return "—";
+  return legs
+    .map(
+      (leg) =>
+        `${leg.action === "sell" ? "S" : "B"}${leg.strike.toFixed(0)}${
+          leg.optionType === "put" ? "P" : "C"
+        }`,
+    )
+    .join(" · ");
 }
 
 function MetricCard({ label, value }: { label: string; value: string }) {
