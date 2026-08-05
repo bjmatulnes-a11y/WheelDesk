@@ -2,6 +2,16 @@ import type { SessionMapManagerState } from "./session/mapEngine";
 import { getControllingMarketMap } from "./session/mapEngine";
 import type { ZeroDteChainRow, ZeroDteRecommendation } from "./zeroDteOiIntelligence";
 import type { ZeroDteStrikeFlowRead } from "./zeroDteStrikeFlow";
+import {
+  classifyZeroDteTimeRegime,
+  scorePriceExhaustion,
+  type ZeroDtePriceActionContext,
+  type ZeroDteTimeRegimeRead,
+} from "./zeroDteTimeRegime";
+import type {
+  CandidatePortfolioContribution,
+  ZeroDtePortfolioRead,
+} from "./zeroDtePortfolioEngine";
 import type {
   ZeroDteStrategyRanking,
   ZeroDteTradeSelection,
@@ -26,6 +36,24 @@ export type ExecutionLeg = {
   optionType: "call" | "put";
   action: "sell" | "buy";
   strike: number;
+};
+
+export type ExecutionCandidateTracking = {
+  strategy: ExecutionStrategy;
+  candidate: ExecutionCandidate | null;
+  scannerCandidate: ExecutionCandidate | null;
+  lockedAt: string | null;
+  lockedCandleTime: number | null;
+  ageCandles: number;
+  status:
+    | "LOCKED"
+    | "CHALLENGER_BUILDING"
+    | "REPLACED"
+    | "STRUCTURE_INVALID"
+    | "NO_CANDIDATE";
+  challengerSetupKey: string | null;
+  challengerStartedCandleTime: number | null;
+  lastReplacementReason: string | null;
 };
 
 export type ExecutionCandidate = {
@@ -56,6 +84,11 @@ export type ExecutionPremiumSample = {
   mapCenter: number;
   railBreached: SessionMapManagerState["railBreached"];
   lifecycle: ExecutionLifecycle;
+  timeRegime: ZeroDteTimeRegimeRead["regime"];
+  shortDistancePoints: number | null;
+  shortDistanceExpectedMovePct: number | null;
+  candidateAgeCandles: number;
+  trackedSince: string | null;
 };
 
 export type ExecutionPositionMemory = {
@@ -73,6 +106,7 @@ export type ExecutionPositionMemory = {
   entryMapCenter: number;
   entryRailBreached: SessionMapManagerState["railBreached"];
   entryReasons: string[];
+  entryTimeRegime: ZeroDteTimeRegimeRead["regime"];
   side: "upper" | "lower" | "center";
 };
 
@@ -90,6 +124,8 @@ export type ZeroDteExecutionMemory = {
   tradeDate: string;
   tradeDayId: string | null;
   samples: ExecutionPremiumSample[];
+  positions: ExecutionPositionMemory[];
+  /** Backward-compatible primary position. New Layer 6D code should use positions. */
   position: ExecutionPositionMemory | null;
   closedTrades: ExecutionClosedTrade[];
   cooldownUntil: string | null;
@@ -139,6 +175,15 @@ export type ZeroDteExecutionRead = {
   mapPhase: SessionMapManagerState["phase"];
   mapCenter: number;
   railBreached: SessionMapManagerState["railBreached"];
+  timeRegime: ZeroDteTimeRegimeRead;
+  shortDistancePoints: number | null;
+  shortDistanceExpectedMovePct: number | null;
+  candidateAgeCandles: number;
+  trackedSince: string | null;
+  scannerSetupKey: string | null;
+  scannerScore: number | null;
+  trackingStatus: ExecutionCandidateTracking["status"] | null;
+  portfolioContributionScore: number;
 };
 
 export function emptyExecutionMemory(tradeDate: string): ZeroDteExecutionMemory {
@@ -146,6 +191,7 @@ export function emptyExecutionMemory(tradeDate: string): ZeroDteExecutionMemory 
     tradeDate,
     tradeDayId: null,
     samples: [],
+    positions: [],
     position: null,
     closedTrades: [],
     cooldownUntil: null,
@@ -162,6 +208,10 @@ export function buildZeroDteExecutionRead(args: {
   mapState: SessionMapManagerState;
   memory: ZeroDteExecutionMemory;
   candidateOverride?: ExecutionCandidate | null;
+  positionOverride?: ExecutionPositionMemory | null;
+  tracking?: ExecutionCandidateTracking | null;
+  portfolio?: ZeroDtePortfolioRead | null;
+  priceAction?: ZeroDtePriceActionContext | null;
 }): ZeroDteExecutionRead {
   const {
     tradeDate,
@@ -179,7 +229,14 @@ export function buildZeroDteExecutionRead(args: {
     args.candidateOverride === undefined
       ? buildExecutionCandidate(tradeSelection, mapState)
       : args.candidateOverride;
-  const position = memory.position;
+  const positions = memory.positions ?? (memory.position ? [memory.position] : []);
+  const position =
+    args.positionOverride === undefined ? memory.position : args.positionOverride;
+  const hasEnteredToday = positions.length > 0 || memory.closedTrades.length > 0;
+  const timeRegime = classifyZeroDteTimeRegime({
+    generatedAt,
+    hasEnteredToday,
+  });
   const strategy = position?.strategy ?? candidate?.strategy ?? null;
   const setupKey = position?.setupKey ?? candidate?.setupKey ?? null;
   const legs = position?.legs ?? candidate?.legs ?? [];
@@ -225,6 +282,14 @@ export function buildZeroDteExecutionRead(args: {
       (premiumVelocityPerMinute ?? 0) < 0,
   );
 
+  const shortDistance = candidateShortDistance(
+    candidate,
+    recommendation.spxPrice,
+    recommendation.expectedMove,
+  );
+  const portfolioContribution = candidate?.strategy
+    ? args.portfolio?.candidateContribution[candidate.strategy] ?? null
+    : null;
   const centerDistance = Math.abs(recommendation.spxPrice - controlling.center);
   const edge = classifyEdge(
     recommendation.spxPrice,
@@ -242,6 +307,11 @@ export function buildZeroDteExecutionRead(args: {
     peakDetected,
     strikeFlow,
     recommendation,
+    timeRegime,
+    priceAction: args.priceAction ?? null,
+    shortDistance,
+    portfolioContribution,
+    tracking: args.tracking ?? null,
   });
 
   const exitRead = buildExitRead({
@@ -366,6 +436,15 @@ export function buildZeroDteExecutionRead(args: {
     mapPhase: mapState.phase,
     mapCenter: controlling.center,
     railBreached: mapState.railBreached,
+    timeRegime,
+    shortDistancePoints: shortDistance.points,
+    shortDistanceExpectedMovePct: shortDistance.expectedMovePct,
+    candidateAgeCandles: args.tracking?.ageCandles ?? 0,
+    trackedSince: args.tracking?.lockedAt ?? null,
+    scannerSetupKey: args.tracking?.scannerCandidate?.setupKey ?? null,
+    scannerScore: args.tracking?.scannerCandidate?.score ?? null,
+    trackingStatus: args.tracking?.status ?? null,
+    portfolioContributionScore: portfolioContribution?.score ?? 70,
   };
 }
 
@@ -394,6 +473,11 @@ export function sampleFromRead(
     mapCenter: read.mapCenter,
     railBreached: read.railBreached,
     lifecycle: read.lifecycle,
+    timeRegime: read.timeRegime.regime,
+    shortDistancePoints: read.shortDistancePoints,
+    shortDistanceExpectedMovePct: read.shortDistanceExpectedMovePct,
+    candidateAgeCandles: read.candidateAgeCandles,
+    trackedSince: read.trackedSince,
   };
 }
 
@@ -522,6 +606,11 @@ function buildEntryRead(args: {
   peakDetected: boolean;
   strikeFlow: ZeroDteStrikeFlowRead | null;
   recommendation: ZeroDteRecommendation;
+  timeRegime: ZeroDteTimeRegimeRead;
+  priceAction: ZeroDtePriceActionContext | null;
+  shortDistance: { points: number | null; expectedMovePct: number | null };
+  portfolioContribution: CandidatePortfolioContribution | null;
+  tracking: ExecutionCandidateTracking | null;
 }) {
   const {
     candidate,
@@ -532,13 +621,22 @@ function buildEntryRead(args: {
     peakDetected,
     strikeFlow,
     recommendation,
+    timeRegime,
+    priceAction,
+    shortDistance,
+    portfolioContribution,
+    tracking,
   } = args;
   const blockers = [...(candidate?.blockers ?? [])];
-  const reasons = [...(candidate?.reasons ?? [])];
+  const reasons = [...(candidate?.reasons ?? []), ...timeRegime.reasons];
 
-  if (!candidate) blockers.push("No executable strategy candidate is currently selected.");
+  if (!candidate) blockers.push("No executable tracked strategy candidate is available.");
   if (candidate && !candidate.eligible) blockers.push("The strategy orchestrator marked this candidate ineligible.");
   if (candidate && currentCredit === null) blockers.push("Live mids cannot price every strategy leg.");
+  if (!timeRegime.entryAllowed) blockers.push(`${timeRegime.label} does not permit new risk.`);
+  if (tracking?.status === "STRUCTURE_INVALID") {
+    blockers.push(tracking.lastReplacementReason ?? "The tracked candidate is structurally invalid.");
+  }
 
   if (candidate?.strategy === "iron-fly") {
     if (mapState.phase === "TRANSITION") blockers.push("Iron Fly entry is blocked during map transition.");
@@ -569,96 +667,162 @@ function buildEntryRead(args: {
     }
   }
 
-  const strategyScore = candidate?.score ?? 0;
-  const premiumScore =
-    premiumExpansionPct === null
-      ? 45
-      : clamp(45 + premiumExpansionPct * 2.5, 0, 100);
-  const triggerScore = peakDetected
-    ? 100
-    : premiumVelocityPerMinute !== null && premiumVelocityPerMinute < 0
-      ? 72
-      : 42;
-  const mapScore =
-    mapState.phase === "ACTIVE"
-      ? 92
-      : mapState.phase === "OPENING"
-        ? 76
-        : clamp(
-            (mapState.confirmationCount /
-              Math.max(mapState.confirmationRequired, 1)) *
-              100,
-            0,
-            100,
-          );
+  if (portfolioContribution?.blockers.length) {
+    blockers.push(...portfolioContribution.blockers);
+  }
 
+  const isCreditSpread =
+    candidate?.strategy === "put-credit-spread" ||
+    candidate?.strategy === "call-credit-spread";
+  if (
+    isCreditSpread &&
+    shortDistance.expectedMovePct !== null &&
+    shortDistance.expectedMovePct < timeRegime.minimumDistanceExpectedMovePct
+  ) {
+    blockers.push(
+      `Short-strike distance is below the ${Math.round(
+        timeRegime.minimumDistanceExpectedMovePct * 100,
+      )}% expected-move floor for ${timeRegime.label.toLowerCase()}.`,
+    );
+  }
+  if (tracking && tracking.ageCandles < 1) {
+    blockers.push(
+      "The tracked candidate must remain valid through at least one completed candle.",
+    );
+  }
+
+  const distanceScore = scoreShortDistance(
+    candidate,
+    shortDistance.expectedMovePct,
+    timeRegime.minimumDistanceExpectedMovePct,
+  );
+  const structureScore = scoreStructure(candidate, mapState);
+  const dealerFlowScore = scoreDealerFlow(
+    candidate?.strategy ?? null,
+    recommendation,
+    strikeFlow,
+  );
+  const exhaustionScore = candidate
+    ? scorePriceExhaustion({
+        strategy: candidate.strategy,
+        priceAction,
+        peakDetected,
+        premiumVelocityPerMinute,
+      })
+    : 0;
+  const premiumScore = scorePremiumExhaustion({
+    premiumExpansionPct,
+    premiumVelocityPerMinute,
+    peakDetected,
+    exhaustionScore,
+    requiresPeakRollover: timeRegime.requiresPeakRollover,
+  });
+  const portfolioScore = portfolioContribution?.score ?? 72;
+  const weights = timeRegime.weights;
   const entryScore = clamp(
-    strategyScore * 0.62 +
-      premiumScore * 0.18 +
-      triggerScore * 0.1 +
-      mapScore * 0.1,
+    distanceScore * (weights.distance / 100) +
+      structureScore * (weights.structure / 100) +
+      dealerFlowScore * (weights.dealerFlow / 100) +
+      premiumScore * (weights.premiumExhaustion / 100) +
+      portfolioScore * (weights.portfolio / 100),
     0,
     100,
   );
 
+  if (shortDistance.points !== null) {
+    reasons.push(
+      `Short strike is ${shortDistance.points.toFixed(1)} points from SPX (${Math.round((shortDistance.expectedMovePct ?? 0) * 100)}% of expected move).`,
+    );
+  }
   if (premiumExpansionPct !== null) {
     reasons.push(
-      `Live credit is ${premiumExpansionPct >= 0 ? "+" : ""}${premiumExpansionPct.toFixed(1)}% versus this setup's tracked open.`,
+      `Live credit is ${premiumExpansionPct >= 0 ? "+" : ""}${premiumExpansionPct.toFixed(1)}% versus this locked setup's tracked open.`,
     );
   } else {
-    reasons.push("Building the live premium baseline for this exact strategy and strike set.");
+    reasons.push("Building the premium baseline for this locked strategy and strike set.");
   }
   if (peakDetected) reasons.push("Premium rollover is confirmed after a tracked setup peak.");
+  if (tracking?.lockedAt) {
+    reasons.push(`Candidate has been locked for ${tracking.ageCandles} candle${tracking.ageCandles === 1 ? "" : "s"}.`);
+  }
+  if (portfolioContribution) reasons.push(...portfolioContribution.reasons);
 
   const hardBlocked = unique(blockers).length > 0;
-  const premiumReady =
-    peakDetected ||
-    (premiumExpansionPct ?? 0) >= 5 ||
-    strategyScore >= 90;
+  const stableThroughClose = !tracking || tracking.ageCandles >= 1;
+  const regimeTriggerReady = (() => {
+    if (!stableThroughClose) return false;
+    if (timeRegime.requiresPeakRollover) {
+      return peakDetected && exhaustionScore >= 60;
+    }
+    if (timeRegime.regime === "OPENING_OPPORTUNITY") {
+      return true;
+    }
+    if (timeRegime.regime === "SELECTIVE_CONTINUATION") {
+      return (
+        peakDetected ||
+        (premiumExpansionPct ?? 0) >= 4 ||
+        ((candidate?.score ?? 0) >= 90 && (tracking?.ageCandles ?? 0) >= 2)
+      );
+    }
+    return false;
+  })();
 
   return {
     entryScore: Math.round(entryScore),
-    armed: Boolean(candidate && !hardBlocked && entryScore >= 65),
+    armed: Boolean(
+      candidate &&
+        !hardBlocked &&
+        entryScore >= timeRegime.minimumEntryScore - 12,
+    ),
     sellReady: Boolean(
       candidate &&
         !hardBlocked &&
-        entryScore >= 82 &&
-        premiumReady,
+        entryScore >= timeRegime.minimumEntryScore &&
+        regimeTriggerReady,
     ),
     reasons: unique(reasons),
     blockers: unique(blockers),
     components: [
       {
-        key: "strategy",
-        label: "Strategy alignment",
-        value: strategyScore,
-        max: 100,
-        reason: `${candidate?.label ?? "No trade"} ranking score`,
+        key: "distance",
+        label: "Short-strike safety",
+        value: distanceScore * (weights.distance / 100),
+        max: weights.distance,
+        reason: shortDistance.expectedMovePct === null
+          ? "No short-strike distance is available"
+          : `${Math.round(shortDistance.expectedMovePct * 100)}% of expected move`,
       },
       {
-        key: "premium",
-        label: "Premium expansion",
-        value: premiumScore,
-        max: 100,
-        reason: premiumExpansionPct === null
-          ? "Building premium history"
-          : `${premiumExpansionPct.toFixed(1)}% versus tracked open`,
+        key: "structure",
+        label: "Map / structure",
+        value: structureScore * (weights.structure / 100),
+        max: weights.structure,
+        reason: `${mapState.phase} · rail ${mapState.railBreached}`,
       },
       {
-        key: "trigger",
-        label: "Peak / rollover trigger",
-        value: triggerScore,
-        max: 100,
+        key: "dealer-flow",
+        label: "Dealer / flow",
+        value: dealerFlowScore * (weights.dealerFlow / 100),
+        max: weights.dealerFlow,
+        reason: `${recommendation.dealerPressure.toFixed(0)} dealer pressure`,
+      },
+      {
+        key: "premium-exhaustion",
+        label: "Premium / exhaustion",
+        value: premiumScore * (weights.premiumExhaustion / 100),
+        max: weights.premiumExhaustion,
         reason: peakDetected
           ? "Premium peak rollover detected"
-          : "Premium rollover not yet confirmed",
+          : `${timeRegime.label} trigger is still building`,
       },
       {
-        key: "map",
-        label: "Map confirmation",
-        value: mapScore,
-        max: 100,
-        reason: `${mapState.phase} · ${mapState.confirmationCount}/${mapState.confirmationRequired} confirmations`,
+        key: "portfolio",
+        label: "Portfolio contribution",
+        value: portfolioScore * (weights.portfolio / 100),
+        max: weights.portfolio,
+        reason: portfolioContribution
+          ? `Contribution score ${portfolioContribution.score}`
+          : "First-position baseline",
       },
     ] satisfies ExecutionScoreComponent[],
   };
@@ -838,6 +1002,92 @@ function buildExitRead(args: {
       },
     ] satisfies ExecutionScoreComponent[],
   };
+}
+
+function candidateShortDistance(
+  candidate: ExecutionCandidate | null,
+  spot: number,
+  expectedMove: number,
+) {
+  const shortStrike = candidate?.legs.find((leg) => leg.action === "sell")?.strike;
+  if (shortStrike == null || !candidate) {
+    return { points: null, expectedMovePct: null };
+  }
+  const points =
+    candidate.strategy === "put-credit-spread"
+      ? spot - shortStrike
+      : candidate.strategy === "call-credit-spread"
+        ? shortStrike - spot
+        : Math.abs(spot - shortStrike);
+  return {
+    points,
+    expectedMovePct: expectedMove > 0 ? points / expectedMove : null,
+  };
+}
+
+function scoreShortDistance(
+  candidate: ExecutionCandidate | null,
+  distanceExpectedMovePct: number | null,
+  minimumPct: number,
+) {
+  if (!candidate) return 0;
+  if (candidate.strategy === "iron-fly") {
+    return candidate.railBreached === "NONE" ? 70 : 10;
+  }
+  if (distanceExpectedMovePct === null) return 35;
+  return clamp((distanceExpectedMovePct / Math.max(minimumPct, 0.1)) * 82);
+}
+
+function scoreStructure(
+  candidate: ExecutionCandidate | null,
+  mapState: SessionMapManagerState,
+) {
+  if (!candidate) return 0;
+  let score = candidate.score * 0.55;
+  score += mapState.phase === "ACTIVE" ? 35 : mapState.phase === "OPENING" ? 25 : 15;
+  if (candidate.strategy === "put-credit-spread" && mapState.railBreached === "UPPER") score += 10;
+  if (candidate.strategy === "call-credit-spread" && mapState.railBreached === "LOWER") score += 10;
+  if (candidate.strategy === "iron-fly" && mapState.railBreached !== "NONE") score -= 35;
+  return clamp(score);
+}
+
+function scoreDealerFlow(
+  strategy: ExecutionStrategy | null,
+  recommendation: ZeroDteRecommendation,
+  strikeFlow: ZeroDteStrikeFlowRead | null,
+) {
+  if (!strategy) return 0;
+  if (strategy === "put-credit-spread") {
+    let score = clamp(50 + recommendation.dealerPressure * 0.9);
+    if (strikeFlow?.putWall.state === "absorbed") score += 20;
+    if (strikeFlow?.putWall.state === "breaking") score -= 45;
+    return clamp(score);
+  }
+  if (strategy === "call-credit-spread") {
+    let score = clamp(50 - recommendation.dealerPressure * 0.9);
+    if (strikeFlow?.callWall.state === "defended") score += 20;
+    if (strikeFlow?.callWall.state === "attacked") score -= 45;
+    return clamp(score);
+  }
+  return clamp(100 - Math.abs(recommendation.dealerPressure) * 1.7);
+}
+
+function scorePremiumExhaustion(args: {
+  premiumExpansionPct: number | null;
+  premiumVelocityPerMinute: number | null;
+  peakDetected: boolean;
+  exhaustionScore: number;
+  requiresPeakRollover: boolean;
+}) {
+  const expansion = args.premiumExpansionPct ?? 0;
+  let score = clamp(40 + expansion * 2.2);
+  if (args.peakDetected) score = Math.max(score, 90);
+  if ((args.premiumVelocityPerMinute ?? 0) < 0) score += 8;
+  if (args.requiresPeakRollover) {
+    score = score * 0.55 + args.exhaustionScore * 0.45;
+    if (!args.peakDetected) score = Math.min(score, 58);
+  }
+  return clamp(score);
 }
 
 function findRanking(

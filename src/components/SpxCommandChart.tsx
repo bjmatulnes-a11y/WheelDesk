@@ -37,6 +37,7 @@ import {
   loadExecutionMemoryDb,
   openExecutionPositionDb,
   persistExecutionSample,
+  persistExecutionSamples,
 } from "../lib/zeroDteExecutionRepository";
 import { ZeroDteExecutionIntelligencePanel } from "./ZeroDteExecutionIntelligencePanel";
 import { buildZeroDteLeastResistancePath } from "../lib/zeroDteLeastResistancePath";
@@ -50,6 +51,9 @@ import {
   useExecutionSignalPaint,
   type ExecutionSignalPaintFilter,
 } from "../lib/execution/useExecutionSignalPaint";
+import { useStableExecutionCandidates } from "../lib/execution/useStableExecutionCandidates";
+import { buildZeroDtePortfolioRead } from "../lib/zeroDtePortfolioEngine";
+import { buildZeroDtePriceActionContext } from "../lib/zeroDteTimeRegime";
 
 type Candle = {
   time: number;
@@ -144,6 +148,8 @@ export default function SpxCommandChart() {
   const signalMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const hasInitialFitRef = useRef(false);
   const strategyInitializedForDateRef = useRef<string | null>(null);
+  const loadSequenceRef = useRef(0);
+  const loadAbortRef = useRef<AbortController | null>(null);
 
   const [candles, setCandles] = useState<Candle[]>([]);
   const [harvest, setHarvest] = useState<HarvestResponse | null>(null);
@@ -234,7 +240,7 @@ export default function SpxCommandChart() {
     });
   }, [baseTradeSelection, mapManager.state, recommendation, spxRows, strikeFlow]);
 
-  const executionCandidates = useMemo<
+  const scannerExecutionCandidates = useMemo<
     Partial<Record<ExecutionStrategy, ExecutionCandidate | null>>
   >(() => {
     if (!mapAwareTradeSelection || !mapManager.state) return {};
@@ -257,6 +263,24 @@ export default function SpxCommandChart() {
     };
   }, [mapAwareTradeSelection, mapManager.state]);
 
+  const stableCandidateTracker = useStableExecutionCandidates({
+    tradeDate: harvest?.tradeDate,
+    generatedAt: harvest?.generatedAt,
+    frequencyMinutes: frequency,
+    candles,
+    mapState: mapManager.state,
+    scannerCandidates: scannerExecutionCandidates,
+    openSetupKeys: (executionMemory?.positions ?? []).map(
+      (position) => position.setupKey,
+    ),
+  });
+  const executionCandidates = stableCandidateTracker.candidates;
+
+  const priceAction = useMemo(
+    () => buildZeroDtePriceActionContext(candles),
+    [candles],
+  );
+
   const recommendedExecutionCandidate = useMemo(() => {
     if (!mapAwareTradeSelection || !mapManager.state) return null;
     return buildExecutionCandidate(mapAwareTradeSelection, mapManager.state);
@@ -269,11 +293,6 @@ export default function SpxCommandChart() {
     strategyInitializedForDateRef.current = tradeDate;
     setSelectedExecutionStrategy(recommendedExecutionCandidate.strategy);
   }, [harvest?.tradeDate, recommendedExecutionCandidate]);
-
-  useEffect(() => {
-    if (!executionMemory?.position) return;
-    setSelectedExecutionStrategy(executionMemory.position.strategy);
-  }, [executionMemory?.position]);
 
   const analytics = useMemo(() => {
     const ema9 = calculateEma(candles, 9);
@@ -342,15 +361,24 @@ export default function SpxCommandChart() {
   }, [recommendation]);
 
   const load = useCallback(async () => {
+    const sequence = loadSequenceRef.current + 1;
+    loadSequenceRef.current = sequence;
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
+
     try {
       setError(null);
 
       const [historyResponse, harvestResponse] = await Promise.all([
         fetch(
           `/api/brokers/schwab/price-history?symbol=${encodeURIComponent("$SPX")}&frequency=${frequency}`,
-          { cache: "no-store" },
+          { cache: "no-store", signal: controller.signal },
         ),
-        fetch("/api/zero-dte/harvest-schwab", { cache: "no-store" }),
+        fetch("/api/zero-dte/harvest-schwab", {
+          cache: "no-store",
+          signal: controller.signal,
+        }),
       ]);
 
       const historyJson = (await historyResponse.json()) as PriceHistoryResponse;
@@ -366,23 +394,37 @@ export default function SpxCommandChart() {
         );
       }
 
+      if (sequence !== loadSequenceRef.current || controller.signal.aborted) {
+        return;
+      }
+
       setCandles(historyJson.candles ?? []);
       setHarvest(harvestJson);
       setLastRefresh(new Date().toISOString());
     } catch (loadError) {
+      if (controller.signal.aborted || sequence !== loadSequenceRef.current) {
+        return;
+      }
       setError(
         loadError instanceof Error
           ? loadError.message
           : "SPX command chart failed.",
       );
     } finally {
-      setLoading(false);
+      if (sequence === loadSequenceRef.current) setLoading(false);
     }
   }, [frequency]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(
+    () => () => {
+      loadAbortRef.current?.abort();
+    },
+    [],
+  );
 
   useEffect(() => {
     hasInitialFitRef.current = false;
@@ -653,7 +695,18 @@ export default function SpxCommandChart() {
     };
   }, [harvest?.tradeDate]);
 
-  const liveExecutionRead: ZeroDteExecutionRead | null = useMemo(() => {
+  const portfolioRead = useMemo(() => {
+    if (!executionMemory || !recommendation || !mapManager.state) return null;
+    return buildZeroDtePortfolioRead({
+      memory: executionMemory,
+      rows: spxRows,
+      recommendation,
+      mapState: mapManager.state,
+      candidates: executionCandidates,
+    });
+  }, [executionCandidates, executionMemory, mapManager.state, recommendation, spxRows]);
+
+  const entryExecutionRead: ZeroDteExecutionRead | null = useMemo(() => {
     if (
       !recommendation ||
       !harvest?.tradeDate ||
@@ -676,6 +729,10 @@ export default function SpxCommandChart() {
       memory: executionMemory,
       candidateOverride:
         executionCandidates[selectedExecutionStrategy] ?? null,
+      positionOverride: null,
+      tracking: stableCandidateTracker.tracks[selectedExecutionStrategy],
+      portfolio: portfolioRead,
+      priceAction,
     });
   }, [
     executionCandidates,
@@ -684,11 +741,73 @@ export default function SpxCommandChart() {
     harvest?.tradeDate,
     mapAwareTradeSelection,
     mapManager.state,
+    portfolioRead,
+    priceAction,
     recommendation,
     selectedExecutionStrategy,
     spxRows,
+    stableCandidateTracker.tracks,
     strikeFlow,
   ]);
+
+  const positionExecutionReads = useMemo(() => {
+    const tradeDate = harvest?.tradeDate;
+    const generatedAt = harvest?.generatedAt;
+    const mapState = mapManager.state;
+    if (
+      !recommendation ||
+      !tradeDate ||
+      !generatedAt ||
+      !mapAwareTradeSelection ||
+      !mapState ||
+      !executionMemory
+    ) {
+      return {} as Record<string, ZeroDteExecutionRead>;
+    }
+
+    return Object.fromEntries(
+      (executionMemory.positions ?? []).map((position) => [
+        position.id,
+        buildZeroDteExecutionRead({
+          tradeDate,
+          generatedAt,
+          recommendation,
+          spxRows,
+          strikeFlow,
+          tradeSelection: mapAwareTradeSelection,
+          mapState,
+          memory: executionMemory,
+          candidateOverride: executionCandidates[position.strategy] ?? null,
+          positionOverride: position,
+          tracking: stableCandidateTracker.tracks[position.strategy],
+          portfolio: portfolioRead,
+          priceAction,
+        }),
+      ]),
+    );
+  }, [
+    executionCandidates,
+    executionMemory,
+    harvest?.generatedAt,
+    harvest?.tradeDate,
+    mapAwareTradeSelection,
+    mapManager.state,
+    portfolioRead,
+    priceAction,
+    recommendation,
+    spxRows,
+    stableCandidateTracker.tracks,
+    strikeFlow,
+  ]);
+
+  const liveExecutionRead = useMemo(() => {
+    const positionReads = Object.values(positionExecutionReads);
+    if (!positionReads.length) return entryExecutionRead;
+    return [...positionReads].sort((a, b) => {
+      if (a.emergencyExit !== b.emergencyExit) return a.emergencyExit ? -1 : 1;
+      return b.exitScore - a.exitScore;
+    })[0] ?? entryExecutionRead;
+  }, [entryExecutionRead, positionExecutionReads]);
 
   const executionReadsForPaint = useMemo(() => {
     const tradeDate = harvest?.tradeDate;
@@ -705,17 +824,13 @@ export default function SpxCommandChart() {
       return [] as ZeroDteExecutionRead[];
     }
 
-    const strategies: ExecutionStrategy[] = executionMemory.position
-      ? [executionMemory.position.strategy]
-      : [
-          "iron-fly",
-          "put-credit-spread",
-          "call-credit-spread",
-        ];
-
-    return strategies.flatMap((strategy) => {
+    const entryReads = ([
+      "iron-fly",
+      "put-credit-spread",
+      "call-credit-spread",
+    ] as ExecutionStrategy[]).flatMap((strategy) => {
       const candidate = executionCandidates[strategy] ?? null;
-      if (!candidate && !executionMemory.position) return [];
+      if (!candidate) return [];
       return [
         buildZeroDteExecutionRead({
           tradeDate,
@@ -727,9 +842,22 @@ export default function SpxCommandChart() {
           mapState,
           memory: executionMemory,
           candidateOverride: candidate,
+          positionOverride: null,
+          tracking: stableCandidateTracker.tracks[strategy],
+          portfolio: portfolioRead,
+          priceAction,
         }),
       ];
     });
+
+    const readsBySetup = new Map<string, ZeroDteExecutionRead>();
+    for (const read of entryReads) {
+      if (read.setupKey) readsBySetup.set(read.setupKey, read);
+    }
+    for (const read of Object.values(positionExecutionReads)) {
+      if (read.setupKey) readsBySetup.set(read.setupKey, read);
+    }
+    return [...readsBySetup.values()];
   }, [
     executionCandidates,
     executionMemory,
@@ -737,8 +865,12 @@ export default function SpxCommandChart() {
     harvest?.tradeDate,
     mapAwareTradeSelection,
     mapManager.state,
+    portfolioRead,
+    positionExecutionReads,
+    priceAction,
     recommendation,
     spxRows,
+    stableCandidateTracker.tracks,
     strikeFlow,
   ]);
 
@@ -776,7 +908,7 @@ export default function SpxCommandChart() {
 
   useEffect(() => {
     if (
-      !liveExecutionRead ||
+      !executionReadsForPaint.length ||
       !openingMap ||
       !recommendation ||
       !harvest?.tradeDate ||
@@ -786,14 +918,23 @@ export default function SpxCommandChart() {
       return;
     }
 
-    const sample = sampleFromRead(liveExecutionRead, recommendation.spxPrice);
-    if (!sample) return;
-    const sampleKey = `${sample.timestamp}:${sample.setupKey}:${sample.lifecycle}`;
+    const items = executionReadsForPaint.flatMap((read) => {
+      const sample = sampleFromRead(read, recommendation.spxPrice);
+      return sample ? [{ read, sample }] : [];
+    });
+    if (!items.length) return;
+    const sampleKey = items
+      .map(({ sample }) => {
+        const bucket = Math.floor(Date.parse(sample.timestamp) / 30_000);
+        return `${bucket}:${sample.setupKey}:${sample.lifecycle}`;
+      })
+      .sort()
+      .join("|");
     if (executionSampleKeyRef.current === sampleKey) return;
     executionSampleKeyRef.current = sampleKey;
     let cancelled = false;
 
-    void persistExecutionSample({
+    void persistExecutionSamples({
       tradeDate: harvest.tradeDate,
       expirationDate: harvest.spx.expirationDate,
       generatedAt: harvest.generatedAt,
@@ -801,8 +942,7 @@ export default function SpxCommandChart() {
       openingPlan: null,
       recommendation,
       strikeFlow,
-      read: liveExecutionRead,
-      sample,
+      items,
     })
       .then((memory) => {
         if (cancelled) return;
@@ -823,10 +963,10 @@ export default function SpxCommandChart() {
       cancelled = true;
     };
   }, [
+    executionReadsForPaint,
     harvest?.generatedAt,
     harvest?.spx?.expirationDate,
     harvest?.tradeDate,
-    liveExecutionRead,
     openingMap,
     recommendation,
     strikeFlow,
@@ -1009,7 +1149,9 @@ export default function SpxCommandChart() {
             <div style={styles.scoreValue}>
               {liveExecutionRead?.confidence ?? 0}
             </div>
-            <div style={styles.signalNote}>Confidence</div>
+            <div style={styles.signalNote}>
+              {liveExecutionRead?.position ? "Exit Readiness" : "Entry Readiness"}
+            </div>
 
             <div style={styles.reasonList}>
               {(liveExecutionRead?.reasons ?? ["Building live execution context"])
@@ -1024,8 +1166,11 @@ export default function SpxCommandChart() {
           </div>
 
           <ExecutionTradeDock
-            read={liveExecutionRead}
+            read={entryExecutionRead}
+            portfolio={portfolioRead}
+            positionReads={positionExecutionReads}
             candidates={executionCandidates}
+            tracks={stableCandidateTracker.tracks}
             selectedStrategy={selectedExecutionStrategy}
             onStrategyChange={setSelectedExecutionStrategy}
             busy={executionBusy}
@@ -1059,6 +1204,10 @@ export default function SpxCommandChart() {
                   mapState: mapManager.state,
                   memory: executionMemory,
                   candidateOverride: candidate,
+                  positionOverride: null,
+                  tracking: stableCandidateTracker.tracks[candidate.strategy],
+                  portfolio: portfolioRead,
+                  priceAction,
                 });
 
                 if (!executionMemory.tradeDayId) {
@@ -1107,17 +1256,19 @@ export default function SpxCommandChart() {
                 setExecutionBusy(false);
               }
             }}
-            onClose={async (exitDebit) => {
-              if (!harvest?.tradeDate || !liveExecutionRead) return;
+            onClose={async (positionId, exitDebit) => {
+              const positionRead = positionExecutionReads[positionId];
+              if (!harvest?.tradeDate || !positionRead) return;
               setExecutionBusy(true);
               try {
                 const memory = await closeExecutionPositionDb({
                   tradeDate: harvest.tradeDate,
+                  positionId,
                   exitTime: new Date().toISOString(),
                   exitDebit,
-                  exitScore: liveExecutionRead.exitScore,
-                  reason: liveExecutionRead.action,
-                  emergencyExit: liveExecutionRead.emergencyExit,
+                  exitScore: positionRead.exitScore,
+                  reason: positionRead.action,
+                  emergencyExit: positionRead.emergencyExit,
                 });
                 setExecutionMemory(memory);
                 setExecutionDbError(null);
@@ -1584,6 +1735,9 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     gap: 10,
+    maxHeight: 610,
+    overflowY: "auto",
+    paddingRight: 3,
   },
   signalCard: {
     borderRadius: 13,

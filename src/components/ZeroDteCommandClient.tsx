@@ -490,7 +490,9 @@ export default function ZeroDteCommandClient() {
               onClose={async (exitDebit) => {
                 if (!data?.tradeDate || !executionIntelligence || !openingMap || !rec || !data.spx || !mapAwareTradeSelection || !mapManager.state) return;
                 try {
-                  const memory = await closeExecutionPositionDb({ tradeDate: data.tradeDate, exitTime: new Date().toISOString(), exitDebit, exitScore: executionIntelligence.exitScore, reason: executionIntelligence.action, emergencyExit: executionIntelligence.emergencyExit });
+                  const positionId = executionIntelligence.position?.id;
+                  if (!positionId) throw new Error("No open position is selected for close.");
+                  const memory = await closeExecutionPositionDb({ tradeDate: data.tradeDate, positionId, exitTime: new Date().toISOString(), exitDebit, exitScore: executionIntelligence.exitScore, reason: executionIntelligence.action, emergencyExit: executionIntelligence.emergencyExit });
                   setExecutionMemory(memory);
                   setExecutionIntelligence(buildZeroDteExecutionRead({ tradeDate: data.tradeDate, generatedAt: new Date().toISOString(), recommendation: rec, spxRows: data.spx.rows, strikeFlow, tradeSelection: mapAwareTradeSelection!, mapState: mapManager.state!, memory }));
                 } catch (e) { setExecutionDbError(e instanceof Error ? e.message : "Could not close DB position."); }

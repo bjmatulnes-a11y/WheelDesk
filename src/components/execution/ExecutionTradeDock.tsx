@@ -6,13 +6,19 @@ import {
   makeExecutionSetupKey,
   type ExecutionCandidate,
   type ExecutionLeg,
+  type ExecutionPositionMemory,
   type ExecutionStrategy,
   type ZeroDteExecutionRead,
 } from "../../lib/zeroDteExecutionIntelligence";
+import type { StableExecutionCandidateTrack } from "../../lib/execution/useStableExecutionCandidates";
+import type { ZeroDtePortfolioRead } from "../../lib/zeroDtePortfolioEngine";
 
 type Props = {
   read: ZeroDteExecutionRead | null;
+  portfolio: ZeroDtePortfolioRead | null;
+  positionReads: Record<string, ZeroDteExecutionRead>;
   candidates: Partial<Record<ExecutionStrategy, ExecutionCandidate | null>>;
+  tracks: Record<ExecutionStrategy, StableExecutionCandidateTrack> | null;
   selectedStrategy: ExecutionStrategy;
   onStrategyChange: (strategy: ExecutionStrategy) => void;
   onOpen: (args: {
@@ -20,13 +26,12 @@ type Props = {
     entryCredit: number;
     quantity: number;
   }) => void | Promise<void>;
-  onClose: (exitDebit: number) => void | Promise<void>;
+  onClose: (positionId: string, exitDebit: number) => void | Promise<void>;
   busy?: boolean;
   error?: string | null;
 };
 
 type SetupMode = "recommended" | "manual";
-
 type DraftLeg = Omit<ExecutionLeg, "strike"> & { strike: string };
 
 const STRATEGIES: Array<{ strategy: ExecutionStrategy; label: string }> = [
@@ -37,7 +42,10 @@ const STRATEGIES: Array<{ strategy: ExecutionStrategy; label: string }> = [
 
 export function ExecutionTradeDock({
   read,
+  portfolio,
+  positionReads,
   candidates,
+  tracks,
   selectedStrategy,
   onStrategyChange,
   onOpen,
@@ -49,10 +57,15 @@ export function ExecutionTradeDock({
   const [draftLegs, setDraftLegs] = useState<DraftLeg[]>([]);
   const [quantity, setQuantity] = useState("1");
   const [entryCredit, setEntryCredit] = useState("");
-  const [exitDebit, setExitDebit] = useState("");
+  const [showEntry, setShowEntry] = useState(true);
 
   const candidate = candidates[selectedStrategy] ?? null;
   const candidateKey = candidate?.setupKey ?? `${selectedStrategy}:none`;
+  const positions = portfolio?.positions ?? [];
+
+  useEffect(() => {
+    if (!positions.length) setShowEntry(true);
+  }, [positions.length]);
 
   useEffect(() => {
     if (setupMode === "manual") return;
@@ -71,22 +84,11 @@ export function ExecutionTradeDock({
     );
   }, [candidateKey, setupMode]);
 
-  useEffect(() => {
-    if (!read?.position) {
-      setExitDebit("");
-      return;
-    }
-    setExitDebit(
-      read.currentCredit == null ? "" : read.currentCredit.toFixed(2),
-    );
-  }, [read?.position?.id]);
-
   const parsedEntryCredit = parseNonNegative(entryCredit);
-  const parsedExitDebit = parseNonNegative(exitDebit);
   const parsedQuantity = Math.max(1, Math.floor(Number(quantity) || 1));
 
   const ticket = useMemo(() => {
-    if (!candidate) return { candidate: null, error: "No setup is available." };
+    if (!candidate) return { candidate: null, error: "No tracked setup is available." };
     if (setupMode === "recommended") {
       const credit = parsedEntryCredit ?? candidate.estimatedCredit;
       return {
@@ -121,7 +123,7 @@ export function ExecutionTradeDock({
         estimatedCredit: credit,
         maxRiskDollars: calculateMaxRisk(selectedStrategy, legs, credit),
         reasons: [
-          "Manual execution legs entered in the WheelDesk Trade Dock.",
+          "Manual execution legs entered in the WheelDesk Portfolio Dock.",
           ...candidate.reasons,
         ],
       },
@@ -132,91 +134,16 @@ export function ExecutionTradeDock({
   if (!read) {
     return (
       <div style={styles.card}>
-        <div style={styles.eyebrow}>Trade Dock</div>
+        <div style={styles.eyebrow}>Portfolio Dock</div>
         <div style={styles.empty}>Waiting for live execution intelligence.</div>
-      </div>
-    );
-  }
-
-  if (read.position) {
-    const closeLegs = read.position.legs.map(invertLeg);
-    return (
-      <div
-        style={{
-          ...styles.card,
-          borderColor: read.emergencyExit
-            ? "rgba(251,113,133,.72)"
-            : read.lifecycle === "BUYBACK_READY"
-              ? "rgba(251,113,133,.58)"
-              : "rgba(66,165,245,.5)",
-        }}
-      >
-        <div style={styles.headerRow}>
-          <div>
-            <div style={styles.eyebrow}>Position Manager</div>
-            <div style={styles.title}>{read.position.label}</div>
-          </div>
-          <div style={styles.quantityPill}>{read.position.quantity}×</div>
-        </div>
-
-        <LegList legs={read.position.legs} title="Open legs" />
-
-        <div style={styles.metricGrid}>
-          <DockMetric label="Entry Credit" value={money(read.position.entryCredit)} />
-          <DockMetric label="Current Debit" value={money(read.currentCredit)} />
-          <DockMetric label="Captured" value={percent(read.capturedPremiumPct)} />
-          <DockMetric label="Open P/L" value={dollars(read.livePnlDollars)} />
-          <DockMetric label="Exit Score" value={String(Math.round(read.exitScore))} />
-          <DockMetric label="State" value={read.lifecycle.replaceAll("_", " ")} />
-        </div>
-
-        <div style={styles.closePreview}>
-          <div style={styles.smallCaps}>Closing Order</div>
-          {closeLegs.map((leg, index) => (
-            <div key={`${leg.action}-${leg.optionType}-${leg.strike}-${index}`} style={styles.closeLeg}>
-              <strong>{leg.action.toUpperCase()}</strong>
-              <span>
-                {read.position?.quantity} × {leg.strike.toFixed(0)} {leg.optionType.toUpperCase()}
-              </span>
-            </div>
-          ))}
-        </div>
-
-        <label style={styles.fieldLabel}>
-          Actual closing debit
-          <input
-            value={exitDebit}
-            onChange={(event) => setExitDebit(event.target.value)}
-            type="number"
-            min="0"
-            step="0.05"
-            placeholder={read.currentCredit?.toFixed(2) ?? "0.00"}
-            style={styles.input}
-          />
-        </label>
-
-        <button
-          type="button"
-          disabled={busy || parsedExitDebit == null}
-          onClick={() => {
-            if (parsedExitDebit == null) return;
-            void onClose(parsedExitDebit);
-          }}
-          style={{
-            ...styles.closeButton,
-            opacity: busy || parsedExitDebit == null ? 0.45 : 1,
-          }}
-        >
-          {busy ? "Saving…" : "Buy Back / Close Position"}
-        </button>
-
-        {error ? <div style={styles.error}>{error}</div> : null}
       </div>
     );
   }
 
   const engineCleared =
     read.lifecycle === "ARMED" || read.lifecycle === "SELL_READY";
+  const contribution =
+    portfolio?.candidateContribution[selectedStrategy] ?? null;
   const canOpen =
     !busy &&
     ticket.candidate !== null &&
@@ -227,8 +154,10 @@ export function ExecutionTradeDock({
     <div style={styles.card}>
       <div style={styles.headerRow}>
         <div>
-          <div style={styles.eyebrow}>Trade Dock</div>
-          <div style={styles.title}>Enter Actual Position</div>
+          <div style={styles.eyebrow}>Portfolio Dock</div>
+          <div style={styles.title}>
+            {positions.length ? "Manage 0DTE Profile" : "Enter Actual Position"}
+          </div>
         </div>
         <div
           style={{
@@ -243,157 +172,353 @@ export function ExecutionTradeDock({
         </div>
       </div>
 
-      <div style={styles.strategyGrid}>
-        {STRATEGIES.map(({ strategy, label }) => {
-          const option = candidates[strategy];
-          const active = selectedStrategy === strategy;
-          return (
-            <button
-              type="button"
-              key={strategy}
-              onClick={() => {
-                setSetupMode("recommended");
-                onStrategyChange(strategy);
-              }}
-              style={{
-                ...styles.strategyButton,
-                ...(active ? styles.strategyButtonActive : {}),
-                opacity: option ? 1 : 0.5,
-              }}
-            >
-              <span>{label}</span>
-              <strong>{option ? Math.round(option.score) : "—"}</strong>
-            </button>
-          );
-        })}
-      </div>
+      {portfolio ? <PortfolioSummary portfolio={portfolio} /> : null}
 
-      <div style={styles.modeRow}>
-        <button
-          type="button"
-          onClick={() => setSetupMode("recommended")}
-          style={{
-            ...styles.modeButton,
-            ...(setupMode === "recommended" ? styles.modeButtonActive : {}),
-          }}
-        >
-          Recommended
-        </button>
-        <button
-          type="button"
-          onClick={() => setSetupMode("manual")}
-          style={{
-            ...styles.modeButton,
-            ...(setupMode === "manual" ? styles.modeButtonActive : {}),
-          }}
-        >
-          Manual Legs
-        </button>
-      </div>
-
-      {draftLegs.length ? (
-        <div style={styles.legEditor}>
-          {draftLegs.map((leg, index) => (
-            <label
-              key={`${leg.action}-${leg.optionType}-${index}`}
-              style={styles.legField}
-            >
-              <span>
-                {leg.action.toUpperCase()} {leg.optionType.toUpperCase()}
-              </span>
-              <input
-                value={leg.strike}
-                disabled={setupMode === "recommended"}
-                onChange={(event) => {
-                  const value = event.target.value;
-                  setDraftLegs((current) =>
-                    current.map((item, itemIndex) =>
-                      itemIndex === index ? { ...item, strike: value } : item,
-                    ),
-                  );
-                }}
-                type="number"
-                step="5"
-                style={{
-                  ...styles.legInput,
-                  opacity: setupMode === "recommended" ? 0.72 : 1,
-                }}
-              />
-            </label>
+      {positions.length ? (
+        <div style={styles.positionStack}>
+          {positions.map((item) => (
+            <PortfolioPositionCard
+              key={item.position.id}
+              position={item.position}
+              read={positionReads[item.position.id] ?? null}
+              busy={busy}
+              onClose={onClose}
+            />
           ))}
-        </div>
-      ) : (
-        <div style={styles.empty}>No executable legs for this strategy.</div>
-      )}
-
-      <div style={styles.twoColumn}>
-        <label style={styles.fieldLabel}>
-          Quantity
-          <input
-            value={quantity}
-            onChange={(event) => setQuantity(event.target.value)}
-            type="number"
-            min="1"
-            step="1"
-            style={styles.input}
-          />
-        </label>
-        <label style={styles.fieldLabel}>
-          Actual fill credit
-          <input
-            value={entryCredit}
-            onChange={(event) => setEntryCredit(event.target.value)}
-            type="number"
-            min="0"
-            step="0.05"
-            placeholder={read.currentCredit?.toFixed(2) ?? "0.00"}
-            style={styles.input}
-          />
-        </label>
-      </div>
-
-      <div style={styles.metricGrid}>
-        <DockMetric label="Live Credit" value={money(read.currentCredit)} />
-        <DockMetric
-          label="Max Risk / 1×"
-          value={dollars(
-            ticket.candidate?.maxRiskDollars ?? candidate?.maxRiskDollars,
-          )}
-        />
-        <DockMetric label="Entry Score" value={String(Math.round(read.entryScore))} />
-        <DockMetric
-          label="Eligibility"
-          value={candidate?.eligible ? "ELIGIBLE" : "OVERRIDE"}
-        />
-      </div>
-
-      {!engineCleared ? (
-        <div style={styles.warning}>
-          The execution engine has not confirmed a sell entry. WheelDesk will still
-          store and manage the position if you mark an actual fill.
         </div>
       ) : null}
 
-      {ticket.error ? <div style={styles.error}>{ticket.error}</div> : null}
-      {error ? <div style={styles.error}>{error}</div> : null}
+      {positions.length ? (
+        <button
+          type="button"
+          onClick={() => setShowEntry((current) => !current)}
+          style={styles.addButton}
+        >
+          {showEntry ? "Hide Additional Entry" : "Add Another Position"}
+        </button>
+      ) : null}
 
+      {showEntry ? (
+        <>
+          <div style={styles.regimeBar}>
+            <span>{read.timeRegime.label}</span>
+            <strong>{read.timeRegime.centralTime} CT</strong>
+            <em>{Math.round(read.timeRegime.sizeMultiplier * 100)}% size</em>
+          </div>
+
+          <div style={styles.strategyGrid}>
+            {STRATEGIES.map(({ strategy, label }) => {
+              const option = candidates[strategy];
+              const track = tracks?.[strategy] ?? null;
+              const active = selectedStrategy === strategy;
+              const scannerScore = track?.scannerCandidate?.score ?? null;
+              return (
+                <button
+                  type="button"
+                  key={strategy}
+                  onClick={() => {
+                    setSetupMode("recommended");
+                    onStrategyChange(strategy);
+                  }}
+                  style={{
+                    ...styles.strategyButton,
+                    ...(active ? styles.strategyButtonActive : {}),
+                    opacity: option ? 1 : 0.5,
+                  }}
+                >
+                  <span>{label}</span>
+                  <strong>{option ? Math.round(option.score) : "—"}</strong>
+                  <small>
+                    {track?.status.replaceAll("_", " ") ?? "NO TRACK"}
+                    {scannerScore !== null && scannerScore !== option?.score
+                      ? ` · scan ${Math.round(scannerScore)}`
+                      : ""}
+                  </small>
+                </button>
+              );
+            })}
+          </div>
+
+          <div style={styles.trackingStrip}>
+            <div>
+              <span>Tracked</span>
+              <strong>{formatLegs(candidate?.legs ?? [])}</strong>
+            </div>
+            <div>
+              <span>Age</span>
+              <strong>{read.candidateAgeCandles} candles</strong>
+            </div>
+            <div>
+              <span>Portfolio fit</span>
+              <strong>{Math.round(read.portfolioContributionScore)}</strong>
+            </div>
+          </div>
+
+          <div style={styles.modeRow}>
+            <button
+              type="button"
+              onClick={() => setSetupMode("recommended")}
+              style={{
+                ...styles.modeButton,
+                ...(setupMode === "recommended" ? styles.modeButtonActive : {}),
+              }}
+            >
+              Tracked Setup
+            </button>
+            <button
+              type="button"
+              onClick={() => setSetupMode("manual")}
+              style={{
+                ...styles.modeButton,
+                ...(setupMode === "manual" ? styles.modeButtonActive : {}),
+              }}
+            >
+              Manual Legs
+            </button>
+          </div>
+
+          {draftLegs.length ? (
+            <div style={styles.legEditor}>
+              {draftLegs.map((leg, index) => (
+                <label
+                  key={`${leg.action}-${leg.optionType}-${index}`}
+                  style={styles.legField}
+                >
+                  <span>
+                    {leg.action.toUpperCase()} {leg.optionType.toUpperCase()}
+                  </span>
+                  <input
+                    value={leg.strike}
+                    disabled={setupMode === "recommended"}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setDraftLegs((current) =>
+                        current.map((item, itemIndex) =>
+                          itemIndex === index ? { ...item, strike: value } : item,
+                        ),
+                      );
+                    }}
+                    type="number"
+                    step="5"
+                    style={{
+                      ...styles.legInput,
+                      opacity: setupMode === "recommended" ? 0.72 : 1,
+                    }}
+                  />
+                </label>
+              ))}
+            </div>
+          ) : (
+            <div style={styles.empty}>No executable tracked legs for this strategy.</div>
+          )}
+
+          <div style={styles.twoColumn}>
+            <label style={styles.fieldLabel}>
+              Quantity
+              <input
+                value={quantity}
+                onChange={(event) => setQuantity(event.target.value)}
+                type="number"
+                min="1"
+                step="1"
+                style={styles.input}
+              />
+            </label>
+            <label style={styles.fieldLabel}>
+              Actual fill credit
+              <input
+                value={entryCredit}
+                onChange={(event) => setEntryCredit(event.target.value)}
+                type="number"
+                min="0"
+                step="0.05"
+                placeholder={read.currentCredit?.toFixed(2) ?? "0.00"}
+                style={styles.input}
+              />
+            </label>
+          </div>
+
+          <div style={styles.metricGrid}>
+            <DockMetric label="Live Credit" value={money(read.currentCredit)} />
+            <DockMetric
+              label="Max Risk / 1×"
+              value={dollars(
+                ticket.candidate?.maxRiskDollars ?? candidate?.maxRiskDollars,
+              )}
+            />
+            <DockMetric
+              label="Short Distance"
+              value={
+                read.shortDistancePoints == null
+                  ? "—"
+                  : `${read.shortDistancePoints.toFixed(1)} pts`
+              }
+            />
+            <DockMetric
+              label="Entry Readiness"
+              value={String(Math.round(read.entryScore))}
+            />
+          </div>
+
+          {contribution?.blockers.length ? (
+            <div style={styles.error}>{contribution.blockers.join(" ")}</div>
+          ) : null}
+
+          {!engineCleared ? (
+            <div style={styles.warning}>
+              The engine has not confirmed a candle-close sell entry. WheelDesk
+              will still store an actual fill, but it is treated as a manual
+              portfolio override.
+            </div>
+          ) : null}
+
+          {ticket.error ? <div style={styles.error}>{ticket.error}</div> : null}
+          {error ? <div style={styles.error}>{error}</div> : null}
+
+          <button
+            type="button"
+            disabled={!canOpen}
+            onClick={() => {
+              if (!ticket.candidate || parsedEntryCredit == null) return;
+              void onOpen({
+                candidate: ticket.candidate,
+                entryCredit: parsedEntryCredit,
+                quantity: parsedQuantity,
+              });
+            }}
+            style={{ ...styles.openButton, opacity: canOpen ? 1 : 0.45 }}
+          >
+            {busy
+              ? "Saving…"
+              : `Add / Track ${strategyName(selectedStrategy)}`}
+          </button>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function PortfolioSummary({ portfolio }: { portfolio: ZeroDtePortfolioRead }) {
+  return (
+    <div style={styles.portfolioSummary}>
+      <div style={styles.storyRow}>
+        <span>{portfolio.storyLabel}</span>
+        <strong>{portfolio.recommendedActionLabel}</strong>
+      </div>
+      <div style={styles.metricGrid}>
+        <DockMetric label="Net Delta" value={signed(portfolio.netDelta)} />
+        <DockMetric
+          label="Target Band"
+          value={`${signed(portfolio.targetDeltaMin)} to ${signed(portfolio.targetDeltaMax)}`}
+        />
+        <DockMetric label="Open P/L" value={dollars(portfolio.openPnlDollars)} />
+        <DockMetric
+          label="Gross Risk"
+          value={`${dollars(portfolio.grossRiskDollars)} · ${Math.round(portfolio.riskBudgetUsedPct)}%`}
+        />
+      </div>
+      {portfolio.warnings.length ? (
+        <div style={styles.warning}>{portfolio.warnings.join(" ")}</div>
+      ) : null}
+    </div>
+  );
+}
+
+function PortfolioPositionCard({
+  position,
+  read,
+  busy,
+  onClose,
+}: {
+  position: ExecutionPositionMemory;
+  read: ZeroDteExecutionRead | null;
+  busy: boolean;
+  onClose: (positionId: string, exitDebit: number) => void | Promise<void>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [exitDebit, setExitDebit] = useState("");
+
+  useEffect(() => {
+    setExitDebit(read?.currentCredit == null ? "" : read.currentCredit.toFixed(2));
+  }, [read?.currentCredit]);
+
+  const parsedExitDebit = parseNonNegative(exitDebit);
+  const closeLegs = position.legs.map(invertLeg);
+
+  return (
+    <div
+      style={{
+        ...styles.positionCard,
+        borderColor: read?.emergencyExit
+          ? "rgba(251,113,133,.72)"
+          : read?.lifecycle === "BUYBACK_READY"
+            ? "rgba(251,113,133,.5)"
+            : "#1d3b53",
+      }}
+    >
       <button
         type="button"
-        disabled={!canOpen}
-        onClick={() => {
-          if (!ticket.candidate || parsedEntryCredit == null) return;
-          void onOpen({
-            candidate: ticket.candidate,
-            entryCredit: parsedEntryCredit,
-            quantity: parsedQuantity,
-          });
-        }}
-        style={{ ...styles.openButton, opacity: canOpen ? 1 : 0.45 }}
+        onClick={() => setExpanded((current) => !current)}
+        style={styles.positionHeaderButton}
       >
-        {busy
-          ? "Saving…"
-          : `Open / Track ${strategyName(selectedStrategy)}`}
+        <span>
+          <strong>{position.label}</strong>
+          <small>{formatLegs(position.legs)} · {position.quantity}×</small>
+        </span>
+        <em>{read?.lifecycle.replaceAll("_", " ") ?? "TRACKING"}</em>
       </button>
+
+      <div style={styles.positionQuickGrid}>
+        <DockMetric label="Entry" value={money(position.entryCredit)} />
+        <DockMetric label="Debit" value={money(read?.currentCredit)} />
+        <DockMetric label="Captured" value={percent(read?.capturedPremiumPct)} />
+        <DockMetric label="P/L" value={dollars(read?.livePnlDollars)} />
+      </div>
+
+      {expanded ? (
+        <div style={styles.expandedPosition}>
+          <LegList legs={position.legs} title="Open legs" />
+          <div style={styles.closePreview}>
+            <div style={styles.smallCaps}>Closing Order</div>
+            {closeLegs.map((leg, index) => (
+              <div
+                key={`${leg.action}-${leg.optionType}-${leg.strike}-${index}`}
+                style={styles.closeLeg}
+              >
+                <strong>{leg.action.toUpperCase()}</strong>
+                <span>
+                  {position.quantity} × {leg.strike.toFixed(0)} {leg.optionType.toUpperCase()}
+                </span>
+              </div>
+            ))}
+          </div>
+          <label style={styles.fieldLabel}>
+            Actual closing debit
+            <input
+              value={exitDebit}
+              onChange={(event) => setExitDebit(event.target.value)}
+              type="number"
+              min="0"
+              step="0.05"
+              style={styles.input}
+            />
+          </label>
+          <button
+            type="button"
+            disabled={busy || parsedExitDebit == null}
+            onClick={() => {
+              if (parsedExitDebit == null) return;
+              void onClose(position.id, parsedExitDebit);
+            }}
+            style={{
+              ...styles.closeButton,
+              opacity: busy || parsedExitDebit == null ? 0.45 : 1,
+            }}
+          >
+            {busy ? "Saving…" : "Buy Back / Close This Position"}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -403,9 +528,14 @@ function LegList({ legs, title }: { legs: ExecutionLeg[]; title: string }) {
     <div style={styles.legList}>
       <div style={styles.smallCaps}>{title}</div>
       {legs.map((leg, index) => (
-        <div key={`${leg.action}-${leg.optionType}-${leg.strike}-${index}`} style={styles.legRow}>
+        <div
+          key={`${leg.action}-${leg.optionType}-${leg.strike}-${index}`}
+          style={styles.legRow}
+        >
           <strong>{leg.action.toUpperCase()}</strong>
-          <span>{leg.strike.toFixed(0)} {leg.optionType.toUpperCase()}</span>
+          <span>
+            {leg.strike.toFixed(0)} {leg.optionType.toUpperCase()}
+          </span>
         </div>
       ))}
     </div>
@@ -427,8 +557,12 @@ function validateLegs(strategy: ExecutionStrategy, legs: ExecutionLeg[]) {
   }
 
   if (strategy === "put-credit-spread") {
-    const short = legs.find((leg) => leg.action === "sell" && leg.optionType === "put");
-    const long = legs.find((leg) => leg.action === "buy" && leg.optionType === "put");
+    const short = legs.find(
+      (leg) => leg.action === "sell" && leg.optionType === "put",
+    );
+    const long = legs.find(
+      (leg) => leg.action === "buy" && leg.optionType === "put",
+    );
     if (!short || !long) return "Put spread requires one short put and one long put.";
     if (short.strike <= long.strike) {
       return "Put credit spread short strike must be above the long strike.";
@@ -436,8 +570,12 @@ function validateLegs(strategy: ExecutionStrategy, legs: ExecutionLeg[]) {
   }
 
   if (strategy === "call-credit-spread") {
-    const short = legs.find((leg) => leg.action === "sell" && leg.optionType === "call");
-    const long = legs.find((leg) => leg.action === "buy" && leg.optionType === "call");
+    const short = legs.find(
+      (leg) => leg.action === "sell" && leg.optionType === "call",
+    );
+    const long = legs.find(
+      (leg) => leg.action === "buy" && leg.optionType === "call",
+    );
     if (!short || !long) return "Call spread requires one short call and one long call.";
     if (short.strike >= long.strike) {
       return "Call credit spread short strike must be below the long strike.";
@@ -445,17 +583,27 @@ function validateLegs(strategy: ExecutionStrategy, legs: ExecutionLeg[]) {
   }
 
   if (strategy === "iron-fly") {
-    const longPut = legs.find((leg) => leg.action === "buy" && leg.optionType === "put");
-    const shortPut = legs.find((leg) => leg.action === "sell" && leg.optionType === "put");
-    const shortCall = legs.find((leg) => leg.action === "sell" && leg.optionType === "call");
-    const longCall = legs.find((leg) => leg.action === "buy" && leg.optionType === "call");
+    const longPut = legs.find(
+      (leg) => leg.action === "buy" && leg.optionType === "put",
+    );
+    const shortPut = legs.find(
+      (leg) => leg.action === "sell" && leg.optionType === "put",
+    );
+    const shortCall = legs.find(
+      (leg) => leg.action === "sell" && leg.optionType === "call",
+    );
+    const longCall = legs.find(
+      (leg) => leg.action === "buy" && leg.optionType === "call",
+    );
     if (!longPut || !shortPut || !shortCall || !longCall) {
       return "Iron Fly requires four complete put/call legs.";
     }
     if (shortPut.strike !== shortCall.strike) {
       return "Iron Fly short put and short call must share the center strike.";
     }
-    if (!(longPut.strike < shortPut.strike && shortCall.strike < longCall.strike)) {
+    if (
+      !(longPut.strike < shortPut.strike && shortCall.strike < longCall.strike)
+    ) {
       return "Iron Fly wings must remain outside the short center.";
     }
   }
@@ -471,8 +619,12 @@ function calculateMaxRisk(
   if (credit == null) return null;
   if (strategy === "iron-fly") {
     const short = legs.find((leg) => leg.action === "sell")?.strike;
-    const longPut = legs.find((leg) => leg.action === "buy" && leg.optionType === "put")?.strike;
-    const longCall = legs.find((leg) => leg.action === "buy" && leg.optionType === "call")?.strike;
+    const longPut = legs.find(
+      (leg) => leg.action === "buy" && leg.optionType === "put",
+    )?.strike;
+    const longCall = legs.find(
+      (leg) => leg.action === "buy" && leg.optionType === "call",
+    )?.strike;
     if (short == null || longPut == null || longCall == null) return null;
     const width = Math.max(short - longPut, longCall - short);
     return Math.max(0, width - credit) * 100;
@@ -492,6 +644,13 @@ function strategyName(strategy: ExecutionStrategy) {
   if (strategy === "put-credit-spread") return "Put Credit Spread";
   if (strategy === "call-credit-spread") return "Call Credit Spread";
   return "Iron Fly";
+}
+
+function formatLegs(legs: ExecutionLeg[]) {
+  if (!legs.length) return "—";
+  return legs
+    .map((leg) => `${leg.action === "sell" ? "S" : "B"}${leg.strike.toFixed(0)}${leg.optionType[0].toUpperCase()}`)
+    .join(" · ");
 }
 
 function parseNonNegative(value: string) {
@@ -514,6 +673,10 @@ function dollars(value: number | null | undefined) {
     maximumFractionDigits: 0,
   });
   return `${value < 0 ? "-" : ""}$${absolute}`;
+}
+
+function signed(value: number) {
+  return `${value > 0 ? "+" : ""}${Math.round(value)}`;
 }
 
 const styles: Record<string, React.CSSProperties> = {
@@ -554,12 +717,67 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 900,
     whiteSpace: "nowrap",
   },
-  quantityPill: {
-    border: "1px solid #28506b",
-    background: "#102434",
-    borderRadius: 999,
-    padding: "5px 9px",
-    fontWeight: 900,
+  portfolioSummary: {
+    display: "grid",
+    gap: 7,
+    padding: 8,
+    border: "1px solid #21445d",
+    borderRadius: 9,
+    background: "#08111a",
+  },
+  storyRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 8,
+    color: "#8ea3b6",
+    fontSize: 9,
+  },
+  positionStack: { display: "grid", gap: 7 },
+  positionCard: {
+    display: "grid",
+    gap: 7,
+    border: "1px solid #1d3b53",
+    borderRadius: 9,
+    padding: 8,
+    background: "#08111a",
+  },
+  positionHeaderButton: {
+    border: 0,
+    padding: 0,
+    background: "transparent",
+    color: "#eaf2f8",
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 8,
+    textAlign: "left",
+    cursor: "pointer",
+  },
+  positionQuickGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+    gap: 5,
+  },
+  expandedPosition: { display: "grid", gap: 8 },
+  addButton: {
+    border: "1px solid #2d709e",
+    borderRadius: 8,
+    background: "#10283a",
+    color: "#dff4ff",
+    padding: 8,
+    fontSize: 9,
+    fontWeight: 850,
+    cursor: "pointer",
+  },
+  regimeBar: {
+    display: "grid",
+    gridTemplateColumns: "1fr auto auto",
+    gap: 7,
+    alignItems: "center",
+    border: "1px solid #213b50",
+    borderRadius: 8,
+    padding: 7,
+    color: "#8ea3b6",
+    fontSize: 8,
   },
   strategyGrid: {
     display: "grid",
@@ -581,6 +799,11 @@ const styles: Record<string, React.CSSProperties> = {
     background: "#12324a",
     color: "#eaf7ff",
     borderColor: "#2d709e",
+  },
+  trackingStrip: {
+    display: "grid",
+    gridTemplateColumns: "1.5fr .7fr .8fr",
+    gap: 5,
   },
   modeRow: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 },
   modeButton: {

@@ -37,6 +37,29 @@ export async function loadExecutionMemoryDb(
   return json.memory as ZeroDteExecutionMemory;
 }
 
+export async function persistExecutionSamples(args: {
+  tradeDate: string;
+  expirationDate: string | null;
+  generatedAt: string;
+  openingMap: ZeroDteOpeningMap;
+  openingPlan: ZeroDteOpeningTradePlan | null;
+  recommendation: ZeroDteRecommendation;
+  strikeFlow: ZeroDteStrikeFlowRead | null;
+  items: Array<{ read: ZeroDteExecutionRead; sample: ExecutionPremiumSample }>;
+}): Promise<ZeroDteExecutionMemory> {
+  const items = args.items.map(({ read, sample }) => ({
+    read,
+    sample,
+    flowState: flowStateForRead(read, args.strikeFlow),
+  }));
+
+  return call({
+    action: "sample-batch",
+    ...args,
+    items,
+  });
+}
+
 export async function persistExecutionSample(args: {
   tradeDate: string;
   expirationDate: string | null;
@@ -48,21 +71,9 @@ export async function persistExecutionSample(args: {
   read: ZeroDteExecutionRead;
   sample: ExecutionPremiumSample;
 }): Promise<ZeroDteExecutionMemory> {
-  const flowState =
-    args.read.strategy === "put-credit-spread"
-      ? args.strikeFlow?.putWall.state
-      : args.read.strategy === "call-credit-spread"
-        ? args.strikeFlow?.callWall.state
-        : args.read.edge === "upper"
-          ? args.strikeFlow?.callWall.state
-          : args.read.edge === "lower"
-            ? args.strikeFlow?.putWall.state
-            : "center";
-
-  return call({
-    action: "sample",
+  return persistExecutionSamples({
     ...args,
-    flowState,
+    items: [{ read: args.read, sample: args.sample }],
   });
 }
 
@@ -89,6 +100,7 @@ export async function openExecutionPositionDb(args: {
 
 export async function closeExecutionPositionDb(args: {
   tradeDate: string;
+  positionId: string;
   exitTime: string;
   exitDebit: number;
   exitScore: number;
@@ -99,4 +111,19 @@ export async function closeExecutionPositionDb(args: {
     action: "close",
     ...args,
   });
+}
+
+function flowStateForRead(
+  read: ZeroDteExecutionRead,
+  strikeFlow: ZeroDteStrikeFlowRead | null,
+) {
+  return read.strategy === "put-credit-spread"
+    ? strikeFlow?.putWall.state
+    : read.strategy === "call-credit-spread"
+      ? strikeFlow?.callWall.state
+      : read.edge === "upper"
+        ? strikeFlow?.callWall.state
+        : read.edge === "lower"
+          ? strikeFlow?.putWall.state
+          : "center";
 }

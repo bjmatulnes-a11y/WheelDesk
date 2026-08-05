@@ -8,6 +8,7 @@ import type {
   ExecutionStrategy,
   ZeroDteExecutionMemory,
 } from "../../../../lib/zeroDteExecutionIntelligence";
+import type { ZeroDteTimeRegime } from "../../../../lib/zeroDteTimeRegime";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,7 +26,9 @@ const numeric = (value: unknown): number | null => {
 };
 
 const textArray = (value: unknown): string[] =>
-  Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
 
 const normalizeStrategy = (value: unknown): ExecutionStrategy => {
   if (value === "put-credit-spread" || value === "put_credit_spread") {
@@ -45,6 +48,20 @@ const normalizeRail = (value: unknown): "UPPER" | "LOWER" | "NONE" =>
 
 const normalizeSide = (value: unknown): "upper" | "lower" | "center" =>
   value === "upper" || value === "lower" ? value : "center";
+
+const normalizeTimeRegime = (value: unknown): ZeroDteTimeRegime => {
+  if (
+    value === "PREMARKET" ||
+    value === "OPENING_OPPORTUNITY" ||
+    value === "SELECTIVE_CONTINUATION" ||
+    value === "EXHAUSTION" ||
+    value === "FINAL_ENTRY" ||
+    value === "CLOSED"
+  ) {
+    return value;
+  }
+  return "OPENING_OPPORTUNITY";
+};
 
 const normalizeLegs = (value: unknown): ExecutionLeg[] => {
   if (!Array.isArray(value)) return [];
@@ -104,6 +121,27 @@ function makeSetupKey(strategy: ExecutionStrategy, legs: ExecutionLeg[]) {
     .join("-")}`;
 }
 
+async function loadScoreHistory(tradeDayId: string) {
+  const pageSize = 1000;
+  const maxRows = 20_000;
+  const rows: any[] = [];
+
+  for (let offset = 0; offset < maxRows; offset += pageSize) {
+    const { data, error } = await supabaseServer
+      .from("zero_dte_execution_score_history")
+      .select("*")
+      .eq("trade_day_id", tradeDayId)
+      .order("sampled_at", { ascending: true })
+      .range(offset, offset + pageSize - 1);
+    if (error) throw error;
+    const page = data ?? [];
+    rows.push(...page);
+    if (page.length < pageSize) break;
+  }
+
+  return rows;
+}
+
 async function loadMemory(tradeDate: string): Promise<ZeroDteExecutionMemory> {
   const { data: day, error: dayError } = await supabaseServer
     .from("zero_dte_execution_trade_days")
@@ -119,25 +157,22 @@ async function loadMemory(tradeDate: string): Promise<ZeroDteExecutionMemory> {
       tradeDate,
       tradeDayId: null,
       samples: [],
+      positions: [],
       position: null,
       closedTrades: [],
       cooldownUntil: null,
     };
   }
 
-  const [samplesResult, openResult, closedResult] = await Promise.all([
-    supabaseServer
-      .from("zero_dte_execution_score_history")
-      .select("*")
-      .eq("trade_day_id", day.id)
-      .order("sampled_at", { ascending: true })
-      .limit(720),
+  const [sampleRows, openResult, closedResult] = await Promise.all([
+    loadScoreHistory(day.id),
     supabaseServer
       .from("zero_dte_execution_positions")
       .select("*")
       .eq("trade_day_id", day.id)
       .eq("state", "open")
-      .maybeSingle(),
+      .order("entry_time", { ascending: true })
+      .limit(20),
     supabaseServer
       .from("zero_dte_execution_positions")
       .select("*")
@@ -147,7 +182,6 @@ async function loadMemory(tradeDate: string): Promise<ZeroDteExecutionMemory> {
       .limit(100),
   ]);
 
-  if (samplesResult.error) throw samplesResult.error;
   if (openResult.error) throw openResult.error;
   if (closedResult.error) throw closedResult.error;
 
@@ -170,49 +204,64 @@ async function loadMemory(tradeDate: string): Promise<ZeroDteExecutionMemory> {
       entryMapCenter: Number(row.entry_map_center ?? day.opening_if_center ?? 0),
       entryRailBreached: normalizeRail(row.entry_rail_breached),
       entryReasons: textArray(row.entry_reasons),
+      entryTimeRegime: normalizeTimeRegime(row.entry_time_regime),
       side: normalizeSide(row.setup_side),
     };
   };
 
-  const position = openResult.data ? mapPosition(openResult.data) : null;
+  const positions = (openResult.data ?? []).map(mapPosition);
+  const position = positions[0] ?? null;
 
-  const closedTrades: ExecutionClosedTrade[] = (closedResult.data ?? []).map((row: any) => ({
-    ...mapPosition(row),
-    closedAt: row.exit_time,
-    exitDebit: Number(row.exit_debit ?? 0),
-    exitScore: Number(row.exit_score ?? row.exit_buyback_score ?? 0),
-    exitReason: row.exit_reason ?? null,
-    emergencyExit: Boolean(row.exit_emergency),
-    pnlDollars: Number(row.realized_pnl ?? 0),
-    durationMinutes: Number(row.duration_minutes ?? 0),
-  }));
+  const closedTrades: ExecutionClosedTrade[] = (closedResult.data ?? []).map(
+    (row: any) => ({
+      ...mapPosition(row),
+      closedAt: row.exit_time,
+      exitDebit: Number(row.exit_debit ?? 0),
+      exitScore: Number(row.exit_score ?? row.exit_buyback_score ?? 0),
+      exitReason: row.exit_reason ?? null,
+      emergencyExit: Boolean(row.exit_emergency),
+      pnlDollars: Number(row.realized_pnl ?? 0),
+      durationMinutes: Number(row.duration_minutes ?? 0),
+    }),
+  );
 
-  const cooldownUntil = closedTrades[0]?.closedAt
-    ? new Date(Date.parse(closedTrades[0].closedAt) + 15 * 60_000).toISOString()
-    : null;
+  const cooldownUntil =
+    positions.length === 0 && closedTrades[0]?.closedAt
+      ? new Date(Date.parse(closedTrades[0].closedAt) + 15 * 60_000).toISOString()
+      : null;
 
-  const samples: ExecutionPremiumSample[] = (samplesResult.data ?? []).map((row: any) => {
-    const strategy = normalizeStrategy(row.strategy);
-    const fallbackLegs = legacyLegs(strategy, day);
-    return {
-      timestamp: row.sampled_at,
-      spot: Number(row.spx_price),
-      strategy,
-      setupKey: row.setup_key ?? makeSetupKey(strategy, fallbackLegs),
-      credit: Number(row.strategy_credit ?? row.if_credit ?? 0),
-      entryScore: Number(row.entry_score ?? row.sell_score ?? 0),
-      exitScore: Number(row.exit_score ?? row.buyback_score ?? 0),
-      mapPhase: normalizePhase(row.map_phase),
-      mapCenter: Number(row.map_center ?? day.opening_if_center ?? 0),
-      railBreached: normalizeRail(row.rail_breached),
-      lifecycle: row.lifecycle ?? "WAIT",
-    } as ExecutionPremiumSample;
-  });
+  const samples: ExecutionPremiumSample[] = sampleRows.map(
+    (row: any) => {
+      const strategy = normalizeStrategy(row.strategy);
+      const fallbackLegs = legacyLegs(strategy, day);
+      return {
+        timestamp: row.sampled_at,
+        spot: Number(row.spx_price),
+        strategy,
+        setupKey: row.setup_key ?? makeSetupKey(strategy, fallbackLegs),
+        credit: Number(row.strategy_credit ?? row.if_credit ?? 0),
+        entryScore: Number(row.entry_score ?? row.sell_score ?? 0),
+        exitScore: Number(row.exit_score ?? row.buyback_score ?? 0),
+        mapPhase: normalizePhase(row.map_phase),
+        mapCenter: Number(row.map_center ?? day.opening_if_center ?? 0),
+        railBreached: normalizeRail(row.rail_breached),
+        lifecycle: row.lifecycle ?? "WAIT",
+        timeRegime: normalizeTimeRegime(row.time_regime),
+        shortDistancePoints: numeric(row.short_distance_points),
+        shortDistanceExpectedMovePct: numeric(
+          row.short_distance_expected_move_pct,
+        ),
+        candidateAgeCandles: Number(row.candidate_age_candles ?? 0),
+        trackedSince: row.tracked_since ?? null,
+      } as ExecutionPremiumSample;
+    },
+  );
 
   return {
     tradeDate,
     tradeDayId: day.id,
     samples,
+    positions,
     position,
     closedTrades,
     cooldownUntil,
@@ -223,6 +272,7 @@ async function upsertTradeDay(body: any): Promise<string> {
   const openingMap = body.openingMap;
   const openingPlan = body.openingPlan;
   const recommendation = body.recommendation;
+  const firstSample = body.items?.[0]?.sample ?? body.sample ?? null;
 
   const payload = {
     trade_date: body.tradeDate,
@@ -239,7 +289,7 @@ async function upsertTradeDay(body: any): Promise<string> {
     locked_put_long: openingPlan?.put?.longStrike ?? null,
     locked_call_short: openingPlan?.call?.shortStrike ?? null,
     locked_call_long: openingPlan?.call?.longStrike ?? null,
-    opening_if_credit: body.sample?.credit ?? null,
+    opening_if_credit: firstSample?.credit ?? null,
     opening_dealer_pressure: recommendation.dealerPressure,
     opening_pin_score: recommendation.confidenceScore,
     updated_at: new Date().toISOString(),
@@ -277,27 +327,37 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     if (!body.tradeDate) return err("Missing tradeDate", 400);
 
-    if (body.action === "sample") {
+    if (body.action === "sample" || body.action === "sample-batch") {
       const tradeDayId = await upsertTradeDay(body);
-      const { data: openPosition, error: openError } = await supabaseServer
+      const items =
+        body.action === "sample-batch"
+          ? Array.isArray(body.items)
+            ? body.items
+            : []
+          : [{ read: body.read, sample: body.sample, flowState: body.flowState }];
+      if (!items.length) return err("No execution samples supplied", 400);
+
+      const { data: openPositions, error: openError } = await supabaseServer
         .from("zero_dte_execution_positions")
-        .select("id")
+        .select("id,setup_key")
         .eq("trade_day_id", tradeDayId)
-        .eq("state", "open")
-        .maybeSingle();
-
+        .eq("state", "open");
       if (openError) throw openError;
+      const positionBySetup = new Map(
+        (openPositions ?? []).map((row: any) => [row.setup_key, row.id]),
+      );
 
-      const sample = body.sample;
-      const { error } = await supabaseServer
-        .from("zero_dte_execution_score_history")
-        .upsert(
+      const rows = items.flatMap((item: any) => {
+        const sample = item.sample;
+        const read = item.read;
+        if (!sample?.setupKey || !sample?.timestamp) return [];
+        return [
           {
             trade_day_id: tradeDayId,
-            position_id: openPosition?.id ?? null,
+            position_id: positionBySetup.get(sample.setupKey) ?? null,
             sampled_at: sample.timestamp,
             spx_price: sample.spot,
-            if_credit: sample.credit,
+            if_credit: sample.strategy === "iron-fly" ? sample.credit : null,
             strategy_credit: sample.credit,
             strategy: sample.strategy,
             setup_key: sample.setupKey,
@@ -305,27 +365,41 @@ export async function POST(request: NextRequest) {
             buyback_score: sample.exitScore,
             entry_score: sample.entryScore,
             exit_score: sample.exitScore,
-            spring_probability: body.read.entryScore,
-            opportunity_score: body.read.confidence,
+            spring_probability: read.entryScore,
+            opportunity_score: read.confidence,
             dealer_pressure: body.recommendation.dealerPressure,
-            strike_flow_state: body.flowState,
-            premium_efficiency: body.read.currentCredit
-              ? Math.min(100, (body.read.currentCredit / 50) * 100)
+            strike_flow_state: item.flowState,
+            premium_efficiency: read.currentCredit
+              ? Math.min(100, (read.currentCredit / 50) * 100)
               : null,
-            peak_credit: body.read.peakCredit,
-            credit_velocity: body.read.premiumVelocityPerMinute,
-            edge: body.read.edge,
+            peak_credit: read.peakCredit,
+            credit_velocity: read.premiumVelocityPerMinute,
+            edge: read.edge,
             map_phase: sample.mapPhase,
             map_center: sample.mapCenter,
             rail_breached: sample.railBreached,
             lifecycle: sample.lifecycle,
-            premium_expansion_pct: body.read.premiumExpansionPct,
-            premium_from_peak_pct: body.read.premiumFromPeakPct,
-            emergency_exit: body.read.emergencyExit,
+            premium_expansion_pct: read.premiumExpansionPct,
+            premium_from_peak_pct: read.premiumFromPeakPct,
+            emergency_exit: read.emergencyExit,
+            time_regime: sample.timeRegime,
+            short_distance_points: sample.shortDistancePoints,
+            short_distance_expected_move_pct:
+              sample.shortDistanceExpectedMovePct,
+            candidate_age_candles: sample.candidateAgeCandles,
+            tracked_since: sample.trackedSince,
+            portfolio_contribution_score: read.portfolioContributionScore,
           },
-          { onConflict: "trade_day_id,sampled_at" },
-        );
+        ];
+      });
 
+      if (!rows.length) return err("No valid execution samples supplied", 400);
+
+      const { error } = await supabaseServer
+        .from("zero_dte_execution_score_history")
+        .upsert(rows, {
+          onConflict: "trade_day_id,setup_key,sampled_at",
+        });
       if (error) throw error;
 
       return NextResponse.json({
@@ -340,13 +414,24 @@ export async function POST(request: NextRequest) {
     }
 
     if (body.action === "open") {
-      if (memory.position) return err("An execution position is already open", 409);
+      if (memory.positions.length >= 8) {
+        return err("The 0DTE portfolio already has the maximum of eight open positions", 409);
+      }
       const candidate = body.candidate;
       if (!candidate) return err("Missing execution candidate", 400);
       const entryCredit = numeric(body.entryCredit);
-      if (entryCredit === null || entryCredit <= 0) return err("Invalid entry credit", 400);
+      if (entryCredit === null || entryCredit <= 0) {
+        return err("Invalid entry credit", 400);
+      }
       const legs = normalizeLegs(candidate.legs);
       if (!legs.length) return err("Execution candidate has no valid legs", 400);
+      if (
+        memory.positions.some(
+          (position) => position.setupKey === candidate.setupKey,
+        )
+      ) {
+        return err("This exact strategy and strike set is already open", 409);
+      }
 
       const { error } = await supabaseServer
         .from("zero_dte_execution_positions")
@@ -370,6 +455,7 @@ export async function POST(request: NextRequest) {
           entry_map_center: numeric(candidate.mapCenter),
           entry_rail_breached: candidate.railBreached,
           entry_reasons: candidate.reasons ?? [],
+          entry_time_regime: body.read?.timeRegime?.regime ?? null,
         });
 
       if (error) throw error;
@@ -381,18 +467,28 @@ export async function POST(request: NextRequest) {
     }
 
     if (body.action === "close") {
-      if (!memory.position) return err("No open execution position", 409);
+      const requestedPosition = body.positionId
+        ? memory.positions.find((position) => position.id === body.positionId)
+        : memory.positions.length === 1
+          ? memory.positions[0]
+          : null;
+      if (!requestedPosition) {
+        return err("A valid open positionId is required", 409);
+      }
 
       const exitDebit = numeric(body.exitDebit);
-      if (exitDebit === null || exitDebit < 0) return err("Invalid exit debit", 400);
+      if (exitDebit === null || exitDebit < 0) {
+        return err("Invalid exit debit", 400);
+      }
 
       const pnl =
-        (memory.position.entryCredit - exitDebit) *
+        (requestedPosition.entryCredit - exitDebit) *
         100 *
-        memory.position.quantity;
+        requestedPosition.quantity;
       const durationMinutes = Math.max(
         0,
-        (Date.parse(body.exitTime) - Date.parse(memory.position.openedAt)) / 60_000,
+        (Date.parse(body.exitTime) - Date.parse(requestedPosition.openedAt)) /
+          60_000,
       );
 
       const { error } = await supabaseServer
@@ -409,7 +505,8 @@ export async function POST(request: NextRequest) {
           duration_minutes: durationMinutes,
           updated_at: new Date().toISOString(),
         })
-        .eq("id", memory.position.id);
+        .eq("id", requestedPosition.id)
+        .eq("state", "open");
 
       if (error) throw error;
 
@@ -417,7 +514,7 @@ export async function POST(request: NextRequest) {
         .from("zero_dte_execution_exits")
         .upsert(
           {
-            position_id: memory.position.id,
+            position_id: requestedPosition.id,
             exit_time: body.exitTime,
             exit_debit: exitDebit,
             realized_pnl: pnl,

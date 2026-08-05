@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS zero_dte_execution_positions (
   entry_map_center NUMERIC,
   entry_rail_breached TEXT,
   entry_reasons JSONB NOT NULL DEFAULT '[]'::jsonb,
+  entry_time_regime TEXT,
   entry_sell_score NUMERIC,
   entry_spring_probability NUMERIC,
   entry_opportunity_score NUMERIC,
@@ -60,9 +61,9 @@ CREATE TABLE IF NOT EXISTS zero_dte_execution_positions (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS uq_zero_dte_execution_one_open_position
-  ON zero_dte_execution_positions(trade_day_id)
-  WHERE state = 'open';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_zero_dte_execution_open_setup
+  ON zero_dte_execution_positions(trade_day_id, setup_key)
+  WHERE state = 'open' AND setup_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS zero_dte_execution_score_history (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -93,8 +94,14 @@ CREATE TABLE IF NOT EXISTS zero_dte_execution_score_history (
   premium_expansion_pct NUMERIC,
   premium_from_peak_pct NUMERIC,
   emergency_exit BOOLEAN NOT NULL DEFAULT FALSE,
+  time_regime TEXT,
+  short_distance_points NUMERIC,
+  short_distance_expected_move_pct NUMERIC,
+  candidate_age_candles INTEGER NOT NULL DEFAULT 0,
+  tracked_since TIMESTAMPTZ,
+  portfolio_contribution_score NUMERIC,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE(trade_day_id, sampled_at)
+  UNIQUE(trade_day_id, setup_key, sampled_at)
 );
 
 CREATE TABLE IF NOT EXISTS zero_dte_execution_exits (
@@ -119,6 +126,8 @@ CREATE INDEX IF NOT EXISTS idx_zero_dte_execution_history_setup
   ON zero_dte_execution_score_history(trade_day_id, setup_key, sampled_at);
 CREATE INDEX IF NOT EXISTS idx_zero_dte_execution_positions_strategy
   ON zero_dte_execution_positions(trade_day_id, strategy, entry_time DESC);
+CREATE INDEX IF NOT EXISTS idx_zero_dte_execution_positions_open_portfolio
+  ON zero_dte_execution_positions(trade_day_id, state, entry_time);
 
 -- These tables remain server-managed. RLS can stay enabled because the
 -- service-role client bypasses RLS; no browser policies are required.
