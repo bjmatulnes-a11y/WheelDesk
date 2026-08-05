@@ -48,6 +48,7 @@ import { buildZeroDteTradeSelection, type ZeroDteTradeSelection } from "../lib/z
 import { orchestrateZeroDteStrategySelection } from "../lib/zeroDteStrategyOrchestrator";
 import { ZeroDteTradeSelectionPanel } from "./ZeroDteTradeSelectionPanel";
 import { ZeroDteMoodPanel } from "./ZeroDteMoodPanel";
+import { ZeroDteStrikeFlowPanel } from "./ZeroDteStrikeFlowPanel";
 import { ExecutionTradeDock } from "./execution/ExecutionTradeDock";
 import {
   useExecutionSignalPaint,
@@ -1358,6 +1359,8 @@ export default function SpxCommandChart() {
           onReset={mapManager.reset}
         />
       ) : null}
+
+      <ZeroDteStrikeFlowPanel flow={strikeFlow} />
 
       {executionDbError ? <div style={styles.error}>Execution DB: {executionDbError}</div> : null}
 
