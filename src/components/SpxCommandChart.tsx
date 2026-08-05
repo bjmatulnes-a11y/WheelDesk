@@ -47,6 +47,7 @@ import { updateZeroDteStrikeFlow, type ZeroDteStrikeFlowRead } from "../lib/zero
 import { buildZeroDteTradeSelection, type ZeroDteTradeSelection } from "../lib/zeroDteTradeSelector";
 import { orchestrateZeroDteStrategySelection } from "../lib/zeroDteStrategyOrchestrator";
 import { ZeroDteTradeSelectionPanel } from "./ZeroDteTradeSelectionPanel";
+import { ZeroDteMoodPanel } from "./ZeroDteMoodPanel";
 import { ExecutionTradeDock } from "./execution/ExecutionTradeDock";
 import {
   useExecutionSignalPaint,
@@ -714,8 +715,9 @@ export default function SpxCommandChart() {
       recommendation,
       mapState: mapManager.state,
       candidates: executionCandidates,
+      mood: harvest?.mood ?? null,
     });
-  }, [executionCandidates, executionMemory, mapManager.state, recommendation, spxRows]);
+  }, [executionCandidates, executionMemory, harvest?.mood, mapManager.state, recommendation, spxRows]);
 
   const entryExecutionRead: ZeroDteExecutionRead | null = useMemo(() => {
     if (
@@ -1377,6 +1379,8 @@ export default function SpxCommandChart() {
           }
         }}
       />
+
+      <ZeroDteMoodPanel mood={harvest?.mood ?? null} />
 
       {mapAwareTradeSelection ? (
         <ZeroDteTradeSelectionPanel

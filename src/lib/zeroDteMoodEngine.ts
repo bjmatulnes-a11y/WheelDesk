@@ -1,3 +1,6 @@
+import type { ZeroDteLeadershipRead } from "./zeroDteLeadershipEngine";
+import type { ZeroDteBreadthSnapshot } from "./zeroDteBreadthAdapter";
+
 export type ZeroDteIndex = "SPX" | "NDX" | "RUT";
 
 export type ZeroDteMoodTradeBias =
@@ -37,7 +40,21 @@ export type ZeroDteMarketStage =
   | "distribution"
   | "unknown";
 
+
+export type ZeroDteMoodCalculationMode =
+  | "FAST_OPEN"
+  | "NORMAL"
+  | "EOD_FROZEN"
+  | "MANUAL"
+  | "UNAVAILABLE";
+
+export type ZeroDteMoodDivergence =
+  | "PRICE_UP_MOOD_DOWN"
+  | "PRICE_DOWN_MOOD_UP"
+  | "NONE";
+
 export type ZeroDteMoodInput = {
+
   index?: ZeroDteIndex;
   moodRecommendationPercent?: number;
 
@@ -70,9 +87,19 @@ export type ZeroDteMoodInput = {
   uvolDvolTrend?: number | null;
   advanceDeclineTrend?: number | null;
 
+
   source?: string;
   generatedAt?: string;
+  calculationMode?: ZeroDteMoodCalculationMode;
+  smoothedMoodPercent?: number | null;
+  smoothingLength?: number;
+  averageLength?: number;
+  minuteKey?: number | null;
+  internalDivergence?: ZeroDteMoodDivergence;
+  leadership?: ZeroDteLeadershipRead | null;
+  breadth?: ZeroDteBreadthSnapshot | null;
 };
+
 
 export type ZeroDteMoodComponent = {
   name: string;
@@ -100,8 +127,17 @@ export type ZeroDteMoodRead = {
   warnings: string[];
   information: string[];
   components: ZeroDteMoodComponent[];
+
   recommendationLabel: string;
+  calculationMode: ZeroDteMoodCalculationMode;
+  smoothingLength: number;
+  averageLength: number;
+  minuteKey: number | null;
+  internalDivergence: ZeroDteMoodDivergence;
+  leadership: ZeroDteLeadershipRead | null;
+  breadth: ZeroDteBreadthSnapshot | null;
 };
+
 
 export function buildZeroDteMoodRead(input: ZeroDteMoodInput): ZeroDteMoodRead {
   const index = input.index ?? "SPX";
@@ -133,8 +169,8 @@ export function buildZeroDteMoodRead(input: ZeroDteMoodInput): ZeroDteMoodRead {
   const calculatedCoverageScore =
     maxWeight > 0 ? Math.round((totalWeight / maxWeight) * 100) : 0;
   const calculatedRawMood =
-    totalWeight > 0
-      ? clamp((totalContribution / totalWeight) * 50, -100, 100)
+    available.length > 0
+      ? clamp((totalContribution / available.length) * 100, -100, 100)
       : null;
   const calculatedUsable =
     calculatedRawMood !== null && calculatedCoverageScore >= 25;
@@ -160,7 +196,7 @@ export function buildZeroDteMoodRead(input: ZeroDteMoodInput): ZeroDteMoodRead {
     source = "manual-forced";
     coverageStatus = "MANUAL";
   } else if (calculatedUsable) {
-    moodPercent = calculatedRawMood;
+    moodPercent = clean(input.smoothedMoodPercent) ?? calculatedRawMood;
     rawMoodPercent = calculatedRawMood;
     source = calculatedStatus === "FULL" ? "calculated-full" : "calculated-partial";
   } else if (manual !== null) {
@@ -246,6 +282,64 @@ export function buildZeroDteMoodRead(input: ZeroDteMoodInput): ZeroDteMoodRead {
     information,
     components,
     recommendationLabel: labelForTradeBias(tradeBias),
+    calculationMode: input.calculationMode ?? (moodPercent === null ? "UNAVAILABLE" : "NORMAL"),
+    smoothingLength: clamp(Math.round(input.smoothingLength ?? 3), 1, 10),
+    averageLength: clamp(Math.round(input.averageLength ?? 5), 1, 10),
+    minuteKey: input.minuteKey ?? null,
+    internalDivergence: input.internalDivergence ?? "NONE",
+    leadership: input.leadership ?? null,
+    breadth: input.breadth ?? null,
+  };
+}
+
+
+export function applyManualMoodMode(
+  calculated: ZeroDteMoodRead,
+  manualMoodPercent: number | null | undefined,
+  mode: ZeroDteManualMoodMode,
+): ZeroDteMoodRead {
+  const manual = clean(manualMoodPercent);
+  const useManual =
+    manual !== null &&
+    (mode === "force" || calculated.moodPercent === null);
+  if (!useManual) return { ...calculated, manualMode: mode };
+
+  const moodPercent = clamp(manual, -100, 100);
+  const tradeBias = classifyMood(
+    moodPercent,
+    calculated.threshold,
+    calculated.zoneStep,
+  );
+  const source: ZeroDteMoodSource =
+    mode === "force" ? "manual-forced" : "manual-fallback";
+  return {
+    ...calculated,
+    moodPercent,
+    source,
+    manualMode: mode,
+    tradeBias,
+    directionalBias: directionalBiasForMood(
+      moodPercent,
+      calculated.threshold,
+    ),
+    confidence: confidenceForMood(moodPercent, calculated.threshold, 100),
+    coverageScore: 100,
+    coverage: {
+      ...calculated.coverage,
+      status: "MANUAL",
+      summary:
+        mode === "force"
+          ? "Manual mood forced; calculated coverage remains visible for comparison."
+          : "Manual mood fallback active because calculated SPX mood is unavailable.",
+    },
+    calculationMode: "MANUAL",
+    recommendationLabel: labelForTradeBias(tradeBias),
+    information: [
+      ...(calculated.information ?? []),
+      mode === "force"
+        ? "Manual mood is deliberately forced over the calculated read."
+        : "Manual mood fallback is active because the calculated read is unavailable.",
+    ],
   };
 }
 

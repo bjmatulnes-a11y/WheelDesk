@@ -3,7 +3,7 @@ import type { ZeroDteMoodRead } from "./zeroDteMoodEngine";
 
 export type CreditSpreadSide = "put" | "call";
 export type CreditSpreadRiskMode = "conservative" | "balanced" | "aggressive";
-export type CreditSpreadSelectionMode = "auto-oi-dealer" | "manual-mood" | "manual-tos-mood" | "dealer-pressure" | "two-sided-review";
+export type CreditSpreadSelectionMode = "auto-oi-dealer" | "calculated-mood" | "manual-mood" | "manual-tos-mood" | "dealer-pressure" | "two-sided-review";
 
 export type ZeroDteCreditSpreadBook = {
   preferredSide: CreditSpreadSide | "none";
@@ -71,6 +71,7 @@ export type CreditSpreadCandidate = {
   oiScore: number;
   wallScore: number;
   dealerScore: number;
+  moodScore: number;
   spyScore: number;
   premiumScore: number;
   distanceScore: number;
@@ -170,6 +171,7 @@ export function selectZeroDteCreditSpread(input: SelectCreditSpreadInput): ZeroD
             expectedMoveRemaining,
             wall,
             dealerPressure,
+            mood: input.mood ?? null,
             minPct,
             maxPct,
             maxRiskDollars,
@@ -205,9 +207,9 @@ export function selectZeroDteCreditSpread(input: SelectCreditSpreadInput): ZeroD
   if (side === "call" && dealerPressure > 20) warnings.push("Dealer pressure is positive, which conflicts with a bearish call credit spread.");
 
   const mood = input.mood ?? null;
-  if (isManualMoodSource(mood)) {
-    if (side === "put" && mood.directionalBias === "bearish") warnings.push("Manual mood override is bearish, which conflicts with the put spread side.");
-    if (side === "call" && mood.directionalBias === "bullish") warnings.push("Manual mood override is bullish, which conflicts with the call spread side.");
+  if (mood?.moodPercent != null) {
+    if (side === "put" && mood.directionalBias === "bearish") warnings.push("SPX Mood is bearish, which conflicts with the put spread side.");
+    if (side === "call" && mood.directionalBias === "bullish") warnings.push("SPX Mood is bullish, which conflicts with the call spread side.");
   }
 
   return {
@@ -251,6 +253,7 @@ function scoreCandidate(args: {
   expectedMoveRemaining: number;
   wall: number | null;
   dealerPressure: number;
+  mood: ZeroDteMoodRead | null;
   minPct: number;
   maxPct: number;
   maxRiskDollars: number | null;
@@ -268,6 +271,7 @@ function scoreCandidate(args: {
     expectedMoveRemaining,
     wall,
     dealerPressure,
+    mood,
     minPct,
     maxPct,
     maxRiskDollars,
@@ -316,6 +320,7 @@ function scoreCandidate(args: {
   const distanceScore = scoreDistance(distanceAsExpectedMovePct, minPct, maxPct, riskMode);
   const wallScore = scoreWall(side, row.strike, wall, expectedMoveRemaining);
   const dealerScore = scoreDealer(side, dealerPressure);
+  const moodScore = scoreMood(side, mood);
   const spyScore = row.spyAlignment === "aligned" ? 100 : row.spyAlignment === "near" ? 70 : 40;
   const premiumScore = scorePremium({ creditToRiskPct, creditToWidthPct, riskMode });
   const deltaScore = scoreDelta(shortDeltaAbs, riskMode);
@@ -325,16 +330,17 @@ function scoreCandidate(args: {
   const widthScore = scoreWidth(actualWidth, riskMode);
 
   let score =
-    oiScore * 0.15 +
-    wallScore * 0.17 +
-    distanceScore * 0.16 +
-    premiumScore * 0.18 +
-    dealerScore * 0.11 +
-    deltaScore * 0.07 +
+    oiScore * 0.14 +
+    wallScore * 0.15 +
+    distanceScore * 0.15 +
+    premiumScore * 0.16 +
+    dealerScore * 0.09 +
+    moodScore * 0.10 +
+    deltaScore * 0.06 +
     spyScore * 0.05 +
     liquidityScore * 0.04 +
     riskScore * 0.04 +
-    widthScore * 0.02 +
+    widthScore * 0.01 +
     skewScore * 0.01;
 
   const warnings: string[] = [];
@@ -361,6 +367,7 @@ function scoreCandidate(args: {
   if (row.spyAlignment !== "none") reasons.push(`SPY confirmation is ${row.spyAlignment} near this SPX strike.`);
   if (side === "put" && dealerPressure > 20) reasons.push("Dealer pressure supports bullish/neutral put-spread placement.");
   if (side === "call" && dealerPressure < -20) reasons.push("Dealer pressure supports bearish/neutral call-spread placement.");
+  if (mood?.moodPercent != null) reasons.push(`SPX Mood contributes ${Math.round(moodScore)}/100 for the ${side} side (${mood.moodPercent.toFixed(1)}%, ${mood.coverage.status}).`);
   if (sideOi > 0) reasons.push(`Side-specific OI at strike is ${Math.round(sideOi).toLocaleString()}.`);
 
   return {
@@ -388,6 +395,7 @@ function scoreCandidate(args: {
     oiScore: Math.round(oiScore),
     wallScore: Math.round(wallScore),
     dealerScore: Math.round(dealerScore),
+    moodScore: Math.round(moodScore),
     spyScore: Math.round(spyScore),
     premiumScore: Math.round(premiumScore),
     distanceScore: Math.round(distanceScore),
@@ -420,6 +428,18 @@ function choosePreferredSide(args: {
       return { preferredSide: call.shortStrike ? "call" : "none", selectionMode: "manual-mood", notes, warnings };
     }
     notes.push("Manual mood override is neutral; showing both optimized credit-spread sides while the iron fly/condor remains primary.");
+  }
+
+  if (mood?.moodPercent != null && !isManualMoodSource(mood)) {
+    if (mood.tradeBias === "put-credit-spread" || mood.tradeBias === "skewed-bullish-condor") {
+      notes.push(`Calculated SPX Mood is ${mood.moodPercent.toFixed(1)}% (${mood.coverage.status}) and favors bullish premium selling.`);
+      return { preferredSide: put.shortStrike ? "put" : "none", selectionMode: "calculated-mood", notes, warnings };
+    }
+    if (mood.tradeBias === "call-credit-spread" || mood.tradeBias === "skewed-bearish-condor") {
+      notes.push(`Calculated SPX Mood is ${mood.moodPercent.toFixed(1)}% (${mood.coverage.status}) and favors bearish premium selling.`);
+      return { preferredSide: call.shortStrike ? "call" : "none", selectionMode: "calculated-mood", notes, warnings };
+    }
+    notes.push(`Calculated SPX Mood is neutral at ${mood.moodPercent.toFixed(1)}%; dealer pressure and candidate quality decide the preferred side.`);
   }
 
   if (rec.dealerPressure > 25) {
@@ -613,9 +633,32 @@ function minWidthForRiskMode(mode: CreditSpreadRiskMode) {
 }
 
 
+function scoreMood(
+  side: CreditSpreadSide,
+  mood: ZeroDteMoodRead | null,
+) {
+  if (mood?.moodPercent == null || mood.coverage.status === "UNAVAILABLE") return 50;
+  const directionalBase =
+    mood.directionalBias === "neutral"
+      ? 55
+      : side === "put"
+        ? mood.directionalBias === "bullish" ? 100 : 5
+        : mood.directionalBias === "bearish" ? 100 : 5;
+  const coverageMultiplier =
+    mood.coverage.status === "FULL" || mood.coverage.status === "MANUAL"
+      ? 1
+      : 0.7;
+  const conviction = Math.max(0.25, mood.confidence / 100) * coverageMultiplier;
+  return clamp(50 + (directionalBase - 50) * conviction, 0, 100);
+}
+
+type ManualMoodRead = ZeroDteMoodRead & {
+  source: "manual-fallback" | "manual-forced";
+};
+
 function isManualMoodSource(
   mood: ZeroDteMoodRead | null | undefined,
-): mood is ZeroDteMoodRead {
+): mood is ManualMoodRead {
   return (
     mood?.source === "manual-fallback" ||
     mood?.source === "manual-forced"

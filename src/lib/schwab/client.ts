@@ -1,5 +1,5 @@
 import { loadSchwabTokens, saveSchwabTokens } from "./token-store";
-import type { SchwabOptionChainResponse } from "./types";
+import type { SchwabOptionChainResponse, SchwabQuotesResponse } from "./types";
 
 const AUTH_BASE = "https://api.schwabapi.com/v1/oauth";
 const MARKET_BASE = "https://api.schwabapi.com/marketdata/v1";
@@ -195,4 +195,27 @@ export async function fetchSchwabPriceHistory(args: {
   });
 
   return schwabFetch<SchwabPriceHistoryResponse>(`/pricehistory?${params.toString()}`);
+}
+
+
+export async function fetchSchwabQuotes(
+  symbols: string[],
+): Promise<SchwabQuotesResponse> {
+  const unique = [...new Set(symbols.map((symbol) => symbol.trim()).filter(Boolean))];
+  const result: SchwabQuotesResponse = {};
+
+  for (let index = 0; index < unique.length; index += 50) {
+    const chunk = unique.slice(index, index + 50);
+    const params = new URLSearchParams({
+      symbols: chunk.join(","),
+      fields: "quote,reference",
+      indicative: "false",
+    });
+    Object.assign(
+      result,
+      await schwabFetch<SchwabQuotesResponse>(`/quotes?${params.toString()}`),
+    );
+  }
+
+  return result;
 }

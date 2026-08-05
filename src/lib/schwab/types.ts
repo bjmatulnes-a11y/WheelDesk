@@ -50,3 +50,28 @@ export type SchwabHarvestSymbol = {
   rows: ZeroDteChainRow[];
   source: "schwab";
 };
+
+
+export type SchwabQuoteFields = {
+  lastPrice?: number;
+  mark?: number;
+  closePrice?: number;
+  netChange?: number;
+  netPercentChange?: number;
+  regularMarketLastPrice?: number;
+  regularMarketPercentChange?: number;
+};
+
+export type SchwabQuoteInstrument = {
+  assetMainType?: string;
+  symbol?: string;
+  quote?: SchwabQuoteFields;
+  regular?: SchwabQuoteFields;
+  reference?: {
+    description?: string;
+    exchange?: string;
+    exchangeName?: string;
+  };
+};
+
+export type SchwabQuotesResponse = Record<string, SchwabQuoteInstrument>;

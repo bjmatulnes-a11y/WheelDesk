@@ -3,10 +3,9 @@ import {
   buildZeroDteRecommendation,
   type ZeroDteChainRow,
 } from "../../../../lib/zeroDteOiIntelligence";
-import {
-  buildZeroDteMoodRead,
-  type ZeroDteMoodInput,
-} from "../../../../lib/zeroDteMoodEngine";
+import type { ZeroDteManualMoodMode } from "../../../../lib/zeroDteMoodEngine";
+import { buildZeroDteMoodSessionRead } from "../../../../lib/zeroDteMoodSessionEngine";
+import { loadZeroDteMoodMarketData } from "../../../../lib/zeroDteMoodMarketData";
 import { buildZeroDteTradeSelection } from "../../../../lib/zeroDteTradeSelector";
 import { fetchSchwabOptionChain } from "../../../../lib/schwab/client";
 import type {
@@ -39,7 +38,7 @@ export async function GET(request: NextRequest) {
   const rangePct = numberParam(request, "rangePct", 0.045);
   const manualExpectedMove = numberParam(request, "expectedMove", 0);
   const manualMood = optionalNumberParam(request, "mood");
-  const manualMoodMode =
+  const manualMoodMode: ZeroDteManualMoodMode =
     request.nextUrl.searchParams.get("moodMode") === "force"
       ? "force"
       : "fallback";
@@ -91,15 +90,42 @@ export async function GET(request: NextRequest) {
         })
       : undefined;
 
-  const moodInput: ZeroDteMoodInput = {
-    index: "SPX",
-    manualMoodPercent: manualMood,
-    manualMoodMode,
-    optionChainCoverage: recommendation ? "full" : "unavailable",
-    generatedAt,
-    source: "schwab-chain",
-  };
-  const mood = recommendation ? buildZeroDteMoodRead(moodInput) : undefined;
+  let mood;
+  let leadership;
+  let breadth;
+  if (recommendation && spx) {
+    try {
+      const marketData = await loadZeroDteMoodMarketData({
+        tradeDate,
+        generatedAt,
+        spxProviderSymbol: spx.providerSymbol,
+        spxCurrent: spx.price,
+        requestValues: {
+          tick: optionalNumberParam(request, "tick") ?? undefined,
+          uvol: optionalNumberParam(request, "uvol") ?? undefined,
+          dvol: optionalNumberParam(request, "dvol") ?? undefined,
+          advanceDecline:
+            optionalNumberParam(request, "advanceDecline") ?? undefined,
+        },
+      });
+      leadership = marketData.leadership;
+      breadth = marketData.breadth;
+      mood = await buildZeroDteMoodSessionRead({
+        tradeDate,
+        generatedAt,
+        leadership,
+        breadth,
+        spxCandles: marketData.spxCandles,
+        manualMoodPercent: manualMood,
+        manualMoodMode,
+        optionChainCoverage: "full",
+        averageLength: 5,
+        smoothingLength: 3,
+      });
+    } catch (error) {
+      errors.push(`SPX Mood calculation failed: ${message(error)}`);
+    }
+  }
 
   const tradeSelection =
     recommendation && spx
@@ -118,6 +144,20 @@ export async function GET(request: NextRequest) {
       : undefined;
 
   const qualityChecks = buildQualityChecks(tradeDate, spx, spy);
+  if (leadership) {
+    qualityChecks.push({
+      label: "Leadership",
+      status: leadership.quoteCoveragePct >= 90 ? "ok" : leadership.quoteCoveragePct >= 50 ? "warn" : "fail",
+      message: `${leadership.availableCount}/${leadership.selectedCount} constituents · ${leadership.quoteCoveragePct.toFixed(0)}% selected-weight coverage.`,
+    });
+  }
+  if (mood) {
+    qualityChecks.push({
+      label: "SPX Mood",
+      status: mood.coverage.status === "FULL" ? "ok" : mood.coverage.status === "UNAVAILABLE" ? "warn" : "warn",
+      message: `${mood.calculationMode.replaceAll("_", " ")} · ${mood.coverage.status} · ${mood.moodPercent == null ? "no value" : `${mood.moodPercent.toFixed(1)}%`}.`,
+    });
+  }
   const hasFail = qualityChecks.some((item) => item.status === "fail");
   const hasWarn = qualityChecks.some((item) => item.status === "warn");
   const status = recommendation
@@ -137,6 +177,8 @@ export async function GET(request: NextRequest) {
       spy,
       recommendation,
       mood,
+      leadership,
+      breadth,
       tradeSelection,
       errors,
       qualityChecks,

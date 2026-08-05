@@ -11,6 +11,7 @@ import type {
   ZeroDteChainRow,
   ZeroDteRecommendation,
 } from "./zeroDteOiIntelligence";
+import type { ZeroDteMoodRead } from "./zeroDteMoodEngine";
 
 export type ZeroDteMarketStory =
   | "BULLISH_EXPANSION"
@@ -88,12 +89,13 @@ export function buildZeroDtePortfolioRead(args: {
   recommendation: ZeroDteRecommendation;
   mapState: SessionMapManagerState;
   candidates: Partial<Record<ExecutionStrategy, ExecutionCandidate | null>>;
+  mood?: ZeroDteMoodRead | null;
   riskBudgetDollars?: number;
 }): ZeroDtePortfolioRead {
   const riskBudgetDollars = Math.max(500, args.riskBudgetDollars ?? 5000);
   const positions = args.memory.positions ?? (args.memory.position ? [args.memory.position] : []);
-  const story = classifyStory(args.mapState, args.recommendation);
-  const target = targetDeltaBand(story);
+  const story = classifyStory(args.mapState, args.recommendation, args.mood ?? null);
+  const target = targetDeltaBand(story, args.mood ?? null);
 
   const positionReads = positions.map((position) =>
     buildPositionRead(position, args.rows, args.recommendation.spxPrice),
@@ -190,6 +192,9 @@ export function buildZeroDtePortfolioRead(args: {
 
   const reasons = [
     `${storyLabel(story)} defines a target delta band of ${signed(target.min)} to ${signed(target.max)}.`,
+    args.mood?.moodPercent == null
+      ? "SPX Mood is unavailable, so the delta target is map-driven."
+      : `SPX Mood is ${args.mood.moodPercent.toFixed(1)}% (${args.mood.coverage.status}); the target band is adjusted for directional conviction and divergence.`,
     positions.length
       ? `${positions.length} open position${positions.length === 1 ? "" : "s"} carry ${signed(netDelta)} net delta points.`
       : "No position is open; the next accepted trade establishes the session profile.",
@@ -371,6 +376,7 @@ function scoreCandidateContribution(
 function classifyStory(
   mapState: SessionMapManagerState,
   recommendation: ZeroDteRecommendation,
+  mood: ZeroDteMoodRead | null,
 ): ZeroDteMarketStory {
   const controlling = getControllingMarketMap(mapState);
   if (mapState.phase === "TRANSITION") return "TRANSITION";
@@ -385,7 +391,8 @@ function classifyStory(
     mapState.railBreached === "UPPER" ||
     recommendation.spxPrice > controlling.upperWing ||
     (distanceFromCenter >= directionalThreshold &&
-      recommendation.dealerPressure >= -10)
+      recommendation.dealerPressure >= -10) ||
+    (mood?.moodPercent != null && mood.moodPercent >= 70 && distanceFromCenter > 0)
   ) {
     return "BULLISH_EXPANSION";
   }
@@ -393,17 +400,31 @@ function classifyStory(
     mapState.railBreached === "LOWER" ||
     recommendation.spxPrice < controlling.lowerWing ||
     (distanceFromCenter <= -directionalThreshold &&
-      recommendation.dealerPressure <= 10)
+      recommendation.dealerPressure <= 10) ||
+    (mood?.moodPercent != null && mood.moodPercent <= -70 && distanceFromCenter < 0)
   ) {
     return "BEARISH_EXPANSION";
   }
   return "PINNED_NEUTRAL";
 }
 
-function targetDeltaBand(story: ZeroDteMarketStory) {
-  if (story === "BULLISH_EXPANSION") return { min: 5, max: 30 };
-  if (story === "BEARISH_EXPANSION") return { min: -30, max: -5 };
+function targetDeltaBand(
+  story: ZeroDteMarketStory,
+  mood: ZeroDteMoodRead | null,
+) {
   if (story === "TRANSITION") return { min: -5, max: 5 };
+  if (story === "BULLISH_EXPANSION") {
+    if (mood?.internalDivergence === "PRICE_UP_MOOD_DOWN") return { min: 0, max: 15 };
+    if ((mood?.moodPercent ?? 0) >= 70) return { min: 10, max: 35 };
+    return { min: 5, max: 30 };
+  }
+  if (story === "BEARISH_EXPANSION") {
+    if (mood?.internalDivergence === "PRICE_DOWN_MOOD_UP") return { min: -15, max: 0 };
+    if ((mood?.moodPercent ?? 0) <= -70) return { min: -35, max: -10 };
+    return { min: -30, max: -5 };
+  }
+  if ((mood?.moodPercent ?? 0) >= 40) return { min: 0, max: 15 };
+  if ((mood?.moodPercent ?? 0) <= -40) return { min: -15, max: 0 };
   return { min: -10, max: 10 };
 }
 

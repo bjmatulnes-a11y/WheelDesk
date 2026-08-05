@@ -6,6 +6,7 @@ import { WheelDeskSideNav } from "./WheelDeskSideNav";
 import type { SpxOiMapRow, SpyAlignmentRow, ZeroDteChainRow, ZeroDteRecommendation } from "../lib/zeroDteOiIntelligence";
 import { buildIronFlyPositionReport, type IronFlyPositionReport, type IronFlySideReport } from "../lib/zeroDteIronFlyManager";
 import { ZeroDteTradeSelectionPanel } from "./ZeroDteTradeSelectionPanel";
+import { ZeroDteMoodPanel } from "./ZeroDteMoodPanel";
 import { ZeroDteStrikeFlowPanel } from "./ZeroDteStrikeFlowPanel";
 import { ZeroDteSystemDiagnosticsPanel } from "./ZeroDteSystemDiagnosticsPanel";
 import { ZeroDteTosInputsPanel } from "./ZeroDteTosInputsPanel";
@@ -177,7 +178,7 @@ export default function ZeroDteCommandClient() {
     }, 1000);
     return () => window.clearInterval(tick);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoRefresh, loading, expectedMove, rangePct, strictZeroDte, manualMood, riskMode, maxWidth, maxRisk, minCredit]);
+  }, [autoRefresh, loading, expectedMove, rangePct, strictZeroDte, manualMood, manualMoodMode, riskMode, maxWidth, maxRisk, minCredit]);
 
   const rec = data?.recommendation;
   const spxRows = data?.spx?.rows ?? [];
@@ -543,6 +544,8 @@ export default function ZeroDteCommandClient() {
                 setOpeningTradePlan(lockOpeningTradePlan(data.tradeDate, data.generatedAt, mapAwareTradeSelection));
               }}
             />
+
+            <ZeroDteMoodPanel mood={data?.mood ?? null} />
 
             <ZeroDteTradeSelectionPanel mood={data?.mood ?? null} tradeSelection={mapAwareTradeSelection} strikeFlow={strikeFlow} />
 
