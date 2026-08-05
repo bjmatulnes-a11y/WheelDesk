@@ -411,7 +411,7 @@ export default function SpxCommandChart() {
         return;
       }
 
-      setCandles(historyJson.candles ?? []);
+      setCandles(normalizeCandles(historyJson.candles ?? []));
       setHarvest(harvestJson);
       setLastRefresh(new Date().toISOString());
     } catch (loadError) {
@@ -613,19 +613,19 @@ export default function SpxCommandChart() {
       if (overlays.leastResistance && leastResistancePath) {
         addLine(
           leastResistancePath.points.map((point) => ({ time: point.time, value: point.crest })),
-          "rgba(32,201,151,.72)",
+          "rgba(192,132,252,.58)",
           1,
           LineStyle.Dotted,
         );
         addLine(
           leastResistancePath.points.map((point) => ({ time: point.time, value: point.center })),
-          "#20c997",
+          "#c084fc",
           3,
           LineStyle.Solid,
         );
         addLine(
           leastResistancePath.points.map((point) => ({ time: point.time, value: point.trough })),
-          "rgba(32,201,151,.72)",
+          "rgba(192,132,252,.58)",
           1,
           LineStyle.Dotted,
         );
@@ -1137,7 +1137,7 @@ export default function SpxCommandChart() {
             <LegendItem color="#2f80ed" text="Put Wall" />
             <LegendItem color="#f4f7fb" text="Pin" />
             <LegendItem color="#ffd400" text="IF Center" />
-            <LegendItem color="#20c997" text="Least-resistance center / crest / trough" />
+            <LegendItem color="#c084fc" text="Least-resistance path / envelope" />
           </div>
         </div>
 
@@ -1484,6 +1484,26 @@ function LegendItem({ color, text }: { color: string; text: string }) {
       {text}
     </span>
   );
+}
+
+function normalizeCandles(candles: Candle[]) {
+  const byTime = new Map<number, Candle>();
+
+  for (const candle of candles) {
+    if (
+      !Number.isFinite(candle.time) ||
+      !Number.isFinite(candle.open) ||
+      !Number.isFinite(candle.high) ||
+      !Number.isFinite(candle.low) ||
+      !Number.isFinite(candle.close)
+    ) {
+      continue;
+    }
+
+    byTime.set(candle.time, candle);
+  }
+
+  return [...byTime.values()].sort((a, b) => a.time - b.time);
 }
 
 function calculateEma(candles: Candle[], period: number) {
