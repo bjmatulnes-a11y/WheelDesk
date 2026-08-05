@@ -9,6 +9,27 @@ export type ZeroDteMoodTradeBias =
   | "skewed-bearish-condor"
   | "no-trade";
 
+export type ZeroDteManualMoodMode = "fallback" | "force";
+
+export type ZeroDteMoodSource =
+  | "calculated-full"
+  | "calculated-partial"
+  | "manual-fallback"
+  | "manual-forced"
+  | "unavailable";
+
+export type ZeroDteMoodCoverageLevel = "FULL" | "PARTIAL" | "UNAVAILABLE";
+export type ZeroDteMoodCoverageStatus = "FULL" | "PARTIAL" | "MANUAL" | "UNAVAILABLE";
+
+export type ZeroDteMoodCoverage = {
+  status: ZeroDteMoodCoverageStatus;
+  schwabOptionChain: ZeroDteMoodCoverageLevel;
+  spxLeadership: ZeroDteMoodCoverageLevel;
+  breadthInternals: ZeroDteMoodCoverageLevel;
+  calculatedCoverageScore: number;
+  summary: string;
+};
+
 export type ZeroDteMarketStage =
   | "acceleration"
   | "deceleration"
@@ -20,8 +41,16 @@ export type ZeroDteMoodInput = {
   index?: ZeroDteIndex;
   moodRecommendationPercent?: number;
 
-  /** Manual override from the Thinkorswim mood study. If provided, it becomes the primary mood value. */
+  /**
+   * Optional manually supplied mood value.
+   * "fallback" uses it only when calculated mood is unavailable.
+   * "force" deliberately overrides a calculated mood.
+   */
   manualMoodPercent?: number | null;
+  manualMoodMode?: ZeroDteManualMoodMode;
+
+  /** Schwab SPX/SPY chain availability for source-aware coverage display. */
+  optionChainCoverage?: "full" | "partial" | "unavailable";
 
   /** Index percent change from prior daily close. Example: +0.42 for +0.42%. */
   indexPctChange?: number | null;
@@ -29,7 +58,7 @@ export type ZeroDteMoodInput = {
   /** High-weight component pull versus index. Example: +0.25 means the top weights are pulling 0.25% stronger than the index. */
   highWeightPullPct?: number | null;
 
-  /** Optional internals if you later source them from TOS/broker feed. */
+  /** Optional broad-market internals if they are connected from any supported feed. */
   tick?: number | null;
   uvolDvolRatio?: number | null;
   advanceDecline?: number | null;
@@ -64,9 +93,12 @@ export type ZeroDteMoodRead = {
   directionalBias: "bullish" | "bearish" | "neutral" | "unknown";
   confidence: number;
   coverageScore: number;
-  source: "manual-tos-mood" | "partial-market-data" | "unavailable";
+  source: ZeroDteMoodSource;
+  manualMode: ZeroDteManualMoodMode;
+  coverage: ZeroDteMoodCoverage;
   generatedAt: string;
   warnings: string[];
+  information: string[];
   components: ZeroDteMoodComponent[];
   recommendationLabel: string;
 };
@@ -76,28 +108,9 @@ export function buildZeroDteMoodRead(input: ZeroDteMoodInput): ZeroDteMoodRead {
   const threshold = clamp(input.moodRecommendationPercent ?? 40, 0, 100);
   const zoneStep = (100 - threshold) / 2;
   const generatedAt = input.generatedAt ?? new Date().toISOString();
-
+  const manualMode: ZeroDteManualMoodMode =
+    input.manualMoodMode === "force" ? "force" : "fallback";
   const manual = clean(input.manualMoodPercent);
-  if (manual !== null) {
-    const moodPercent = clamp(manual, -100, 100);
-    const tradeBias = classifyMood(moodPercent, threshold, zoneStep);
-    return {
-      index,
-      moodPercent,
-      rawMoodPercent: moodPercent,
-      threshold,
-      zoneStep,
-      tradeBias,
-      directionalBias: directionalBiasForMood(moodPercent, threshold),
-      confidence: confidenceForMood(moodPercent, threshold, 100),
-      coverageScore: 100,
-      source: "manual-tos-mood",
-      generatedAt,
-      warnings: [],
-      components: [],
-      recommendationLabel: labelForTradeBias(tradeBias),
-    };
-  }
 
   const weights = componentWeights(index);
   const components: ZeroDteMoodComponent[] = [
@@ -113,25 +126,104 @@ export function buildZeroDteMoodRead(input: ZeroDteMoodInput): ZeroDteMoodRead {
     makeComponent("Market Stage", marketStagePoints(input.marketStage), weights.marketStage, input.marketStage === undefined ? null : stageNumeric(input.marketStage)),
   ];
 
-  const available = components.filter((c) => c.available && c.contribution !== null);
-  const totalWeight = available.reduce((sum, c) => sum + c.weight, 0);
-  const totalContribution = available.reduce((sum, c) => sum + (c.contribution ?? 0), 0);
-  const maxWeight = components.reduce((sum, c) => sum + c.weight, 0);
-  const coverageScore = maxWeight > 0 ? Math.round((totalWeight / maxWeight) * 100) : 0;
+  const available = components.filter((component) => component.available && component.contribution !== null);
+  const totalWeight = available.reduce((sum, component) => sum + component.weight, 0);
+  const totalContribution = available.reduce((sum, component) => sum + (component.contribution ?? 0), 0);
+  const maxWeight = components.reduce((sum, component) => sum + component.weight, 0);
+  const calculatedCoverageScore =
+    maxWeight > 0 ? Math.round((totalWeight / maxWeight) * 100) : 0;
+  const calculatedRawMood =
+    totalWeight > 0
+      ? clamp((totalContribution / totalWeight) * 50, -100, 100)
+      : null;
+  const calculatedUsable =
+    calculatedRawMood !== null && calculatedCoverageScore >= 25;
 
-  const rawMoodPercent = totalWeight > 0 ? clamp((totalContribution / totalWeight) * 50, -100, 100) : null;
-  const moodPercent = rawMoodPercent;
+  const leadership = inferLeadershipCoverage(input);
+  const breadth = inferBreadthCoverage(input);
+  const optionChain = normalizeCoverageLevel(input.optionChainCoverage);
+  const calculatedStatus: ZeroDteMoodCoverageStatus =
+    calculatedUsable && leadership === "FULL" && breadth === "FULL" && calculatedCoverageScore >= 80
+      ? "FULL"
+      : calculatedUsable
+        ? "PARTIAL"
+        : "UNAVAILABLE";
 
-  const tradeBias = moodPercent === null || coverageScore < 25 ? "no-trade" : classifyMood(moodPercent, threshold, zoneStep);
-  const confidence = moodPercent === null ? 0 : confidenceForMood(moodPercent, threshold, coverageScore);
-  const warnings: string[] = [];
+  let moodPercent: number | null = null;
+  let rawMoodPercent: number | null = null;
+  let source: ZeroDteMoodSource = "unavailable";
+  let coverageStatus: ZeroDteMoodCoverageStatus = calculatedStatus;
 
-  if (coverageScore < 60) {
-    warnings.push("Mood read is partial because live TICK/UVOL-DVOL/A-D internals are not available from the current data feed.");
+  if (manual !== null && manualMode === "force") {
+    moodPercent = clamp(manual, -100, 100);
+    rawMoodPercent = moodPercent;
+    source = "manual-forced";
+    coverageStatus = "MANUAL";
+  } else if (calculatedUsable) {
+    moodPercent = calculatedRawMood;
+    rawMoodPercent = calculatedRawMood;
+    source = calculatedStatus === "FULL" ? "calculated-full" : "calculated-partial";
+  } else if (manual !== null) {
+    moodPercent = clamp(manual, -100, 100);
+    rawMoodPercent = moodPercent;
+    source = "manual-fallback";
+    coverageStatus = "MANUAL";
   }
-  if (coverageScore < 25) {
-    warnings.push("Coverage is too low for credit-spread strategy selection. Enter the TOS mood value manually or connect internals.");
+
+  const tradeBias =
+    moodPercent === null
+      ? "no-trade"
+      : classifyMood(moodPercent, threshold, zoneStep);
+  const activeCoverageScore =
+    source === "manual-fallback" || source === "manual-forced"
+      ? 100
+      : calculatedCoverageScore;
+  const confidence =
+    moodPercent === null
+      ? 0
+      : confidenceForMood(moodPercent, threshold, activeCoverageScore);
+
+  const information: string[] = [];
+  if (coverageStatus === "FULL") {
+    information.push(
+      "Full calculated SPX mood: leadership and breadth internals are available.",
+    );
+  } else if (coverageStatus === "PARTIAL") {
+    information.push(
+      "Partial calculated SPX mood: available SPX leadership components are active while one or more breadth internals are unavailable.",
+    );
+  } else if (coverageStatus === "MANUAL") {
+    information.push(
+      source === "manual-forced"
+        ? "Manual mood is deliberately forced over the calculated read."
+        : "Manual mood fallback is active because a usable calculated mood is unavailable.",
+    );
+  } else {
+    information.push(
+      "No usable SPX mood is currently available; Schwab chain, map, dealer, strike-flow, and portfolio logic remain active.",
+    );
   }
+
+  if (breadth !== "FULL") {
+    information.push(
+      "TICK, UVOL/DVOL, and advance-decline coverage is incomplete; this reduces mood confidence but does not disable strategy selection.",
+    );
+  }
+
+  const coverage: ZeroDteMoodCoverage = {
+    status: coverageStatus,
+    schwabOptionChain: optionChain,
+    spxLeadership: leadership,
+    breadthInternals: breadth,
+    calculatedCoverageScore,
+    summary: coverageSummary({
+      status: coverageStatus,
+      optionChain,
+      leadership,
+      breadth,
+      source,
+    }),
+  };
 
   return {
     index,
@@ -140,12 +232,18 @@ export function buildZeroDteMoodRead(input: ZeroDteMoodInput): ZeroDteMoodRead {
     threshold,
     zoneStep,
     tradeBias,
-    directionalBias: moodPercent === null ? "unknown" : directionalBiasForMood(moodPercent, threshold),
+    directionalBias:
+      moodPercent === null
+        ? "unknown"
+        : directionalBiasForMood(moodPercent, threshold),
     confidence,
-    coverageScore,
-    source: moodPercent === null ? "unavailable" : "partial-market-data",
+    coverageScore: activeCoverageScore,
+    source,
+    manualMode,
+    coverage,
     generatedAt,
-    warnings,
+    warnings: [],
+    information,
     components,
     recommendationLabel: labelForTradeBias(tradeBias),
   };
@@ -178,6 +276,71 @@ export function labelForTradeBias(bias: ZeroDteMoodTradeBias) {
       return "No Trade";
   }
 }
+
+
+function inferLeadershipCoverage(input: ZeroDteMoodInput): ZeroDteMoodCoverageLevel {
+  const core = [
+    clean(input.indexPctChange),
+    clean(input.highWeightPullPct),
+  ];
+  const trend = clean(input.highWeightTrend);
+  const availableCore = core.filter((value) => value !== null).length;
+
+  if (availableCore === core.length && trend !== null) return "FULL";
+  if (availableCore > 0 || trend !== null) return "PARTIAL";
+  return "UNAVAILABLE";
+}
+
+function inferBreadthCoverage(input: ZeroDteMoodInput): ZeroDteMoodCoverageLevel {
+  const core = [
+    clean(input.tick),
+    clean(input.uvolDvolRatio),
+    clean(input.advanceDecline),
+  ];
+  const trends = [
+    clean(input.tickTrend),
+    clean(input.uvolDvolTrend),
+    clean(input.advanceDeclineTrend),
+  ];
+  const availableCore = core.filter((value) => value !== null).length;
+  const availableTrends = trends.filter((value) => value !== null).length;
+
+  if (availableCore === core.length && availableTrends >= 2) return "FULL";
+  if (availableCore > 0 || availableTrends > 0) return "PARTIAL";
+  return "UNAVAILABLE";
+}
+
+function normalizeCoverageLevel(
+  value: ZeroDteMoodInput["optionChainCoverage"],
+): ZeroDteMoodCoverageLevel {
+  if (value === "full") return "FULL";
+  if (value === "partial") return "PARTIAL";
+  return "UNAVAILABLE";
+}
+
+function coverageSummary(args: {
+  status: ZeroDteMoodCoverageStatus;
+  optionChain: ZeroDteMoodCoverageLevel;
+  leadership: ZeroDteMoodCoverageLevel;
+  breadth: ZeroDteMoodCoverageLevel;
+  source: ZeroDteMoodSource;
+}) {
+  if (args.status === "MANUAL") {
+    return args.source === "manual-forced"
+      ? "Manual mood forced; calculated coverage remains visible for comparison."
+      : "Manual mood fallback active because calculated SPX mood is unavailable.";
+  }
+  if (args.status === "FULL") {
+    return "Full calculated SPX mood coverage.";
+  }
+  if (args.status === "PARTIAL") {
+    return `Partial calculated mood: leadership ${args.leadership.toLowerCase()}, breadth ${args.breadth.toLowerCase()}.`;
+  }
+  return args.optionChain === "FULL"
+    ? "Schwab chain coverage is available, but no calculated or manual mood is active."
+    : "SPX mood inputs are unavailable.";
+}
+
 
 function componentWeights(index: ZeroDteIndex) {
   if (index === "NDX") {

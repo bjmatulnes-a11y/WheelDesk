@@ -39,6 +39,10 @@ export async function GET(request: NextRequest) {
   const rangePct = numberParam(request, "rangePct", 0.045);
   const manualExpectedMove = numberParam(request, "expectedMove", 0);
   const manualMood = optionalNumberParam(request, "mood");
+  const manualMoodMode =
+    request.nextUrl.searchParams.get("moodMode") === "force"
+      ? "force"
+      : "fallback";
   const maxWidth = optionalNumberParam(request, "maxWidth") ?? 50;
   const maxRiskDollars = optionalNumberParam(request, "maxRisk");
   const minCredit = optionalNumberParam(request, "minCredit");
@@ -90,8 +94,10 @@ export async function GET(request: NextRequest) {
   const moodInput: ZeroDteMoodInput = {
     index: "SPX",
     manualMoodPercent: manualMood,
+    manualMoodMode,
+    optionChainCoverage: recommendation ? "full" : "unavailable",
     generatedAt,
-    source: manualMood === null ? "unavailable" : "manual-tos-mood",
+    source: "schwab-chain",
   };
   const mood = recommendation ? buildZeroDteMoodRead(moodInput) : undefined;
 

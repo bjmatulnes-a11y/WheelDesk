@@ -81,6 +81,7 @@ export default function ZeroDteCommandClient() {
   const [rangePct, setRangePct] = useState("0.045");
   const [strictZeroDte, setStrictZeroDte] = useState(false);
   const [manualMood, setManualMood] = useState("");
+  const [manualMoodMode, setManualMoodMode] = useState<"fallback" | "force">("fallback");
   const [riskMode, setRiskMode] = useState<"conservative" | "balanced" | "aggressive">("balanced");
   const [maxWidth, setMaxWidth] = useState("50");
   const [maxRisk, setMaxRisk] = useState("");
@@ -105,7 +106,10 @@ export default function ZeroDteCommandClient() {
       if (Number(expectedMove) > 0) params.set("expectedMove", expectedMove);
       if (Number(rangePct) > 0) params.set("rangePct", rangePct);
       if (strictZeroDte) params.set("strict", "1");
-      if (Number(manualMood) || manualMood.trim() === "0") params.set("mood", manualMood);
+      if (Number(manualMood) || manualMood.trim() === "0") {
+        params.set("mood", manualMood);
+        params.set("moodMode", manualMoodMode);
+      }
       params.set("riskMode", riskMode);
       if (Number(maxWidth) > 0) params.set("maxWidth", maxWidth);
       if (Number(maxRisk) > 0) params.set("maxRisk", maxRisk);
@@ -374,8 +378,23 @@ export default function ZeroDteCommandClient() {
           </label>
 
           <label style={styles.controlCard}>
-            <span style={styles.controlText}>Optional TOS mood</span>
-            <input value={manualMood} onChange={(e) => setManualMood(e.target.value)} placeholder="optional only, e.g. 78 or -82" type="number" step="0.5" style={styles.input} />
+            <span style={styles.controlText}>Manual Mood Fallback</span>
+            <input
+              value={manualMood}
+              onChange={(e) => setManualMood(e.target.value)}
+              placeholder="optional, e.g. 78 or -82"
+              type="number"
+              step="0.5"
+              style={styles.input}
+            />
+            <select
+              value={manualMoodMode}
+              onChange={(e) => setManualMoodMode(e.target.value as "fallback" | "force")}
+              style={{ ...styles.input, marginTop: 8 }}
+            >
+              <option value="fallback">Fallback only</option>
+              <option value="force">Force manual</option>
+            </select>
           </label>
 
           <label style={styles.controlCard}>

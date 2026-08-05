@@ -110,6 +110,7 @@ export function buildZeroDteTradeSelection(input: BuildZeroDteTradeSelectionInpu
   reasons.push(...creditSpreadBook.notes);
   warnings.push(...creditSpreadBook.warnings);
 
+  if (mood?.information?.length) reasons.push(...mood.information);
   if (mood?.warnings?.length) warnings.push(...mood.warnings);
 
   let preferred = creditSpreadBook.preferredSpread;

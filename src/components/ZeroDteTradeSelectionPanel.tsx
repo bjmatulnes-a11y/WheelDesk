@@ -72,10 +72,34 @@ export function ZeroDteTradeSelectionPanel({
       <div style={styles.grid4}>
         <Metric title="Mood" value={mood?.moodPercent == null ? "—" : `${mood.moodPercent.toFixed(1)}%`} tone={moodTone(mood?.moodPercent)} />
         <Metric title="Mood Bias" value={mood?.tradeBias ?? "—"} />
+        <Metric title="Mood Coverage" value={mood?.coverage?.status ?? "UNAVAILABLE"} tone={coverageTone(mood?.coverage?.status)} />
         <Metric title="Final Trade" value={tradeSelection?.label ?? "—"} />
         <Metric title="Strategy Scan" value={tradeSelection?.confidence == null ? "—" : `${tradeSelection.confidence}%`} tone={tone(tradeSelection?.confidence ?? 0)} />
         <Metric title="Flow Guard" value={!strikeFlow?.hasPriorSnapshot ? "Baseline" : `${strikeFlow.callWall.state} / ${strikeFlow.putWall.state}`} />
       </div>
+
+      {mood?.coverage ? (
+        <div style={styles.coverageCard}>
+          <div style={styles.coverageHeader}>
+            <div>
+              <div style={styles.smallCaps}>SPX Mood Coverage</div>
+              <div style={{ ...styles.coverageStatus, color: coverageTone(mood.coverage.status) }}>
+                {mood.coverage.status}
+              </div>
+            </div>
+            <div style={styles.coverageSource}>
+              {mood.source.replaceAll("-", " ")}
+            </div>
+          </div>
+          <div style={styles.coverageGrid}>
+            <CoverageItem label="Schwab option chain" value={mood.coverage.schwabOptionChain} />
+            <CoverageItem label="SPX leadership" value={mood.coverage.spxLeadership} />
+            <CoverageItem label="Breadth internals" value={mood.coverage.breadthInternals} />
+            <CoverageItem label="Calculated coverage" value={`${mood.coverage.calculatedCoverageScore}%`} />
+          </div>
+          <div style={styles.coverageSummary}>{mood.coverage.summary}</div>
+        </div>
+      ) : null}
 
       {tradeSelection?.strategyRankings?.length ? (
         <StrategyRankingBoard tradeSelection={tradeSelection} />
@@ -329,6 +353,15 @@ function Metric({ title, value, tone }: { title: string; value: string | number;
   );
 }
 
+function CoverageItem({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div style={styles.coverageItem}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
 function MiniStat({ label, value }: { label: string; value: string | number | null | undefined }) {
   return (
     <div style={styles.miniStat}>
@@ -368,6 +401,15 @@ function tone(score: number) {
   return "#fde047";
 }
 
+function coverageTone(
+  value: string | null | undefined,
+) {
+  if (value === "FULL") return "#34d399";
+  if (value === "PARTIAL") return "#fde047";
+  if (value === "MANUAL") return "#67e8f9";
+  return "#94a3b8";
+}
+
 function moodTone(mood: number | null | undefined) {
   if (mood === null || mood === undefined) return "#94a3b8";
   if (mood >= 40) return "#34d399";
@@ -384,8 +426,53 @@ const styles: Record<string, React.CSSProperties> = {
   sourceLine: { marginTop: 3, color: "#94a3b8", fontSize: 12 },
   badgeWrap: { textAlign: "right", minWidth: 230 },
   badgeValue: { marginTop: 4, fontSize: 18, fontWeight: 950 },
-  grid4: { display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 12, marginBottom: 14 },
+  grid4: { display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 12, marginBottom: 14 },
   grid2: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12, marginTop: 14 },
+  coverageCard: {
+    border: "1px solid #1e3a5f",
+    background: "#07111f",
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 14,
+  },
+  coverageHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    alignItems: "center",
+  },
+  coverageStatus: {
+    marginTop: 3,
+    fontWeight: 900,
+    fontSize: 18,
+  },
+  coverageSource: {
+    color: "#94a3b8",
+    fontSize: 10,
+    textTransform: "uppercase",
+    letterSpacing: 0.7,
+  },
+  coverageGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+    gap: 8,
+    marginTop: 10,
+  },
+  coverageItem: {
+    display: "grid",
+    gap: 3,
+    border: "1px solid #17324a",
+    borderRadius: 9,
+    padding: "8px 10px",
+    color: "#7f95a8",
+    fontSize: 9,
+  },
+  coverageSummary: {
+    marginTop: 9,
+    color: "#9fb2c4",
+    fontSize: 10,
+  },
+
   metricCard: { border: "1px solid #1e3a5f", background: "#07111f", borderRadius: 14, padding: 14 },
   metricValue: { marginTop: 6, fontSize: 19, fontWeight: 950, wordBreak: "break-word" },
   tradeBox: { border: "1px solid #1e3a5f", background: "#06111f", borderRadius: 16, padding: 16 },

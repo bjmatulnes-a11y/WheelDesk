@@ -3,7 +3,7 @@ import type { ZeroDteMoodRead } from "./zeroDteMoodEngine";
 
 export type CreditSpreadSide = "put" | "call";
 export type CreditSpreadRiskMode = "conservative" | "balanced" | "aggressive";
-export type CreditSpreadSelectionMode = "auto-oi-dealer" | "manual-tos-mood" | "dealer-pressure" | "two-sided-review";
+export type CreditSpreadSelectionMode = "auto-oi-dealer" | "manual-mood" | "manual-tos-mood" | "dealer-pressure" | "two-sided-review";
 
 export type ZeroDteCreditSpreadBook = {
   preferredSide: CreditSpreadSide | "none";
@@ -205,9 +205,9 @@ export function selectZeroDteCreditSpread(input: SelectCreditSpreadInput): ZeroD
   if (side === "call" && dealerPressure > 20) warnings.push("Dealer pressure is positive, which conflicts with a bearish call credit spread.");
 
   const mood = input.mood ?? null;
-  if (mood?.source === "manual-tos-mood") {
-    if (side === "put" && mood.directionalBias === "bearish") warnings.push("TOS mood override is bearish, which conflicts with the put spread side.");
-    if (side === "call" && mood.directionalBias === "bullish") warnings.push("TOS mood override is bullish, which conflicts with the call spread side.");
+  if (isManualMoodSource(mood)) {
+    if (side === "put" && mood.directionalBias === "bearish") warnings.push("Manual mood override is bearish, which conflicts with the put spread side.");
+    if (side === "call" && mood.directionalBias === "bullish") warnings.push("Manual mood override is bullish, which conflicts with the call spread side.");
   }
 
   return {
@@ -345,7 +345,7 @@ function scoreCandidate(args: {
   if (distanceAsExpectedMovePct > maxPct) warnings.push(`${row.strike} is far outside the target distance band; safer, but credit may be inefficient.`);
   if (creditToRiskPct < minCreditToRiskPctForRiskMode(riskMode)) warnings.push("Credit/risk is below the default target for this risk mode.");
   if (creditToWidthPct > 0.38) warnings.push("Credit is rich because the short strike is likely close/risky for 0DTE.");
-  if (liquidityScore < 45) warnings.push("Bid/ask quality is weak. Confirm live TOS marks before placing.");
+  if (liquidityScore < 45) warnings.push("Schwab bid/ask quality is weak or incomplete. Verify the live combination mark before entry.");
 
   score = clamp(score, 0, 100);
   const confidence = clamp(Math.round(score * 0.86 + rec.confidenceScore * 0.14), 0, 100);
@@ -410,16 +410,16 @@ function choosePreferredSide(args: {
   const notes: string[] = [];
   const warnings: string[] = [];
 
-  if (mood?.source === "manual-tos-mood") {
+  if (isManualMoodSource(mood)) {
     if (mood.tradeBias === "put-credit-spread" || mood.tradeBias === "skewed-bullish-condor") {
-      notes.push(`Manual TOS mood favors bullish premium selling, so put spread is preferred if its optimized strike score is valid.`);
-      return { preferredSide: put.shortStrike ? "put" : "none", selectionMode: "manual-tos-mood", notes, warnings };
+      notes.push(`Manual mood override favors bullish premium selling, so the put spread is preferred if its optimized strike score is valid.`);
+      return { preferredSide: put.shortStrike ? "put" : "none", selectionMode: "manual-mood", notes, warnings };
     }
     if (mood.tradeBias === "call-credit-spread" || mood.tradeBias === "skewed-bearish-condor") {
-      notes.push(`Manual TOS mood favors bearish premium selling, so call spread is preferred if its optimized strike score is valid.`);
-      return { preferredSide: call.shortStrike ? "call" : "none", selectionMode: "manual-tos-mood", notes, warnings };
+      notes.push(`Manual mood override favors bearish premium selling, so the call spread is preferred if its optimized strike score is valid.`);
+      return { preferredSide: call.shortStrike ? "call" : "none", selectionMode: "manual-mood", notes, warnings };
     }
-    notes.push("Manual TOS mood is neutral; showing both optimized credit-spread sides while iron fly/condor remains primary.");
+    notes.push("Manual mood override is neutral; showing both optimized credit-spread sides while the iron fly/condor remains primary.");
   }
 
   if (rec.dealerPressure > 25) {
@@ -611,6 +611,17 @@ function minWidthForRiskMode(mode: CreditSpreadRiskMode) {
   if (mode === "conservative") return 5;
   return 5;
 }
+
+
+function isManualMoodSource(
+  mood: ZeroDteMoodRead | null | undefined,
+): mood is ZeroDteMoodRead {
+  return (
+    mood?.source === "manual-fallback" ||
+    mood?.source === "manual-forced"
+  );
+}
+
 
 function aggressionForRiskMode(mode: CreditSpreadRiskMode, pressure: number, moodPercent: number | null) {
   if (mode === "aggressive") return "high";
