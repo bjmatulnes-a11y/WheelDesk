@@ -72,6 +72,11 @@ export type ExecutionCandidate = {
   blockers: string[];
 };
 
+export type ExecutionCandidateBook = Record<
+  ExecutionStrategy,
+  ExecutionCandidate[]
+>;
+
 export type ExecutionPremiumSample = {
   timestamp: string;
   spot: number;
@@ -398,7 +403,9 @@ export function buildZeroDteExecutionRead(args: {
 
   const components: ExecutionScoreComponent[] = position
     ? exitRead.components
-    : entryRead.components;
+    : candidate
+      ? entryRead.components
+      : [];
 
   return {
     tradeDate,
@@ -581,6 +588,124 @@ export function buildExecutionCandidate(
   };
 }
 
+export function buildExecutionCandidateBooks(
+  selection: ZeroDteTradeSelection,
+  mapState: SessionMapManagerState,
+): ExecutionCandidateBook {
+  const ironFly = buildExecutionCandidate(selection, mapState, "iron-fly");
+
+  return {
+    "iron-fly": ironFly ? [ironFly] : [],
+    "put-credit-spread": buildSpreadExecutionCandidateBook(
+      selection,
+      mapState,
+      "put-credit-spread",
+    ),
+    "call-credit-spread": buildSpreadExecutionCandidateBook(
+      selection,
+      mapState,
+      "call-credit-spread",
+    ),
+  };
+}
+
+function buildSpreadExecutionCandidateBook(
+  selection: ZeroDteTradeSelection,
+  mapState: SessionMapManagerState,
+  strategy: Extract<
+    ExecutionStrategy,
+    "put-credit-spread" | "call-credit-spread"
+  >,
+): ExecutionCandidate[] {
+  const side = strategy === "put-credit-spread" ? "put" : "call";
+  const spread =
+    side === "put"
+      ? selection.creditSpreadBook.put
+      : selection.creditSpreadBook.call;
+  const ranking = findRanking(selection.strategyRankings, strategy);
+  const controlling = getControllingMarketMap(mapState);
+  const wall = side === "put" ? controlling.putWall : controlling.callWall;
+  const topRawScore = spread.candidates[0]?.score ?? spread.score;
+  const sideBlockers = (ranking?.blockers ?? []).filter(
+    (blocker) =>
+      !blocker.includes("No executable live spread candidate") &&
+      !blocker.includes("short strike sits inside the controlling wall"),
+  );
+  const candidateRows = spread.candidates.length
+    ? spread.candidates
+    : spread.shortStrike !== null &&
+        spread.longStrike !== null &&
+        spread.estimatedCredit !== null &&
+        spread.maxLossDollars !== null
+      ? [
+          {
+            strike: spread.shortStrike,
+            longStrike: spread.longStrike,
+            score: spread.score,
+            confidence: spread.confidence,
+            estimatedCredit: spread.estimatedCredit,
+            maxLossDollars: spread.maxLossDollars,
+            reasons: spread.reasons,
+            warnings: spread.warnings,
+          },
+        ]
+      : [];
+
+  return candidateRows.slice(0, 12).map((row) => {
+    const legs: ExecutionLeg[] = [
+      {
+        optionType: side,
+        action: "sell",
+        strike: row.strike,
+      },
+      {
+        optionType: side,
+        action: "buy",
+        strike: row.longStrike,
+      },
+    ];
+    const blockers = [...sideBlockers];
+    const shortInsideWall =
+      wall !== null &&
+      (side === "put" ? row.strike > wall : row.strike < wall);
+    if (shortInsideWall) {
+      blockers.push("The short strike sits inside the controlling wall.");
+    }
+
+    const score = clamp(
+      (ranking?.score ?? row.confidence) + (row.score - topRawScore) * 0.65,
+    );
+    const eligible =
+      Number.isFinite(row.estimatedCredit) &&
+      row.estimatedCredit > 0 &&
+      !shortInsideWall &&
+      blockers.length === 0 &&
+      score >= 35;
+
+    return {
+      strategy,
+      label:
+        side === "put"
+          ? `Put Credit ${row.strike.toFixed(0)} / ${row.longStrike.toFixed(0)}`
+          : `Call Credit ${row.strike.toFixed(0)} / ${row.longStrike.toFixed(0)}`,
+      setupKey: makeExecutionSetupKey(strategy, legs),
+      score: Math.round(score),
+      eligible,
+      legs,
+      estimatedCredit: row.estimatedCredit,
+      maxRiskDollars: row.maxLossDollars,
+      mapPhase: mapState.phase,
+      mapCenter: controlling.center,
+      railBreached: mapState.railBreached,
+      reasons: unique([
+        ...(row.reasons ?? []),
+        ...(ranking?.reasons ?? []),
+      ]).slice(0, 10),
+      blockers: unique(blockers),
+    };
+  });
+}
+
 export function calculateStrategyCredit(
   rows: ZeroDteChainRow[],
   legs: ExecutionLeg[],
@@ -685,7 +810,7 @@ function buildEntryRead(args: {
       )}% expected-move floor for ${timeRegime.label.toLowerCase()}.`,
     );
   }
-  if (tracking && tracking.ageCandles < 1) {
+  if (candidate && tracking && tracking.ageCandles < 1) {
     blockers.push(
       "The tracked candidate must remain valid through at least one completed candle.",
     );
@@ -717,32 +842,38 @@ function buildEntryRead(args: {
     exhaustionScore,
     requiresPeakRollover: timeRegime.requiresPeakRollover,
   });
-  const portfolioScore = portfolioContribution?.score ?? 72;
+  const portfolioScore = candidate
+    ? portfolioContribution?.score ?? 72
+    : 0;
   const weights = timeRegime.weights;
-  const entryScore = clamp(
-    distanceScore * (weights.distance / 100) +
-      structureScore * (weights.structure / 100) +
-      dealerFlowScore * (weights.dealerFlow / 100) +
-      premiumScore * (weights.premiumExhaustion / 100) +
-      portfolioScore * (weights.portfolio / 100),
-    0,
-    100,
-  );
+  const entryScore = candidate
+    ? clamp(
+        distanceScore * (weights.distance / 100) +
+          structureScore * (weights.structure / 100) +
+          dealerFlowScore * (weights.dealerFlow / 100) +
+          premiumScore * (weights.premiumExhaustion / 100) +
+          portfolioScore * (weights.portfolio / 100),
+        0,
+        100,
+      )
+    : 0;
 
   if (shortDistance.points !== null) {
     reasons.push(
       `Short strike is ${shortDistance.points.toFixed(1)} points from SPX (${Math.round((shortDistance.expectedMovePct ?? 0) * 100)}% of expected move).`,
     );
   }
-  if (premiumExpansionPct !== null) {
+  if (candidate && premiumExpansionPct !== null) {
     reasons.push(
       `Live credit is ${premiumExpansionPct >= 0 ? "+" : ""}${premiumExpansionPct.toFixed(1)}% versus this locked setup's tracked open.`,
     );
-  } else {
+  } else if (candidate) {
     reasons.push("Building the premium baseline for this locked strategy and strike set.");
   }
-  if (peakDetected) reasons.push("Premium rollover is confirmed after a tracked setup peak.");
-  if (tracking?.lockedAt) {
+  if (candidate && peakDetected) {
+    reasons.push("Premium rollover is confirmed after a tracked setup peak.");
+  }
+  if (candidate && tracking?.lockedAt) {
     reasons.push(`Candidate has been locked for ${tracking.ageCandles} candle${tracking.ageCandles === 1 ? "" : "s"}.`);
   }
   if (portfolioContribution) reasons.push(...portfolioContribution.reasons);

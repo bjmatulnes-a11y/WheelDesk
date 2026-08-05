@@ -14,8 +14,8 @@ export function runZeroDteSystemDiagnostics(): ZeroDteDiagnosticCheck[] {
   const openingMap = buildOpeningMap("2026-07-10", "2026-07-10T13:35:00.000Z", recommendation);
 
   const previous = snapshot("2026-07-10T14:00:00.000Z", 7496, 100, 100);
-  const defended = snapshot("2026-07-10T14:05:00.000Z", 7494, 500, 120);
-  const attacked = snapshot("2026-07-10T14:10:00.000Z", 7505, 900, 140);
+  const defended = snapshot("2026-07-10T14:01:00.000Z", 7494, 500, 120);
+  const attacked = snapshot("2026-07-10T14:02:00.000Z", 7505, 900, 140);
 
   const defendedRead = buildZeroDteStrikeFlowRead(defended, previous, recommendation);
   const attackedRead = buildZeroDteStrikeFlowRead(attacked, defended, recommendation);
@@ -35,19 +35,19 @@ export function runZeroDteSystemDiagnostics(): ZeroDteDiagnosticCheck[] {
     },
     {
       id: "volume-delta",
-      label: "Strike-flow delta uses sequential harvests",
+      label: "Closed-minute strike-flow delta uses sequential snapshots",
       passed: defendedRead.totalCallVolumeDelta === 400 && defendedRead.totalPutVolumeDelta === 20,
       detail: `Call Δ ${defendedRead.totalCallVolumeDelta}; Put Δ ${defendedRead.totalPutVolumeDelta}`,
     },
     {
       id: "call-wall-defense",
-      label: "Call-wall rejection can classify as defended",
+      label: "Completed-minute call-wall rejection classifies as defended",
       passed: defendedRead.callWall.state === "defended",
       detail: `State: ${defendedRead.callWall.state}`,
     },
     {
       id: "call-wall-attack",
-      label: "Call-wall acceptance can classify as attacked",
+      label: "Completed-minute call-wall acceptance classifies as attacked",
       passed: attackedRead.callWall.state === "attacked",
       detail: `State: ${attackedRead.callWall.state}`,
     },

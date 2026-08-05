@@ -37,15 +37,17 @@ export function ZeroDteExecutionIntelligencePanel({
     (read.lifecycle === "ARMED" || read.lifecycle === "SELL_READY") &&
     !read.position;
   const canClose = Boolean(read.position) && activeCredit >= 0;
+  const hasTrackedSetup = Boolean(read.position || read.candidate);
+  const sessionClosed = read.timeRegime.regime === "CLOSED";
 
   return (
     <section style={styles.panel}>
       <div style={styles.header}>
         <div>
-          <div style={styles.eyebrow}>Layer 6B · Unified Execution Lifecycle</div>
+          <div style={styles.eyebrow}>Layer 6D · Time-Aware Execution Lifecycle</div>
           <h2 style={styles.title}>Iron Fly + Credit Spread Execution</h2>
           <p style={styles.sub}>
-            One lifecycle follows the map-aware winner from entry through premium harvest, invalidation, and buyback.
+            Scanner discovery, stable candidate tracking, exact-strike premium history, portfolio acceptance, and buyback management.
           </p>
         </div>
         <div
@@ -61,22 +63,36 @@ export function ZeroDteExecutionIntelligencePanel({
 
       <div style={styles.strategyBanner}>
         <div>
-          <div style={styles.smallCaps}>Controlling Strategy</div>
-          <div style={styles.strategyName}>{read.strategyLabel}</div>
-          <div style={styles.legs}>{formatLegs(read.position?.legs ?? read.candidate?.legs ?? [])}</div>
+          <div style={styles.smallCaps}>{read.position ? "Managed Position" : "Tracked Execution Setup"}</div>
+          <div style={styles.strategyName}>
+            {hasTrackedSetup ? read.strategyLabel : "No tracked setup"}
+          </div>
+          <div style={styles.legs}>
+            {hasTrackedSetup
+              ? formatLegs(read.position?.legs ?? read.candidate?.legs ?? [])
+              : "The scanner has not produced an eligible exact strike set."}
+          </div>
         </div>
         <div style={styles.mapRead}>
-          <span>{read.mapPhase}</span>
+          <span>{sessionClosed ? "EOD FROZEN" : read.mapPhase}</span>
           <strong>{read.railBreached === "NONE" ? "Rails Holding" : `${read.railBreached} Rail Breached`}</strong>
           <small>Center {read.mapCenter.toFixed(0)}</small>
+          <small>{read.timeRegime.label} · {read.timeRegime.centralTime} CT</small>
         </div>
       </div>
 
       <div style={styles.scoreGrid}>
-        <Score label="Entry Score" value={read.entryScore} muted={Boolean(read.position)} />
-        <Score label="Exit Score" value={read.exitScore} muted={!read.position} />
-        <Score label="Lifecycle Confidence" value={read.confidence} />
+        <Score label="Entry Readiness" value={read.entryScore} muted={Boolean(read.position) || !hasTrackedSetup} />
+        <Score label="Exit Readiness" value={read.exitScore} muted={!read.position} />
+        <Score label={read.position ? "Active Exit Readiness" : "Active Entry Readiness"} value={read.confidence} muted={!hasTrackedSetup} />
         <Score label="Emergency Exit" value={read.emergencyExit ? 100 : 0} muted={!read.emergencyExit} />
+      </div>
+
+      <div style={styles.trackingGrid}>
+        <Metric label="Time Regime" value={read.timeRegime.label.toUpperCase()} />
+        <Metric label="Tracking State" value={read.trackingStatus?.replaceAll("_", " ") ?? "NO TRACK"} />
+        <Metric label="Candidate Age" value={hasTrackedSetup ? `${read.candidateAgeCandles} candle${read.candidateAgeCandles === 1 ? "" : "s"}` : "—"} />
+        <Metric label="Scanner Score" value={read.scannerScore == null ? "—" : String(Math.round(read.scannerScore))} />
       </div>
 
       <div
@@ -113,7 +129,7 @@ export function ZeroDteExecutionIntelligencePanel({
 
       <div style={styles.breakdownGrid}>
         <div style={styles.box}>
-          <h3 style={styles.boxTitle}>{read.position ? "Exit score breakdown" : "Entry score breakdown"}</h3>
+          <h3 style={styles.boxTitle}>{read.position ? "Exit readiness breakdown" : "Entry readiness breakdown"}</h3>
           {read.components.length ? (
             read.components.map((component) => (
               <Break
@@ -125,7 +141,9 @@ export function ZeroDteExecutionIntelligencePanel({
               />
             ))
           ) : (
-            <div style={styles.muted}>No score components are available yet.</div>
+            <div style={styles.muted}>
+              No exact tracked setup is available, so WheelDesk is not manufacturing a readiness score from unrelated market inputs.
+            </div>
           )}
         </div>
 
@@ -346,6 +364,7 @@ const styles: Record<string, React.CSSProperties> = {
   legs: { marginTop: 5, color: "#c4d4df", fontSize: 12, lineHeight: 1.45 },
   mapRead: { display: "grid", gap: 2, textAlign: "right", color: "#71879a", fontSize: 10 },
   scoreGrid: { display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 10, marginTop: 14 },
+  trackingGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginTop: 12 },
   score: { background: "#091b28", border: "1px solid #1c3b52", borderRadius: 12, padding: 12 },
   scoreLabel: { color: "#7890a4", fontSize: 10, textTransform: "uppercase", letterSpacing: ".08em", fontWeight: 850 },
   scoreValue: { marginTop: 5, fontSize: 30, lineHeight: 1, fontWeight: 950 },

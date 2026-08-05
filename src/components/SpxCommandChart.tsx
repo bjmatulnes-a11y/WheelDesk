@@ -24,6 +24,7 @@ import { useSessionMapManager } from "../lib/session/useSessionMapManager";
 import { getControllingMarketMap } from "../lib/session/mapEngine";
 import {
   buildExecutionCandidate,
+  buildExecutionCandidateBooks,
   buildZeroDteExecutionRead,
   emptyExecutionMemory,
   sampleFromRead,
@@ -241,28 +242,26 @@ export default function SpxCommandChart() {
     });
   }, [baseTradeSelection, mapManager.state, recommendation, spxRows, strikeFlow]);
 
+  const scannerExecutionCandidateBooks = useMemo(() => {
+    if (!mapAwareTradeSelection || !mapManager.state) return null;
+    return buildExecutionCandidateBooks(
+      mapAwareTradeSelection,
+      mapManager.state,
+    );
+  }, [mapAwareTradeSelection, mapManager.state]);
+
   const scannerExecutionCandidates = useMemo<
     Partial<Record<ExecutionStrategy, ExecutionCandidate | null>>
   >(() => {
-    if (!mapAwareTradeSelection || !mapManager.state) return {};
+    if (!scannerExecutionCandidateBooks) return {};
     return {
-      "iron-fly": buildExecutionCandidate(
-        mapAwareTradeSelection,
-        mapManager.state,
-        "iron-fly",
-      ),
-      "put-credit-spread": buildExecutionCandidate(
-        mapAwareTradeSelection,
-        mapManager.state,
-        "put-credit-spread",
-      ),
-      "call-credit-spread": buildExecutionCandidate(
-        mapAwareTradeSelection,
-        mapManager.state,
-        "call-credit-spread",
-      ),
+      "iron-fly": scannerExecutionCandidateBooks["iron-fly"][0] ?? null,
+      "put-credit-spread":
+        scannerExecutionCandidateBooks["put-credit-spread"][0] ?? null,
+      "call-credit-spread":
+        scannerExecutionCandidateBooks["call-credit-spread"][0] ?? null,
     };
-  }, [mapAwareTradeSelection, mapManager.state]);
+  }, [scannerExecutionCandidateBooks]);
 
   const stableCandidateTracker = useStableExecutionCandidates({
     tradeDate: harvest?.tradeDate,
@@ -271,6 +270,7 @@ export default function SpxCommandChart() {
     candles,
     mapState: mapManager.state,
     scannerCandidates: scannerExecutionCandidates,
+    scannerCandidateBooks: scannerExecutionCandidateBooks ?? undefined,
     openSetupKeys: (executionMemory?.positions ?? []).map(
       (position) => position.setupKey,
     ),
@@ -284,8 +284,18 @@ export default function SpxCommandChart() {
 
   const recommendedExecutionCandidate = useMemo(() => {
     if (!mapAwareTradeSelection || !mapManager.state) return null;
-    return buildExecutionCandidate(mapAwareTradeSelection, mapManager.state);
-  }, [mapAwareTradeSelection, mapManager.state]);
+    const strategy = mapAwareTradeSelection.tradeType as ExecutionStrategy;
+    const candidateFromBook =
+      scannerExecutionCandidateBooks?.[strategy]?.[0] ?? null;
+    return (
+      candidateFromBook ??
+      buildExecutionCandidate(mapAwareTradeSelection, mapManager.state)
+    );
+  }, [
+    mapAwareTradeSelection,
+    mapManager.state,
+    scannerExecutionCandidateBooks,
+  ]);
 
   useEffect(() => {
     const tradeDate = harvest?.tradeDate;
@@ -1028,15 +1038,15 @@ export default function SpxCommandChart() {
         />
         <MetricCard
           label="Put Wall"
-          value={recommendation?.spx.putWall?.toFixed(0) ?? "—"}
+          value={controllingMap?.putWall?.toFixed(0) ?? recommendation?.spx.putWall?.toFixed(0) ?? "—"}
         />
         <MetricCard
           label="Call Wall"
-          value={recommendation?.spx.callWall?.toFixed(0) ?? "—"}
+          value={controllingMap?.callWall?.toFixed(0) ?? recommendation?.spx.callWall?.toFixed(0) ?? "—"}
         />
         <MetricCard
           label="Pin"
-          value={recommendation?.spx.strongestPin?.toFixed(0) ?? "—"}
+          value={controllingMap?.pin?.toFixed(0) ?? recommendation?.spx.strongestPin?.toFixed(0) ?? "—"}
         />
         <MetricCard
           label="Dealer Pressure"
@@ -1373,6 +1383,11 @@ export default function SpxCommandChart() {
           mood={harvest?.mood ?? null}
           tradeSelection={mapAwareTradeSelection}
           strikeFlow={strikeFlow}
+          tracking={stableCandidateTracker.tracks}
+          sessionStatus={mapManager.state?.sessionStatus ?? "PREOPEN"}
+          openSetupKeys={(executionMemory?.positions ?? []).map(
+            (position) => position.setupKey,
+          )}
         />
       ) : null}
 
@@ -1391,8 +1406,13 @@ export default function SpxCommandChart() {
           pin={controllingMap?.pin ?? recommendation.spx.strongestPin}
           center={controllingMap?.center ?? recommendation.suggestedCenter}
           expectedMove={controllingMap?.expectedMove ?? recommendation.expectedMove}
-          confidence={recommendation.confidenceScore}
+          recommendationConfidence={recommendation.confidenceScore}
+          structuralConfidence={
+            controllingMap?.structure.structuralConfidence ??
+            recommendation.confidenceScore
+          }
           mapState={mapManager.state?.phase ?? "OPENING"}
+          sessionStatus={mapManager.state?.sessionStatus ?? "PREOPEN"}
           openingPressure={mapManager.state?.opening.dealerPressure ?? null}
           controllingPressure={controllingMap?.dealerPressure ?? null}
         />
@@ -1418,6 +1438,8 @@ export default function SpxCommandChart() {
         <PremiumHistoryPanel
           history={executionMemory?.samples ?? []}
           read={liveExecutionRead}
+          availableReads={executionReadsForPaint}
+          preferredSetupKey={entryExecutionRead?.setupKey ?? liveExecutionRead?.setupKey ?? null}
         />
       </div>
     </section>

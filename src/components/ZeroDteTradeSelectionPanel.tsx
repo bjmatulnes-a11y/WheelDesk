@@ -5,19 +5,33 @@ import type { ZeroDteMoodRead } from "../lib/zeroDteMoodEngine";
 import type { ZeroDteCreditSpreadSelection } from "../lib/zeroDteCreditSpreadSelector";
 import type { ZeroDteTradeSelection } from "../lib/zeroDteTradeSelector";
 import type { ZeroDteStrikeFlowRead } from "../lib/zeroDteStrikeFlow";
+import { makeExecutionSetupKey } from "../lib/zeroDteExecutionIntelligence";
+import type {
+  ExecutionCandidateTracking,
+  ExecutionStrategy,
+} from "../lib/zeroDteExecutionIntelligence";
+import type { ZeroDteCashSessionStatus } from "../lib/zeroDteSessionClock";
 
 export function ZeroDteTradeSelectionPanel({
   mood,
   tradeSelection,
   strikeFlow,
+  tracking,
+  sessionStatus = "OPEN",
+  openSetupKeys = [],
 }: {
   mood: ZeroDteMoodRead | null | undefined;
   tradeSelection: ZeroDteTradeSelection | null | undefined;
   strikeFlow?: ZeroDteStrikeFlowRead | null;
+  tracking?: Partial<Record<ExecutionStrategy, ExecutionCandidateTracking>>;
+  sessionStatus?: ZeroDteCashSessionStatus;
+  openSetupKeys?: string[];
 }) {
   const book = tradeSelection?.creditSpreadBook ?? null;
   const put = book?.put ?? null;
   const call = book?.call ?? null;
+  const putTrack = tracking?.["put-credit-spread"] ?? null;
+  const callTrack = tracking?.["call-credit-spread"] ?? null;
   const preferredSide =
     tradeSelection?.tradeType === "put-credit-spread"
       ? "put"
@@ -39,9 +53,9 @@ export function ZeroDteTradeSelectionPanel({
     <section style={styles.card}>
       <div style={styles.headerRow}>
         <div>
-          <h2 style={styles.title}>Live Strategy Scan</h2>
+          <h2 style={styles.title}>Live Strategy Scanner + Stable Tracker</h2>
           <p style={styles.muted}>
-            This live scan updates execution context, confidence, flow, and current pricing. It does not replace the locked opening put/call strikes unless you deliberately rebuild today's trade map.
+            Scanner cards show what ranks best now. Tracked cards show the exact spread collecting candle-close and premium evidence. A scanner score is not an entry signal.
           </p>
         </div>
         <div style={styles.badgeWrap}>
@@ -49,7 +63,9 @@ export function ZeroDteTradeSelectionPanel({
           <div style={{ ...styles.badgeValue, color: preferredSide === "put" ? "#34d399" : preferredSide === "call" ? "#fb7185" : "#fde047" }}>
             {finalTradeLabel}
           </div>
-          <div style={styles.sourceLine}>{tradeSelection?.selectionMode ?? "not selected"}</div>
+          <div style={styles.sourceLine}>
+            {sessionStatus === "CLOSED" ? "EOD QUOTES · NO NEW ENTRY" : tradeSelection?.selectionMode ?? "not selected"}
+          </div>
         </div>
       </div>
 
@@ -57,7 +73,7 @@ export function ZeroDteTradeSelectionPanel({
         <Metric title="Mood" value={mood?.moodPercent == null ? "—" : `${mood.moodPercent.toFixed(1)}%`} tone={moodTone(mood?.moodPercent)} />
         <Metric title="Mood Bias" value={mood?.tradeBias ?? "—"} />
         <Metric title="Final Trade" value={tradeSelection?.label ?? "—"} />
-        <Metric title="Confidence" value={tradeSelection?.confidence == null ? "—" : `${tradeSelection.confidence}%`} tone={tone(tradeSelection?.confidence ?? 0)} />
+        <Metric title="Strategy Scan" value={tradeSelection?.confidence == null ? "—" : `${tradeSelection.confidence}%`} tone={tone(tradeSelection?.confidence ?? 0)} />
         <Metric title="Flow Guard" value={!strikeFlow?.hasPriorSnapshot ? "Baseline" : `${strikeFlow.callWall.state} / ${strikeFlow.putWall.state}`} />
       </div>
 
@@ -66,8 +82,8 @@ export function ZeroDteTradeSelectionPanel({
       ) : null}
 
       <div style={styles.grid2}>
-        <SpreadCard spread={put} preferred={preferredSide === "put"} />
-        <SpreadCard spread={call} preferred={preferredSide === "call"} />
+        <SpreadCard spread={put} preferred={preferredSide === "put"} track={putTrack} sessionStatus={sessionStatus} />
+        <SpreadCard spread={call} preferred={preferredSide === "call"} track={callTrack} sessionStatus={sessionStatus} />
       </div>
 
       <div style={styles.grid2}>
@@ -76,8 +92,8 @@ export function ZeroDteTradeSelectionPanel({
       </div>
 
       <div style={styles.grid2}>
-        <CandidateTable title="Top Put Spread Candidates" spread={put} />
-        <CandidateTable title="Top Call Spread Candidates" spread={call} />
+        <CandidateTable title="Top Put Spread Candidates" spread={put} track={putTrack} openSetupKeys={openSetupKeys} />
+        <CandidateTable title="Top Call Spread Candidates" spread={call} track={callTrack} openSetupKeys={openSetupKeys} />
       </div>
     </section>
   );
@@ -142,18 +158,33 @@ function StrategyRankingBoard({
   );
 }
 
-function SpreadCard({ spread, preferred }: { spread: ZeroDteCreditSpreadSelection | null; preferred: boolean }) {
+function SpreadCard({
+  spread,
+  preferred,
+  track,
+  sessionStatus,
+}: {
+  spread: ZeroDteCreditSpreadSelection | null;
+  preferred: boolean;
+  track: ExecutionCandidateTracking | null;
+  sessionStatus: ZeroDteCashSessionStatus;
+}) {
   const sideSuffix = spread?.side === "put" ? "P" : spread?.side === "call" ? "C" : "";
   const sideTitle = spread?.side === "put" ? "Put Credit Spread" : "Call Credit Spread";
+  const trackedLegs = track?.candidate?.legs ?? [];
 
   return (
     <div style={{ ...styles.tradeBox, borderColor: preferred ? "rgba(103,232,249,0.75)" : "#1e3a5f" }}>
       <div style={styles.tradeHeaderRow}>
         <div>
-          <div style={styles.smallCaps}>{sideTitle}</div>
-          {preferred ? <div style={styles.preferredPill}>Preferred</div> : null}
+          <div style={styles.smallCaps}>{sideTitle} Scanner</div>
+          {preferred ? <div style={styles.preferredPill}>Scanner leader</div> : null}
+          {sessionStatus === "CLOSED" ? <div style={styles.eodPill}>EOD · diagnostic only</div> : null}
         </div>
-        <div style={{ ...styles.score, color: tone(spread?.confidence ?? 0) }}>{spread ? `${spread.confidence}%` : "—"}</div>
+        <div>
+          <div style={styles.scoreCaption}>Scanner quality</div>
+          <div style={{ ...styles.score, color: tone(spread?.confidence ?? 0) }}>{spread ? `${spread.confidence}%` : "—"}</div>
+        </div>
       </div>
 
       {spread?.shortStrike && spread.longStrike ? (
@@ -176,18 +207,54 @@ function SpreadCard({ spread, preferred }: { spread: ZeroDteCreditSpreadSelectio
             <MiniStat label="Delta" value={spread.shortDeltaAbs == null ? "—" : spread.shortDeltaAbs.toFixed(2)} />
           </div>
           <div style={styles.wallText}>{spread.wallRelationship}</div>
-          {spread.reasons.slice(0, 5).map((reason, idx) => <div key={idx} style={styles.reasonLine}>• {reason}</div>)}
+          {spread.reasons.slice(0, 4).map((reason, idx) => <div key={idx} style={styles.reasonLine}>• {reason}</div>)}
         </>
       ) : (
-        <div style={styles.emptySpread}>No executable candidate from current SPX quote rows and risk filters.</div>
+        <div style={styles.emptySpread}>No quote-complete scanner candidate from the current SPX rows and risk filters.</div>
       )}
+
+      <div style={styles.trackedBox}>
+        <div style={styles.trackedHeader}>
+          <div style={styles.smallCaps}>Tracked Signal Candidate</div>
+          <span style={styles.trackState}>{track?.status?.replaceAll("_", " ") ?? "NO CANDIDATE"}</span>
+        </div>
+        {track?.candidate ? (
+          <>
+            <div style={styles.trackedLegs}>{formatCandidateLegs(trackedLegs)}</div>
+            <div style={styles.trackedMeta}>
+              <span>Score {track.candidate.score}</span>
+              <span>Age {track.ageCandles} candle{track.ageCandles === 1 ? "" : "s"}</span>
+              <span>{track.lockedAt ? `Locked ${new Date(track.lockedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "Lock pending"}</span>
+            </div>
+            {track.scannerCandidate && track.scannerCandidate.setupKey !== track.candidate.setupKey ? (
+              <div style={styles.challengerLine}>
+                Challenger: {formatCandidateLegs(track.scannerCandidate.legs)} · score {track.scannerCandidate.score}
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <div style={styles.muted}>No exact spread is currently locked for candle-close evaluation.</div>
+        )}
+      </div>
     </div>
   );
 }
 
-function CandidateTable({ title, spread }: { title: string; spread: ZeroDteCreditSpreadSelection | null }) {
+function CandidateTable({
+  title,
+  spread,
+  track,
+  openSetupKeys,
+}: {
+  title: string;
+  spread: ZeroDteCreditSpreadSelection | null;
+  track: ExecutionCandidateTracking | null;
+  openSetupKeys: string[];
+}) {
   const sideSuffix = spread?.side === "put" ? "P" : spread?.side === "call" ? "C" : "";
+  const strategy: ExecutionStrategy = spread?.side === "call" ? "call-credit-spread" : "put-credit-spread";
   const candidates = spread?.candidates ?? [];
+  const openKeys = new Set(openSetupKeys);
 
   return (
     <div style={styles.tableWrap}>
@@ -205,22 +272,38 @@ function CandidateTable({ title, spread }: { title: string; spread: ZeroDteCredi
               <th style={styles.th}>Score</th>
               <th style={styles.th}>EM</th>
               <th style={styles.th}>Δ</th>
+              <th style={styles.th}>State</th>
             </tr>
           </thead>
           <tbody>
-            {candidates.slice(0, 8).map((candidate) => (
-              <tr key={`${candidate.strike}-${candidate.longStrike}-${candidate.actualWidth}`} style={styles.tr}>
-                <td style={styles.tdStrong}>{fmt(candidate.strike)}{sideSuffix}</td>
-                <td style={styles.td}>{fmt(candidate.longStrike)}{sideSuffix}</td>
-                <td style={styles.td}>{candidate.actualWidth}</td>
-                <td style={styles.td}>{money(candidate.estimatedCredit)}</td>
-                <td style={styles.td}>{money(candidate.maxLoss)}</td>
-                <td style={styles.td}>{(candidate.creditToRiskPct * 100).toFixed(1)}%</td>
-                <td style={styles.td}>{candidate.score}</td>
-                <td style={styles.td}>{Math.round(candidate.distanceAsExpectedMovePct * 100)}%</td>
-                <td style={styles.td}>{candidate.shortDeltaAbs == null ? "—" : candidate.shortDeltaAbs.toFixed(2)}</td>
-              </tr>
-            ))}
+            {candidates.slice(0, 8).map((candidate, index) => {
+              const legs = [
+                { optionType: spread?.side ?? "put", action: "sell" as const, strike: candidate.strike },
+                { optionType: spread?.side ?? "put", action: "buy" as const, strike: candidate.longStrike },
+              ];
+              const setupKey = makeExecutionSetupKey(strategy, legs);
+              const state = openKeys.has(setupKey)
+                ? "OPEN"
+                : track?.candidate?.setupKey === setupKey
+                  ? "TRACKED"
+                  : index === 0
+                    ? "SCANNER"
+                    : "BOOK";
+              return (
+                <tr key={`${candidate.strike}-${candidate.longStrike}-${candidate.actualWidth}`} style={{ ...styles.tr, ...(state === "TRACKED" ? styles.trTracked : {}), ...(state === "OPEN" ? styles.trOpen : {}) }}>
+                  <td style={styles.tdStrong}>{fmt(candidate.strike)}{sideSuffix}</td>
+                  <td style={styles.td}>{fmt(candidate.longStrike)}{sideSuffix}</td>
+                  <td style={styles.td}>{candidate.actualWidth}</td>
+                  <td style={styles.td}>{money(candidate.estimatedCredit)}</td>
+                  <td style={styles.td}>{money(candidate.maxLoss)}</td>
+                  <td style={styles.td}>{(candidate.creditToRiskPct * 100).toFixed(1)}%</td>
+                  <td style={styles.td}>{candidate.score}</td>
+                  <td style={styles.td}>{Math.round(candidate.distanceAsExpectedMovePct * 100)}%</td>
+                  <td style={styles.td}>{candidate.shortDeltaAbs == null ? "—" : candidate.shortDeltaAbs.toFixed(2)}</td>
+                  <td style={styles.tdState}>{state}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       ) : (
@@ -228,6 +311,13 @@ function CandidateTable({ title, spread }: { title: string; spread: ZeroDteCredi
       )}
     </div>
   );
+}
+
+function formatCandidateLegs(legs: Array<{ action: "sell" | "buy"; optionType: "put" | "call"; strike: number }>) {
+  if (!legs.length) return "—";
+  return legs
+    .map((leg) => `${leg.action === "sell" ? "SELL" : "BUY"} ${leg.strike.toFixed(0)}${leg.optionType === "put" ? "P" : "C"}`)
+    .join(" · ");
 }
 
 function Metric({ title, value, tone }: { title: string; value: string | number; tone?: string }) {
@@ -301,6 +391,8 @@ const styles: Record<string, React.CSSProperties> = {
   tradeBox: { border: "1px solid #1e3a5f", background: "#06111f", borderRadius: 16, padding: 16 },
   tradeHeaderRow: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
   preferredPill: { display: "inline-block", marginTop: 6, padding: "4px 8px", borderRadius: 999, background: "rgba(34,211,238,0.14)", color: "#67e8f9", fontSize: 11, fontWeight: 900 },
+  eodPill: { display: "inline-block", marginTop: 6, marginLeft: 6, padding: "4px 8px", borderRadius: 999, background: "rgba(148,163,184,.12)", color: "#a8b7c5", fontSize: 10, fontWeight: 850 },
+  scoreCaption: { color: "#7890a4", fontSize: 9, textTransform: "uppercase", textAlign: "right" },
   score: { fontSize: 24, fontWeight: 950 },
   tradeText: { marginTop: 10, fontSize: 23, fontWeight: 950, color: "#67e8f9" },
   widthNote: { marginTop: 8, color: "#93b5d9", fontSize: 12, fontWeight: 800 },
@@ -310,6 +402,12 @@ const styles: Record<string, React.CSSProperties> = {
   miniLabel: { color: "#93b5d9", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 900 },
   miniValue: { marginTop: 4, color: "#f8fafc", fontSize: 15, fontWeight: 900 },
   wallText: { marginTop: 10, color: "#cbd5e1", fontSize: 13, lineHeight: 1.5 },
+  trackedBox: { marginTop: 14, paddingTop: 12, borderTop: "1px solid #1e3a5f" },
+  trackedHeader: { display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" },
+  trackState: { color: "#fde047", fontSize: 10, fontWeight: 900 },
+  trackedLegs: { marginTop: 8, color: "#e5eef6", fontSize: 14, fontWeight: 900 },
+  trackedMeta: { marginTop: 7, display: "flex", gap: 10, flexWrap: "wrap", color: "#8da2b4", fontSize: 10 },
+  challengerLine: { marginTop: 8, color: "#facc15", fontSize: 11, lineHeight: 1.4 },
   reasonBox: { border: "1px solid #1e3a5f", background: "#07111f", borderRadius: 14, padding: 14 },
   reasonLine: { color: "#cbd5e1", fontSize: 13, lineHeight: 1.55, marginTop: 5 },
   warningLine: { color: "#fde68a", fontSize: 13, lineHeight: 1.55, marginTop: 5 },
@@ -317,7 +415,10 @@ const styles: Record<string, React.CSSProperties> = {
   table: { width: "100%", borderCollapse: "collapse", marginTop: 8, fontSize: 13 },
   th: { textAlign: "left", color: "#93b5d9", borderBottom: "1px solid #1e3a5f", padding: "8px 10px", whiteSpace: "nowrap" },
   tr: { borderBottom: "1px solid rgba(30,58,95,0.6)" },
+  trTracked: { background: "rgba(34,211,238,.08)" },
+  trOpen: { background: "rgba(52,211,153,.08)" },
   td: { color: "#cbd5e1", padding: "8px 10px", whiteSpace: "nowrap" },
+  tdState: { color: "#fde047", padding: "8px 10px", whiteSpace: "nowrap", fontSize: 10, fontWeight: 900 },
   tdStrong: { color: "#67e8f9", padding: "8px 10px", fontWeight: 900, whiteSpace: "nowrap" },
   rankingCard: {
     marginTop: 14,

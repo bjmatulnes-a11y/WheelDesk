@@ -3,8 +3,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { getControllingMarketMap } from "../session/mapEngine";
 import type { SessionMapManagerState } from "../session/mapEngine";
+import { getZeroDteSessionClock } from "../zeroDteSessionClock";
 import type {
   ExecutionCandidate,
+  ExecutionCandidateBook,
   ExecutionCandidateTracking,
   ExecutionStrategy,
 } from "../zeroDteExecutionIntelligence";
@@ -13,14 +15,14 @@ export type StableCandidateStatus = ExecutionCandidateTracking["status"];
 export type StableExecutionCandidateTrack = ExecutionCandidateTracking;
 
 type TrackStore = {
-  version: 1;
+  version: 2;
   tradeDate: string;
   tracks: Record<ExecutionStrategy, StableExecutionCandidateTrack>;
 };
 
 type CandleLike = { time: number };
 
-const PREFIX = "wheeldesk:execution-candidate-tracker:v1:";
+const PREFIX = "wheeldesk:execution-candidate-tracker:v2:";
 const STRATEGIES: ExecutionStrategy[] = [
   "iron-fly",
   "put-credit-spread",
@@ -33,9 +35,10 @@ export function useStableExecutionCandidates(args: {
   frequencyMinutes: number;
   candles: CandleLike[];
   mapState: SessionMapManagerState | null;
-  scannerCandidates: Partial<
+  scannerCandidates?: Partial<
     Record<ExecutionStrategy, ExecutionCandidate | null>
   >;
+  scannerCandidateBooks?: Partial<ExecutionCandidateBook>;
   openSetupKeys?: string[];
 }) {
   const {
@@ -44,7 +47,8 @@ export function useStableExecutionCandidates(args: {
     frequencyMinutes,
     candles,
     mapState,
-    scannerCandidates,
+    scannerCandidates = {},
+    scannerCandidateBooks = {},
     openSetupKeys = [],
   } = args;
   const openSetupKeySignature = [...openSetupKeys].sort().join("|");
@@ -67,6 +71,7 @@ export function useStableExecutionCandidates(args: {
 
   useEffect(() => {
     if (!tradeDate || !generatedAt || !mapState || !candles.length) return;
+    const clock = getZeroDteSessionClock(generatedAt);
     const latestCandle = candles.at(-1)!;
     const now = Date.parse(generatedAt);
     const candleClose = latestCandle.time * 1000 + frequencyMinutes * 60_000;
@@ -79,31 +84,70 @@ export function useStableExecutionCandidates(args: {
       );
 
       for (const strategy of STRATEGIES) {
-        const scanner = scannerCandidates[strategy] ?? null;
         const track = next.tracks[strategy];
+        const book = candidateBookForStrategy(
+          strategy,
+          scannerCandidateBooks,
+          scannerCandidates,
+        );
+
+        // Refresh the locked candidate's live score, reasons, credit and map metadata
+        // without changing its identity or lock age.
+        if (track.candidate) {
+          const currentVersion = book.find(
+            (candidate) => candidate.setupKey === track.candidate?.setupKey,
+          );
+          if (currentVersion) {
+            track.candidate = {
+              ...currentVersion,
+              mapPhase: mapState.phase,
+              mapCenter: controlling.center,
+              railBreached: mapState.railBreached,
+            };
+          } else {
+            track.candidate = {
+              ...track.candidate,
+              mapPhase: mapState.phase,
+              mapCenter: controlling.center,
+              railBreached: mapState.railBreached,
+            };
+          }
+        }
+
+        const scanner = selectScannerCandidate({
+          strategy,
+          book,
+          track,
+          openSetupKeySet,
+        });
         track.scannerCandidate = scanner;
 
+        if (track.candidate) {
+          track.ageCandles = countClosedAgeCandles(
+            candles,
+            track.lockedCandleTime,
+            frequencyMinutes,
+            now,
+          );
+        }
+
+        // Candidate identity is frozen outside the SPX cash session. This prevents
+        // stale after-hours quotes or repeated refreshes from manufacturing a new setup.
+        if (clock.sessionStatus !== "OPEN") {
+          track.status = track.candidate ? "LOCKED" : "NO_CANDIDATE";
+          track.challengerSetupKey = null;
+          track.challengerStartedCandleTime = null;
+          continue;
+        }
+
         if (!track.candidate) {
-          if (scanner && scanner.eligible) {
+          if (scanner?.eligible) {
             lockCandidate(track, scanner, generatedAt, latestCandle.time, null);
           } else {
             track.status = "NO_CANDIDATE";
           }
           continue;
         }
-
-        track.ageCandles = countClosedAgeCandles(
-          candles,
-          track.lockedCandleTime,
-          frequencyMinutes,
-          now,
-        );
-        track.candidate = {
-          ...track.candidate,
-          mapPhase: mapState.phase,
-          mapCenter: controlling.center,
-          railBreached: mapState.railBreached,
-        };
 
         const invalidReason = structuralInvalidation(
           strategy,
@@ -118,8 +162,7 @@ export function useStableExecutionCandidates(args: {
 
           if (
             strategy !== "iron-fly" &&
-            scanner &&
-            scanner.eligible &&
+            scanner?.eligible &&
             scanner.setupKey !== track.candidate.setupKey
           ) {
             lockCandidate(
@@ -177,7 +220,7 @@ export function useStableExecutionCandidates(args: {
             generatedAt,
             latestCandle.time,
             trackedSetupIsOpen
-              ? "The prior tracked spread is already open; a distinct portfolio candidate remained competitive through a candle close."
+              ? "The prior tracked spread is already open; the highest-ranked distinct spread remained competitive through a candle close."
               : `The scanner remained ${Math.round(superiority)} points stronger through a candle close.`,
           );
           track.status = "REPLACED";
@@ -195,6 +238,7 @@ export function useStableExecutionCandidates(args: {
     generatedAt,
     mapState,
     openSetupKeySet,
+    scannerCandidateBooks,
     scannerCandidates,
     tradeDate,
   ]);
@@ -220,6 +264,43 @@ export function useStableExecutionCandidates(args: {
       },
     };
   }, [store, tradeDate]);
+}
+
+function candidateBookForStrategy(
+  strategy: ExecutionStrategy,
+  books: Partial<ExecutionCandidateBook>,
+  singles: Partial<Record<ExecutionStrategy, ExecutionCandidate | null>>,
+) {
+  const book = books[strategy] ?? [];
+  if (book.length) return book.filter((candidate) => candidate.eligible);
+  const single = singles[strategy] ?? null;
+  return single?.eligible ? [single] : [];
+}
+
+function selectScannerCandidate(args: {
+  strategy: ExecutionStrategy;
+  book: ExecutionCandidate[];
+  track: StableExecutionCandidateTrack;
+  openSetupKeySet: Set<string>;
+}) {
+  const { strategy, book, track, openSetupKeySet } = args;
+  if (!book.length) return null;
+  if (strategy === "iron-fly") return book[0] ?? null;
+
+  const trackedSetupIsOpen = Boolean(
+    track.candidate && openSetupKeySet.has(track.candidate.setupKey),
+  );
+  if (trackedSetupIsOpen) {
+    return (
+      book.find(
+        (candidate) =>
+          candidate.setupKey !== track.candidate?.setupKey &&
+          !openSetupKeySet.has(candidate.setupKey),
+      ) ?? null
+    );
+  }
+
+  return book[0] ?? null;
 }
 
 function structuralInvalidation(
@@ -302,7 +383,7 @@ function emptyTrack(strategy: ExecutionStrategy): StableExecutionCandidateTrack 
 
 function emptyStore(tradeDate: string): TrackStore {
   return {
-    version: 1,
+    version: 2,
     tradeDate,
     tracks: {
       "iron-fly": emptyTrack("iron-fly"),
@@ -333,12 +414,12 @@ function loadStore(tradeDate: string): TrackStore {
     const raw = window.localStorage.getItem(storageKey(tradeDate));
     if (!raw) return emptyStore(tradeDate);
     const parsed = JSON.parse(raw) as Partial<TrackStore>;
-    if (parsed.version !== 1 || parsed.tradeDate !== tradeDate || !parsed.tracks) {
+    if (parsed.version !== 2 || parsed.tradeDate !== tradeDate || !parsed.tracks) {
       return emptyStore(tradeDate);
     }
     const fallback = emptyStore(tradeDate);
     return {
-      version: 1,
+      version: 2,
       tradeDate,
       tracks: {
         "iron-fly": {
