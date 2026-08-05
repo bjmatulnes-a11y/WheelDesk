@@ -183,6 +183,7 @@ export default function ZeroDteCommandClient() {
     recommendation: rec,
     rows: spxRows,
     openingMap,
+    strikeFlow,
   });
 
   const mapAwareTradeSelection = useMemo(() => {
@@ -472,7 +473,11 @@ export default function ZeroDteCommandClient() {
             ) : null}
 
             {mapManager.state ? (
-              <MapEnginePanel state={mapManager.state} onReset={mapManager.reset} />
+              <MapEnginePanel
+                state={mapManager.state}
+                strikeFlow={strikeFlow}
+                onReset={mapManager.reset}
+              />
             ) : null}
 
             {executionDbError ? <ErrorPanel errors={[`Execution DB: ${executionDbError}`]} warning /> : null}

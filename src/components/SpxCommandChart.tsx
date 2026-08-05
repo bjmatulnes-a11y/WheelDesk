@@ -181,6 +181,7 @@ export default function SpxCommandChart() {
     recommendation,
     rows: spxRows,
     openingMap,
+    strikeFlow,
   });
 
   const controllingMap = mapManager.state
@@ -1341,6 +1342,7 @@ export default function SpxCommandChart() {
       {mapManager.state ? (
         <MapEnginePanel
           state={mapManager.state}
+          strikeFlow={strikeFlow}
           onReset={mapManager.reset}
         />
       ) : null}

@@ -1,17 +1,33 @@
 "use client";
 
-import type { MarketMapSnapshot, SessionMapManagerState } from "../lib/session/mapEngine";
+import type React from "react";
+import type {
+  MarketMapSnapshot,
+  SessionMapManagerState,
+} from "../lib/session/mapEngine";
+import type { ZeroDteStrikeFlowRead } from "../lib/zeroDteStrikeFlow";
 
 export function MapEnginePanel({
   state,
+  strikeFlow,
   onReset,
 }: {
   state: SessionMapManagerState;
+  strikeFlow?: ZeroDteStrikeFlowRead | null;
   onReset: () => void;
 }) {
   const controlling =
-    state.phase === "ACTIVE" ? state.active : state.opening;
-  const candidate = state.candidate;
+    state.phase === "ACTIVE"
+      ? state.active
+      : state.phase === "TRANSITION" && state.candidate
+        ? state.candidate
+        : state.opening;
+  const accepted =
+    state.phase === "ACTIVE"
+      ? state.active
+      : state.phase === "TRANSITION"
+        ? state.candidate
+        : null;
 
   return (
     <section style={styles.card}>
@@ -21,9 +37,16 @@ export function MapEnginePanel({
           <div style={styles.titleRow}>
             <div style={styles.title}>{state.phase}</div>
             <span style={phaseBadge(state.phase)}>{state.phase}</span>
+            <span style={sessionBadge(state.sessionStatus)}>
+              {state.sessionStatus === "CLOSED"
+                ? "EOD FROZEN"
+                : state.sessionStatus}
+            </span>
           </div>
           <div style={styles.subtitle}>
-            Opening map remains immutable while candidate and active maps evolve.
+            The opening thesis is immutable. A replacement map becomes controlling
+            only after price, structure, completed-minute flow, and two closed
+            candles agree.
           </div>
         </div>
 
@@ -35,136 +58,186 @@ export function MapEnginePanel({
       <div style={styles.summaryGrid}>
         <MapMetric
           label="Opening Center"
-          value={state.opening.center.toFixed(0)}
+          value={formatNumber(state.opening.center)}
+        />
+        <MapMetric
+          label="Live Center"
+          value={formatNumber(state.latest.center)}
         />
         <MapMetric
           label="Controlling Center"
-          value={controlling.center.toFixed(0)}
-        />
-        <MapMetric
-          label="Candidate Center"
-          value={candidate?.center.toFixed(0) ?? "—"}
-        />
-        <MapMetric
-          label="Confirmation"
-          value={
-            state.phase === "TRANSITION"
-              ? `${state.confirmationCount}/${state.confirmationRequired}`
-              : "—"
-          }
+          value={formatNumber(controlling.center)}
         />
         <MapMetric label="Rail Breached" value={state.railBreached} />
         <MapMetric
           label="Outside"
           value={`${state.outsideMinutes.toFixed(1)} min`}
         />
+        <MapMetric
+          label="Migration Evidence"
+          value={`${state.migrationScore}/100`}
+        />
+        <MapMetric
+          label="Closed Candles"
+          value={`${state.confirmationCount}/${state.confirmationRequired}`}
+        />
+        <MapMetric
+          label="Flow"
+          value={state.flowConfirmation}
+        />
       </div>
 
       <div style={styles.mapGrid}>
-        <MapColumn title="Opening Map" map={state.opening} faded />
         <MapColumn
-          title={state.phase === "ACTIVE" ? "Active Map" : "Controlling Map"}
-          map={controlling}
-        />
-        <MapColumn title="Candidate Map" map={candidate} candidate />
-      </div>
-
-      <div style={styles.structureGrid}>
-        <StructureColumn
-          title="Opening Structure"
+          title="Opening Thesis"
+          subtitle={`${formatTime(state.opening.capturedAt)} · ${state.opening.source}`}
           map={state.opening}
-          compareTo={state.opening}
-          faded
         />
-        <StructureColumn
-          title={state.phase === "ACTIVE" ? "Active Structure" : "Controlling Structure"}
-          map={controlling}
-          compareTo={state.opening}
+
+        <MapColumn
+          title="Live Structure"
+          subtitle="Latest Schwab chain; diagnostic until accepted"
+          map={state.latest}
         />
-        <StructureRankings map={controlling} />
+
+        <MapColumn
+          title={
+            state.phase === "ACTIVE"
+              ? "Active Map"
+              : state.phase === "TRANSITION"
+                ? "Candidate Map"
+                : "Accepted Replacement"
+          }
+          subtitle={
+            accepted
+              ? state.phase === "ACTIVE"
+                ? "Confirmed replacement structure"
+                : "Building through closed candles"
+              : "No replacement map has cleared the gate"
+          }
+          map={accepted}
+          candidate={state.phase === "TRANSITION"}
+        />
+
+        <MigrationEvidence state={state} flow={strikeFlow ?? null} />
       </div>
 
       <StructureEvolution
         opening={state.opening}
-        current={state.latest ?? controlling}
-        previous={state.previousLive}
+        current={state.latest}
+        accepted={accepted}
       />
 
       <div style={styles.reasonGrid}>
         <div style={styles.reasonCard}>
-          <div style={styles.sectionTitle}>Current Read</div>
-          {state.reasons.map((reason) => (
-            <div key={reason} style={styles.reason}>
-              <span style={styles.dot} />
+          <div style={styles.sectionTitle}>Current State</div>
+          {(state.reasons.length
+            ? state.reasons
+            : ["Map evidence is still building."]
+          ).map((reason, index) => (
+            <div key={`${reason}-${index}`} style={styles.reasonLine}>
+              <span style={styles.reasonDot} />
               {reason}
             </div>
           ))}
         </div>
 
         <div style={styles.reasonCard}>
-          <div style={styles.sectionTitle}>Execution Rule</div>
-          <div style={styles.rule}>
-            {state.phase === "TRANSITION"
-              ? "Iron Fly entry is penalized or blocked until the candidate map confirms."
-              : state.phase === "ACTIVE"
-                ? "Execution engines use the confirmed active map while retaining the opening map for comparison."
-                : "Execution engines use the immutable opening map as the controlling structure."}
+          <div style={styles.sectionTitle}>What the Manager Is Doing</div>
+          <div style={styles.ruleText}>
+            <strong>OPENING:</strong> the saved opening thesis controls.
           </div>
-          <div style={styles.rule}>
-            Credit-spread candidates may remain eligible during transition when
-            their directional wall and dealer conditions agree.
+          <div style={styles.ruleText}>
+            <strong>TRANSITION:</strong> price is outside a rail and a live
+            replacement is being tested with completed one-minute delta volume.
+          </div>
+          <div style={styles.ruleText}>
+            <strong>ACTIVE:</strong> two closed candles confirmed the replacement;
+            directional credit spreads may use it. The opening Iron Fly remains
+            tied to the opening thesis.
+          </div>
+          <div style={styles.proxyNote}>
+            Structure movement is descriptive, not an entry signal. OI/gamma say
+            where the structure is; completed-minute delta volume and price response
+            say whether the market accepted it.
           </div>
         </div>
       </div>
-
-      {state.events.length ? (
-        <div style={styles.events}>
-          <div style={styles.sectionTitle}>Map Events</div>
-          {[...state.events]
-            .reverse()
-            .slice(0, 6)
-            .map((event, index) => (
-              <div key={`${event.timestamp}-${index}`} style={styles.event}>
-                <span>
-                  {new Date(event.timestamp).toLocaleTimeString([], {
-                    hour: "numeric",
-                    minute: "2-digit",
-                  })}
-                </span>
-                <strong>
-                  {event.from} → {event.to}
-                </strong>
-                <span>Center {event.center.toFixed(0)}</span>
-              </div>
-            ))}
-        </div>
-      ) : null}
     </section>
   );
 }
 
-
-type EvolutionStatus = "HOLDING" | "MIGRATING" | "STRENGTHENING" | "WEAKENING" | "BUILDING";
+function MigrationEvidence({
+  state,
+  flow,
+}: {
+  state: SessionMapManagerState;
+  flow: ZeroDteStrikeFlowRead | null;
+}) {
+  const structureConfidence =
+    state.latest.structure?.structuralConfidence ?? 0;
+  return (
+    <div style={styles.mapColumn}>
+      <div style={styles.sectionTitle}>Migration Evidence</div>
+      <MapRow label="Evidence score" value={state.migrationScore} suffix="/100" />
+      <MapRow
+        label="Structure confidence"
+        value={structureConfidence}
+        suffix="%"
+      />
+      <MapRow
+        label="General confidence"
+        value={state.latest.confidence}
+        suffix="%"
+      />
+      <TextRow label="Flow verdict" value={state.flowConfirmation} />
+      <TextRow
+        label="Flow direction"
+        value={flow?.mapDirection ?? "UNAVAILABLE"}
+      />
+      <MapRow
+        label="Flow score"
+        value={flow?.mapConfirmationScore}
+        suffix="/100"
+      />
+      <TextRow
+        label="Official through"
+        value={flow?.officialThrough ? formatTime(flow.officialThrough) : "—"}
+      />
+      <TextRow
+        label="Flow windows"
+        value={
+          flow
+            ? `1m trigger · ${flow.confirmationWindowMinutes}m confirm · ${flow.contextWindowMinutes}m context`
+            : "Building"
+        }
+      />
+      <div style={styles.proxyNote}>
+        {flow?.mapMessage ??
+          "Five-second harvests collect data only. The first official flow read appears after a one-minute candle closes."}
+      </div>
+    </div>
+  );
+}
 
 function StructureEvolution({
   opening,
   current,
-  previous,
+  accepted,
 }: {
   opening: MarketMapSnapshot;
   current: MarketMapSnapshot;
-  previous: MarketMapSnapshot | null;
+  accepted: MarketMapSnapshot | null;
 }) {
   const openingStructure = opening.structure;
   const currentStructure = current.structure;
-  const previousStructure = previous?.structure;
 
   if (!openingStructure || !currentStructure) {
     return (
       <div style={styles.evolutionCard}>
-        <div style={styles.sectionTitle}>Structure Evolution</div>
+        <div style={styles.sectionTitle}>Observed Structure Movement</div>
         <div style={styles.proxyNote}>
-          Structure evolution is rebuilding from the current Schwab chain.
+          Structure is rebuilding from the current Schwab chain.
         </div>
       </div>
     );
@@ -174,36 +247,24 @@ function StructureEvolution({
     const openLevel = openingStructure.levels.find(
       (item) => item.key === level.key,
     );
-    const previousLevel = previousStructure?.levels.find(
+    const acceptedLevel = accepted?.structure?.levels.find(
       (item) => item.key === level.key,
     );
-
-    const shift =
+    const move =
       level.value == null || openLevel?.value == null
         ? null
         : level.value - openLevel.value;
-
-    const recentMove =
-      level.value == null || previousLevel?.value == null
-        ? null
-        : level.value - previousLevel.value;
-
-    const strengthDelta =
-      openLevel == null ? null : level.strength - openLevel.strength;
-
-    const status = classifyEvolution({
-      shift,
-      recentMove,
-      strengthDelta,
-      confidence: level.confidence,
-    });
+    const acceptedValue = acceptedLevel?.value ?? null;
+    const acceptedNow =
+      acceptedValue != null &&
+      level.value != null &&
+      Math.abs(acceptedValue - level.value) <= 5;
 
     return {
       ...level,
-      shift,
-      recentMove,
-      strengthDelta,
-      status,
+      openValue: openLevel?.value ?? null,
+      move,
+      acceptedNow,
     };
   });
 
@@ -211,13 +272,17 @@ function StructureEvolution({
     <div style={styles.evolutionCard}>
       <div style={styles.evolutionHeader}>
         <div>
-          <div style={styles.sectionTitle}>Structure Evolution</div>
+          <div style={styles.sectionTitle}>
+            Observed Structure Movement
+          </div>
           <div style={styles.proxyNote}>
-            Open, current, movement, strength and confidence for every structural object.
+            Diagnostic comparison of the saved opening chain with the latest
+            chain. A moved level does not become controlling until the Map
+            Manager confirms it.
           </div>
         </div>
         <div style={styles.evolutionSummary}>
-          <span>Dominant</span>
+          <span>Latest dominant level</span>
           <strong>
             {currentStructure.dominantLevel
               ? `${labelKey(currentStructure.dominantLevel)} · ${
@@ -231,34 +296,32 @@ function StructureEvolution({
       <div style={styles.evolutionTable}>
         <div style={styles.evolutionTableHeader}>
           <span>Level</span>
-          <span>Open</span>
-          <span>Now</span>
+          <span>Opening</span>
+          <span>Latest</span>
           <span>Move</span>
-          <span>Recent</span>
           <span>Strength</span>
           <span>Confidence</span>
-          <span>Status</span>
+          <span>Accepted?</span>
         </div>
 
         {rows.map((row) => (
           <div key={row.key} style={styles.evolutionRow}>
             <strong>{row.label}</strong>
-            <span>{formatLevel(row.value == null ? null : openingStructure.levels.find((item) => item.key === row.key)?.value ?? null)}</span>
-            <span>{formatLevel(row.value)}</span>
-            <span style={movementTone(row.shift)}>
-              {formatSigned(row.shift)}
+            <span>{formatNumber(row.openValue)}</span>
+            <span>{formatNumber(row.value)}</span>
+            <span style={movementTone(row.move)}>
+              {formatSigned(row.move)}
             </span>
-            <span style={movementTone(row.recentMove)}>
-              {formatSigned(row.recentMove)}
-            </span>
-            <span>
-              {row.strength}%{" "}
-              <em style={movementTone(row.strengthDelta)}>
-                {formatSigned(row.strengthDelta)}
-              </em>
-            </span>
+            <span>{row.strength}%</span>
             <span>{row.confidence}%</span>
-            <span style={statusTone(row.status)}>{row.status}</span>
+            <span
+              style={{
+                color: row.acceptedNow ? "#71e0b4" : "#71879b",
+                fontWeight: 850,
+              }}
+            >
+              {row.acceptedNow ? "YES" : "NO"}
+            </span>
           </div>
         ))}
       </div>
@@ -266,28 +329,105 @@ function StructureEvolution({
   );
 }
 
-function classifyEvolution(args: {
-  shift: number | null;
-  recentMove: number | null;
-  strengthDelta: number | null;
-  confidence: number;
-}): EvolutionStatus {
-  const { shift, recentMove, strengthDelta, confidence } = args;
-
-  if (confidence < 25) return "BUILDING";
-  if (strengthDelta != null && strengthDelta >= 8) return "STRENGTHENING";
-  if (strengthDelta != null && strengthDelta <= -8) return "WEAKENING";
-  if (
-    (shift != null && Math.abs(shift) >= 10) ||
-    (recentMove != null && Math.abs(recentMove) >= 5)
-  ) {
-    return "MIGRATING";
-  }
-  return "HOLDING";
+function MapColumn({
+  title,
+  subtitle,
+  map,
+  candidate,
+}: {
+  title: string;
+  subtitle: string;
+  map: MarketMapSnapshot | null;
+  candidate?: boolean;
+}) {
+  return (
+    <div
+      style={{
+        ...styles.mapColumn,
+        borderStyle: candidate ? "dotted" : "solid",
+        opacity: map ? 1 : 0.72,
+      }}
+    >
+      <div style={styles.sectionTitle}>{title}</div>
+      <div style={styles.columnSubtitle}>{subtitle}</div>
+      <MapRow label="Spot" value={map?.spot} />
+      <MapRow label="Center" value={map?.center} />
+      <MapRow label="Lower rail" value={map?.lowerWing} />
+      <MapRow label="Upper rail" value={map?.upperWing} />
+      <MapRow label="Put wall" value={map?.putWall} />
+      <MapRow label="Call wall" value={map?.callWall} />
+      <MapRow label="Pin" value={map?.pin} />
+      <MapRow
+        label="Structure confidence"
+        value={map?.structure?.structuralConfidence}
+        suffix="%"
+      />
+      <MapRow
+        label="Dealer pressure"
+        value={map?.dealerPressure}
+        signed
+      />
+    </div>
+  );
 }
 
-function formatLevel(value: number | null) {
+function MapRow({
+  label,
+  value,
+  signed,
+  suffix = "",
+}: {
+  label: string;
+  value: number | null | undefined;
+  signed?: boolean;
+  suffix?: string;
+}) {
+  const text =
+    value == null
+      ? "—"
+      : signed
+        ? `${value > 0 ? "+" : ""}${value.toFixed(1)}${suffix}`
+        : `${value.toFixed(suffix === "%" || suffix === "/100" ? 0 : 1)}${suffix}`;
+
+  return (
+    <div style={styles.row}>
+      <span>{label}</span>
+      <strong>{text}</strong>
+    </div>
+  );
+}
+
+function TextRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={styles.row}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function MapMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={styles.metric}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function formatNumber(value: number | null | undefined) {
   return value == null ? "—" : value.toFixed(0);
+}
+
+function formatTime(value: string) {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return value;
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(timestamp));
 }
 
 function formatSigned(value: number | null) {
@@ -304,192 +444,13 @@ function movementTone(value: number | null): React.CSSProperties {
         : value > 0
           ? "#71e0b4"
           : "#ff8a93",
-    fontStyle: "normal",
   };
-}
-
-function statusTone(status: EvolutionStatus): React.CSSProperties {
-  return {
-    color:
-      status === "STRENGTHENING"
-        ? "#71e0b4"
-        : status === "WEAKENING"
-          ? "#ff8a93"
-          : status === "MIGRATING"
-            ? "#f5c542"
-            : status === "HOLDING"
-              ? "#78dcff"
-              : "#71879b",
-    fontWeight: 850,
-  };
-}
-
-function StructureColumn({
-  title,
-  map,
-  compareTo,
-  faded,
-}: {
-  title: string;
-  map: MarketMapSnapshot;
-  compareTo: MarketMapSnapshot;
-  faded?: boolean;
-}) {
-  const structure = map.structure;
-  if (!structure) {
-    return (
-      <div style={{ ...styles.mapColumn, opacity: faded ? 0.68 : 1 }}>
-        <div style={styles.sectionTitle}>{title}</div>
-        <div style={styles.proxyNote}>
-          Structure is rebuilding from the current Schwab chain.
-        </div>
-      </div>
-    );
-  }
-
-  const openingStructure = compareTo.structure ?? structure;
-
-  return (
-    <div style={{ ...styles.mapColumn, opacity: faded ? 0.68 : 1 }}>
-      <div style={styles.sectionTitle}>{title}</div>
-      <StructureRow label="Gamma Flip" value={structure?.gammaFlip ?? null} opening={openingStructure?.gammaFlip ?? null} />
-      <StructureRow label="Zero Gamma" value={structure?.zeroGamma ?? null} opening={openingStructure?.zeroGamma ?? null} />
-      <StructureRow label="Dealer Neutral" value={structure?.dealerNeutral ?? null} opening={openingStructure?.dealerNeutral ?? null} />
-      <StructureRow label="Max Pain" value={structure?.maxPain ?? null} opening={openingStructure?.maxPain ?? null} />
-      <ScoreRow label="Call Wall Strength" value={structure.callWallStrength} />
-      <ScoreRow label="Put Wall Strength" value={structure.putWallStrength} />
-      <ScoreRow label="Pin Probability" value={structure.pinProbability} />
-      <ScoreRow label="Structure Confidence" value={structure.structuralConfidence} />
-    </div>
-  );
-}
-
-function StructureRankings({ map }: { map: MarketMapSnapshot }) {
-  const structure = map.structure;
-  if (!structure) {
-    return (
-      <div style={styles.mapColumn}>
-        <div style={styles.sectionTitle}>Dominant Structure</div>
-        <div style={styles.proxyNote}>
-          Structure is rebuilding from the current Schwab chain.
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div style={styles.mapColumn}>
-      <div style={styles.sectionTitle}>Dominant Structure</div>
-      <div style={styles.dominantValue}>
-        {structure.dominantLevel
-          ? `${labelKey(structure.dominantLevel)} · ${structure.dominantLevelValue?.toFixed(0) ?? "—"}`
-          : "BUILDING"}
-      </div>
-      <div style={styles.rankingTitle}>Support ranking</div>
-      {structure.supportRanking.slice(0, 3).map((level, index) => (
-        <RankRow key={level.key} index={index + 1} level={level.label} value={level.value} confidence={level.confidence} />
-      ))}
-      <div style={styles.rankingTitle}>Resistance ranking</div>
-      {structure.resistanceRanking.slice(0, 3).map((level, index) => (
-        <RankRow key={level.key} index={index + 1} level={level.label} value={level.value} confidence={level.confidence} />
-      ))}
-      <div style={styles.proxyNote}>Gamma/neutral levels are WheelDesk model proxies, not exchange-published dealer positions.</div>
-    </div>
-  );
-}
-
-function StructureRow({ label, value, opening }: { label: string; value: number | null; opening: number | null }) {
-  const shift = value == null || opening == null ? null : value - opening;
-  return (
-    <div style={styles.row}>
-      <span>{label}</span>
-      <strong>
-        {value == null ? "—" : value.toFixed(0)}
-        {shift != null && shift !== 0 ? <em style={styles.shift}> {shift > 0 ? "↑" : "↓"}{Math.abs(shift).toFixed(0)}</em> : null}
-      </strong>
-    </div>
-  );
-}
-
-function ScoreRow({ label, value }: { label: string; value: number }) {
-  return (
-    <div style={styles.scoreBlock}>
-      <div style={styles.scoreHeader}><span>{label}</span><strong>{value}%</strong></div>
-      <div style={styles.scoreTrack}><div style={{ ...styles.scoreFill, width: `${value}%` }} /></div>
-    </div>
-  );
-}
-
-function RankRow({ index, level, value, confidence }: { index: number; level: string; value: number | null; confidence: number }) {
-  return <div style={styles.rankRow}><span>{index}. {level}</span><strong>{value?.toFixed(0) ?? "—"} · {confidence}%</strong></div>;
 }
 
 function labelKey(value: string) {
-  return value.replace(/([A-Z])/g, " $1").replace(/^./, (letter) => letter.toUpperCase());
-}
-
-function MapColumn({
-  title,
-  map,
-  faded,
-  candidate,
-}: {
-  title: string;
-  map: SessionMapManagerState["opening"] | null;
-  faded?: boolean;
-  candidate?: boolean;
-}) {
-  return (
-    <div
-      style={{
-        ...styles.mapColumn,
-        opacity: faded ? 0.68 : 1,
-        borderStyle: candidate ? "dotted" : "solid",
-      }}
-    >
-      <div style={styles.sectionTitle}>{title}</div>
-      <MapRow label="Center" value={map?.center} />
-      <MapRow label="Lower Wing" value={map?.lowerWing} />
-      <MapRow label="Upper Wing" value={map?.upperWing} />
-      <MapRow label="Put Wall" value={map?.putWall} />
-      <MapRow label="Call Wall" value={map?.callWall} />
-      <MapRow label="Pin" value={map?.pin} />
-      <MapRow label="Pressure" value={map?.dealerPressure} signed />
-    </div>
-  );
-}
-
-function MapRow({
-  label,
-  value,
-  signed,
-}: {
-  label: string;
-  value: number | null | undefined;
-  signed?: boolean;
-}) {
-  const text =
-    value == null
-      ? "—"
-      : signed
-        ? `${value > 0 ? "+" : ""}${value.toFixed(1)}`
-        : value.toFixed(0);
-
-  return (
-    <div style={styles.row}>
-      <span>{label}</span>
-      <strong>{text}</strong>
-    </div>
-  );
-}
-
-function MapMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <div style={styles.metric}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
+  return value
+    .replace(/([A-Z])/g, " $1")
+    .replace(/^./, (letter) => letter.toUpperCase());
 }
 
 function phaseBadge(
@@ -509,6 +470,26 @@ function phaseBadge(
         : phase === "TRANSITION"
           ? "#f5c542"
           : "#71e0b4",
+  };
+}
+
+function sessionBadge(
+  status: SessionMapManagerState["sessionStatus"],
+): React.CSSProperties {
+  return {
+    ...styles.badge,
+    background:
+      status === "OPEN"
+        ? "rgba(22,199,132,.14)"
+        : status === "CLOSED"
+          ? "rgba(113,135,155,.16)"
+          : "rgba(245,197,66,.14)",
+    color:
+      status === "OPEN"
+        ? "#71e0b4"
+        : status === "CLOSED"
+          ? "#9aabba"
+          : "#f5c542",
   };
 }
 
@@ -539,6 +520,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: "center",
     gap: 8,
     marginTop: 3,
+    flexWrap: "wrap",
   },
   title: {
     fontSize: 18,
@@ -551,9 +533,11 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 900,
   },
   subtitle: {
-    color: "#70869a",
+    color: "#7c91a4",
     fontSize: 10,
-    marginTop: 3,
+    marginTop: 4,
+    maxWidth: 760,
+    lineHeight: 1.45,
   },
   resetButton: {
     background: "#0e2030",
@@ -566,7 +550,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   summaryGrid: {
     display: "grid",
-    gridTemplateColumns: "repeat(auto-fit,minmax(110px,1fr))",
+    gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))",
     gap: 8,
     marginTop: 12,
   },
@@ -582,7 +566,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   mapGrid: {
     display: "grid",
-    gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))",
+    gridTemplateColumns: "repeat(auto-fit,minmax(230px,1fr))",
     gap: 10,
     marginTop: 12,
   },
@@ -595,7 +579,14 @@ const styles: Record<string, React.CSSProperties> = {
   sectionTitle: {
     fontSize: 11,
     fontWeight: 850,
-    marginBottom: 6,
+    marginBottom: 5,
+  },
+  columnSubtitle: {
+    color: "#6f8599",
+    fontSize: 8,
+    lineHeight: 1.35,
+    minHeight: 22,
+    marginBottom: 4,
   },
   row: {
     display: "flex",
@@ -606,69 +597,6 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#71879b",
     fontSize: 9,
   },
-  reasonGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))",
-    gap: 10,
-    marginTop: 12,
-  },
-  reasonCard: {
-    background: "#0a1823",
-    border: "1px solid #183247",
-    borderRadius: 10,
-    padding: 10,
-  },
-  reason: {
-    display: "flex",
-    gap: 7,
-    color: "#b8c7d2",
-    fontSize: 9,
-    lineHeight: 1.4,
-    marginTop: 5,
-  },
-  dot: {
-    width: 6,
-    height: 6,
-    borderRadius: "50%",
-    background: "#55d6ff",
-    marginTop: 3,
-    flex: "0 0 auto",
-  },
-  rule: {
-    color: "#a9bac8",
-    fontSize: 9,
-    lineHeight: 1.45,
-    marginTop: 6,
-  },
-  events: {
-    marginTop: 12,
-    borderTop: "1px solid #183247",
-    paddingTop: 10,
-  },
-  event: {
-    display: "grid",
-    gridTemplateColumns: "70px 1fr 90px",
-    gap: 10,
-    padding: "6px 0",
-    borderTop: "1px solid #142a3b",
-    color: "#748a9e",
-    fontSize: 9,
-  },  structureGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))",
-    gap: 10,
-    marginTop: 12,
-  },
-  scoreBlock: { display: "grid", gap: 4, padding: "7px 0", borderTop: "1px solid #173047" },
-  scoreHeader: { display: "flex", justifyContent: "space-between", color: "#71879b", fontSize: 9 },
-  scoreTrack: { height: 7, borderRadius: 99, background: "#12283a", overflow: "hidden" },
-  scoreFill: { height: "100%", borderRadius: 99, background: "linear-gradient(90deg,#1c739c,#20c997)" },
-  shift: { color: "#55d6ff", fontStyle: "normal", fontSize: 8 },
-  dominantValue: { fontSize: 16, fontWeight: 900, color: "#edf5fb", margin: "8px 0 12px" },
-  rankingTitle: { color: "#6f8599", fontSize: 8, textTransform: "uppercase", letterSpacing: .7, marginTop: 10 },
-  rankRow: { display: "flex", justifyContent: "space-between", gap: 8, borderTop: "1px solid #173047", padding: "6px 0", color: "#8da0b1", fontSize: 9 },
-  proxyNote: { color: "#60778c", fontSize: 8, lineHeight: 1.4, marginTop: 10 },
-
   evolutionCard: {
     marginTop: 12,
     background: "#0a1823",
@@ -685,7 +613,7 @@ const styles: Record<string, React.CSSProperties> = {
   evolutionSummary: {
     display: "grid",
     gap: 2,
-    minWidth: 160,
+    minWidth: 170,
     color: "#6f8599",
     fontSize: 8,
   },
@@ -695,9 +623,10 @@ const styles: Record<string, React.CSSProperties> = {
   },
   evolutionTableHeader: {
     display: "grid",
-    gridTemplateColumns: "minmax(135px,1.4fr) repeat(7,minmax(72px,1fr))",
+    gridTemplateColumns:
+      "minmax(130px,1.4fr) repeat(6,minmax(80px,1fr))",
     gap: 8,
-    minWidth: 820,
+    minWidth: 730,
     color: "#60778c",
     fontSize: 8,
     textTransform: "uppercase",
@@ -706,14 +635,55 @@ const styles: Record<string, React.CSSProperties> = {
   },
   evolutionRow: {
     display: "grid",
-    gridTemplateColumns: "minmax(135px,1.4fr) repeat(7,minmax(72px,1fr))",
+    gridTemplateColumns:
+      "minmax(130px,1.4fr) repeat(6,minmax(80px,1fr))",
     gap: 8,
-    minWidth: 820,
+    minWidth: 730,
     borderTop: "1px solid #173047",
     padding: "7px 6px",
     color: "#91a4b5",
     fontSize: 9,
     alignItems: "center",
   },
-
+  reasonGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))",
+    gap: 10,
+    marginTop: 12,
+  },
+  reasonCard: {
+    background: "#0a1823",
+    border: "1px solid #183247",
+    borderRadius: 10,
+    padding: 10,
+  },
+  reasonLine: {
+    display: "flex",
+    gap: 7,
+    alignItems: "flex-start",
+    color: "#9cb0c0",
+    fontSize: 9,
+    lineHeight: 1.45,
+    marginTop: 6,
+  },
+  reasonDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 99,
+    background: "#55d6ff",
+    flex: "0 0 auto",
+    marginTop: 4,
+  },
+  ruleText: {
+    color: "#9cb0c0",
+    fontSize: 9,
+    lineHeight: 1.5,
+    marginTop: 6,
+  },
+  proxyNote: {
+    color: "#60788e",
+    fontSize: 8,
+    lineHeight: 1.45,
+    marginTop: 7,
+  },
 };

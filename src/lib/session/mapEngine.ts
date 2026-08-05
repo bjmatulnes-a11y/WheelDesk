@@ -1,8 +1,30 @@
-import type { ZeroDteChainRow, ZeroDteRecommendation } from "../zeroDteOiIntelligence";
-import { buildMarketStructureRead, type MarketStructureRead } from "./marketStructureEngine";
-import { loadOpeningMap, type ZeroDteOpeningMap } from "../zeroDteOpeningMap";
+import type {
+  ZeroDteChainRow,
+  ZeroDteRecommendation,
+} from "../zeroDteOiIntelligence";
+import type {
+  StrikeFlowMapDirection,
+  ZeroDteStrikeFlowRead,
+} from "../zeroDteStrikeFlow";
+import {
+  getZeroDteSessionClock,
+  type ZeroDteCashSessionStatus,
+} from "../zeroDteSessionClock";
+import {
+  buildMarketStructureRead,
+  type MarketStructureRead,
+} from "./marketStructureEngine";
+import {
+  loadOpeningMap,
+  type ZeroDteOpeningMap,
+} from "../zeroDteOpeningMap";
 
 export type SessionMapState = "OPENING" | "TRANSITION" | "ACTIVE";
+export type MapFlowConfirmation =
+  | "CONFIRMED"
+  | "REJECTED"
+  | "BUILDING"
+  | "UNAVAILABLE";
 
 export type StrikeBaseline = {
   strike: number;
@@ -48,15 +70,26 @@ export type MapTransitionEvent = {
 export type SessionMapManagerState = {
   tradeDate: string;
   phase: SessionMapState;
+  sessionStatus: ZeroDteCashSessionStatus;
   opening: MarketMapSnapshot;
   candidate: MarketMapSnapshot | null;
   active: MarketMapSnapshot;
   latest: MarketMapSnapshot;
   previousLive: MarketMapSnapshot | null;
+
+  /** Completed one-minute confirmations, not five-second refreshes. */
   confirmationCount: number;
   confirmationRequired: number;
+  lastConfirmationMinuteKey: string | null;
+
   railBreached: "UPPER" | "LOWER" | "NONE";
+  railBreachStartedAt: string | null;
   outsideMinutes: number;
+
+  migrationScore: number;
+  flowConfirmation: MapFlowConfirmation;
+  flowDirection: StrikeFlowMapDirection | null;
+
   reasons: string[];
   events: MapTransitionEvent[];
 };
@@ -91,7 +124,8 @@ export type ExistingOpenMapLike = Partial<{
   pinScore: number;
 }>;
 
-const key = (tradeDate: string) => `wheeldesk:session-map-manager:v4:${tradeDate}`;
+const key = (tradeDate: string) =>
+  `wheeldesk:session-map-manager:v5:${tradeDate}`;
 const legacyKeys = (tradeDate: string) => [
   `wheeldesk:open-map:${tradeDate}`,
   `wheeldesk:opening-map:${tradeDate}`,
@@ -148,27 +182,36 @@ export function initializeSessionMapManager(
   }
 
   const existingOpenMap =
-    explicitOpeningMap ?? loadOpeningMap(live.tradeDate) ?? loadExistingOpenMap(live.tradeDate);
+    explicitOpeningMap ??
+    loadOpeningMap(live.tradeDate) ??
+    loadExistingOpenMap(live.tradeDate);
   const opening = existingOpenMap
     ? normalizeExistingOpenMap(existingOpenMap, live)
     : { ...live, source: "first-live-fallback" as const };
+  const clock = getZeroDteSessionClock(live.capturedAt);
 
   const initial: SessionMapManagerState = {
     tradeDate: live.tradeDate,
     phase: "OPENING",
+    sessionStatus: clock.sessionStatus,
     opening,
     candidate: null,
     active: opening,
     latest: live,
     previousLive: null,
     confirmationCount: 0,
-    confirmationRequired: 5,
+    confirmationRequired: 2,
+    lastConfirmationMinuteKey: null,
     railBreached: "NONE",
+    railBreachStartedAt: null,
     outsideMinutes: 0,
+    migrationScore: 0,
+    flowConfirmation: "UNAVAILABLE",
+    flowDirection: null,
     reasons: [
       existingOpenMap
-        ? "Opening baseline loaded from the saved Open Map build."
-        : "Saved Open Map was unavailable; first valid live snapshot is the fallback baseline.",
+        ? "Opening thesis loaded from the saved Opening Map."
+        : "Saved Opening Map was unavailable; the first valid live snapshot is labeled as a fallback rather than a verified cash-open map.",
     ],
     events: [],
   };
@@ -180,16 +223,29 @@ export function initializeSessionMapManager(
 export function updateSessionMapManager(
   previous: SessionMapManagerState,
   live: MarketMapSnapshot,
+  strikeFlow: ZeroDteStrikeFlowRead | null = null,
 ): SessionMapManagerState {
-  const opening = previous.opening;
-  const reference = previous.phase === "ACTIVE" ? previous.active : opening;
-
+  const clock = getZeroDteSessionClock(live.capturedAt);
+  const reference = previous.phase === "ACTIVE" ? previous.active : previous.opening;
   const railBreached =
     live.spot > reference.upperWing
       ? "UPPER"
       : live.spot < reference.lowerWing
         ? "LOWER"
         : "NONE";
+
+  const breachStartedAt = nextBreachStartedAt({
+    previous,
+    live,
+    railBreached,
+  });
+  const outsideMinutes =
+    railBreached === "NONE" || !breachStartedAt
+      ? 0
+      : Math.max(
+          0,
+          (Date.parse(live.capturedAt) - Date.parse(breachStartedAt)) / 60_000,
+        );
 
   const centerShift = Math.abs(live.center - reference.center);
   const callWallShift = distance(live.callWall, reference.callWall);
@@ -210,54 +266,126 @@ export function updateSessionMapManager(
           live.dealerPressure < -20
         : false;
 
-  const confidenceConfirms = live.confidence >= 48;
-  const candidateStable =
-    !previous.candidate ||
-    (Math.abs(live.center - previous.candidate.center) <= 10 &&
-      distance(live.callWall, previous.candidate.callWall) <= 15 &&
-      distance(live.putWall, previous.candidate.putWall) <= 15);
+  const structuralConfidence = live.structure?.structuralConfidence ?? 0;
+  const majorDisplacement =
+    Math.abs(live.spot - reference.center) >=
+    Math.max(25, live.expectedMove * 0.75);
+  const confidenceConfirms =
+    live.confidence >= 48 ||
+    structuralConfidence >= 60 ||
+    majorDisplacement;
+
+  const flowDirection = strikeFlow?.mapDirection ?? null;
+  const flowConfirms =
+    railBreached === "UPPER"
+      ? flowDirection === "UPPER_ACCEPTED" ||
+        strikeFlow?.callWall.state === "attacked" ||
+        strikeFlow?.putWall.state === "absorbed"
+      : railBreached === "LOWER"
+        ? flowDirection === "LOWER_ACCEPTED" ||
+          strikeFlow?.putWall.state === "breaking" ||
+          strikeFlow?.callWall.state === "defended"
+        : false;
+  const flowRejects =
+    railBreached === "UPPER"
+      ? flowDirection === "UPPER_REJECTED" ||
+        strikeFlow?.callWall.state === "defended"
+      : railBreached === "LOWER"
+        ? flowDirection === "LOWER_REJECTED" ||
+          strikeFlow?.putWall.state === "absorbed"
+        : false;
+  const flowConfirmation: MapFlowConfirmation = !strikeFlow?.hasClosedMinute
+    ? "UNAVAILABLE"
+    : flowConfirms
+      ? "CONFIRMED"
+      : flowRejects
+        ? "REJECTED"
+        : strikeFlow.confirmationReady
+          ? "BUILDING"
+          : "BUILDING";
+
+  const migrationScore = clampScore(
+    (railBreached !== "NONE" ? 25 : 0) +
+      (structuralShift ? 20 : 0) +
+      (structuralConfidence >= 60 ? 15 : live.confidence >= 48 ? 10 : 0) +
+      (majorDisplacement ? 15 : 0) +
+      (pressureConfirms ? 10 : 0) +
+      (flowConfirms ? 20 : 0) -
+      (flowRejects ? 25 : 0),
+  );
 
   const transitionSignal =
     railBreached !== "NONE" &&
     structuralShift &&
     confidenceConfirms &&
-    (pressureConfirms || Math.abs(live.spot - reference.center) >= Math.max(20, live.expectedMove * 0.45));
+    migrationScore >= 55 &&
+    !flowRejects;
 
-  const elapsedMinutes = previous.candidate
-    ? Math.max(
-        0,
-        (Date.parse(live.capturedAt) - Date.parse(previous.candidate.capturedAt)) /
-          60_000,
-      )
-    : 0;
+  const closedMinuteKey = strikeFlow?.closedMinuteKey ?? null;
+  const isNewClosedMinute =
+    Boolean(closedMinuteKey) &&
+    closedMinuteKey !== previous.lastConfirmationMinuteKey;
+  const isNewLive = previous.latest.capturedAt !== live.capturedAt;
 
   let next: SessionMapManagerState = {
     ...previous,
-    previousLive: previous.latest ?? null,
+    sessionStatus: clock.sessionStatus,
+    previousLive: isNewLive ? previous.latest : previous.previousLive,
     latest: live,
     railBreached,
-    outsideMinutes:
-      railBreached === "NONE"
-        ? 0
-        : Math.max(previous.outsideMinutes, elapsedMinutes),
+    railBreachStartedAt: breachStartedAt,
+    outsideMinutes,
+    migrationScore,
+    flowConfirmation,
+    flowDirection,
   };
 
+  if (clock.sessionStatus !== "OPEN") {
+    next = {
+      ...next,
+      reasons: [
+        clock.sessionStatus === "CLOSED"
+          ? "Cash session closed. The map is frozen at the last confirmed state for end-of-day review."
+          : "Cash session has not opened. No candidate or active-map transition is permitted.",
+        railBreached === "NONE"
+          ? "Price is inside the controlling rails."
+          : `${railBreached.toLowerCase()} rail is outside the controlling map, but no after-hours confirmation is counted.`,
+      ],
+    };
+    saveSessionMapManager(next);
+    return next;
+  }
+
   if (!transitionSignal) {
-    if (previous.phase === "TRANSITION") {
+    const missing = buildMissingEvidence({
+      railBreached,
+      structuralShift,
+      confidenceConfirms,
+      flowRejects,
+      strikeFlow,
+      migrationScore,
+    });
+
+    if (previous.phase === "TRANSITION" && isNewClosedMinute) {
+      const confirmationCount = Math.max(0, previous.confirmationCount - 1);
       next = {
         ...next,
-        phase: previous.confirmationCount >= 3 ? "TRANSITION" : "OPENING",
-        candidate:
-          previous.confirmationCount >= 3 ? previous.candidate : null,
-        confirmationCount: Math.max(0, previous.confirmationCount - 1),
+        phase: confirmationCount > 0 ? "TRANSITION" : "OPENING",
+        candidate: confirmationCount > 0 ? previous.candidate : null,
+        confirmationCount,
+        lastConfirmationMinuteKey: closedMinuteKey,
         reasons: [
-          "Candidate map lost one confirmation because price or structure moved back inside the controlling rails.",
+          "Candidate lost a completed-candle confirmation.",
+          ...missing,
         ],
       };
     } else {
       next = {
         ...next,
-        reasons: ["Current structure remains inside the controlling map."],
+        reasons:
+          railBreached === "NONE"
+            ? ["Price and live structure remain inside the controlling map."]
+            : missing,
       };
     }
 
@@ -265,32 +393,59 @@ export function updateSessionMapManager(
     return next;
   }
 
-  const confirmationCount = candidateStable
-    ? Math.min(previous.confirmationRequired, previous.confirmationCount + 1)
-    : 1;
+  if (!strikeFlow?.hasClosedMinute || !closedMinuteKey) {
+    next = {
+      ...next,
+      reasons: [
+        `${railBreached.toLowerCase()} rail breach and structural migration detected.`,
+        "Waiting for the first completed one-minute strike-flow read before opening a candidate map.",
+      ],
+    };
+    saveSessionMapManager(next);
+    return next;
+  }
 
-  const candidate = candidateStable && previous.candidate
-    ? {
-        ...live,
-        capturedAt: previous.candidate.capturedAt,
-      }
-    : live;
+  const candidateStable =
+    !previous.candidate ||
+    (Math.abs(live.center - previous.candidate.center) <= 10 &&
+      distance(live.callWall, previous.candidate.callWall) <= 15 &&
+      distance(live.putWall, previous.candidate.putWall) <= 15);
+
+  const confirmationCount = isNewClosedMinute
+    ? candidateStable
+      ? Math.min(previous.confirmationRequired, previous.confirmationCount + 1)
+      : 1
+    : previous.confirmationCount;
+
+  const candidate =
+    candidateStable && previous.candidate
+      ? {
+          ...live,
+          capturedAt: previous.candidate.capturedAt,
+        }
+      : live;
 
   const reasons = [
-    `${railBreached.toLowerCase()} controlling rail breached.`,
-    `Center shifted ${signed(live.center - reference.center)} points.`,
-    `Wall/pin structure shifted materially.`,
-    pressureConfirms
-      ? "Dealer pressure confirms the direction of migration."
-      : "Price displacement is large enough to keep the candidate active without full pressure confirmation.",
-    `Candidate confirmation ${confirmationCount}/${previous.confirmationRequired}.`,
+    `${railBreached.toLowerCase()} controlling rail breached for ${outsideMinutes.toFixed(1)} minutes.`,
+    `Center shifted ${signed(live.center - reference.center)} points; wall/pin structure shifted materially.`,
+    `Layer 3 structural confidence ${structuralConfidence}%${
+      live.confidence !== structuralConfidence
+        ? `; general recommendation confidence ${live.confidence}%`
+        : ""
+    }.`,
+    flowConfirms
+      ? `Completed-minute strike flow confirms migration (${strikeFlow.mapDirection}, score ${strikeFlow.mapConfirmationScore}).`
+      : pressureConfirms
+        ? "Dealer pressure confirms migration while completed-minute flow is still building."
+        : "Large price displacement keeps the candidate alive while flow confirmation builds.",
+    `Closed-candle confirmation ${confirmationCount}/${previous.confirmationRequired}.`,
   ];
 
   if (confirmationCount >= previous.confirmationRequired) {
     const event: MapTransitionEvent = {
       timestamp: live.capturedAt,
       from: previous.phase,
-      to: "ACTIVE" as SessionMapState,
+      to: "ACTIVE",
       reason: reasons.join(" "),
       center: live.center,
       lowerWing: live.lowerWing,
@@ -303,10 +458,8 @@ export function updateSessionMapManager(
       active: live,
       candidate: null,
       confirmationCount: 0,
-      reasons: [
-        "A replacement map is now active.",
-        ...reasons.slice(0, 4),
-      ],
+      lastConfirmationMinuteKey: closedMinuteKey,
+      reasons: ["Replacement map is ACTIVE.", ...reasons.slice(0, 4)],
       events: [...previous.events, event].slice(-40),
     };
   } else {
@@ -316,6 +469,9 @@ export function updateSessionMapManager(
       phase: "TRANSITION",
       candidate,
       confirmationCount,
+      lastConfirmationMinuteKey: isNewClosedMinute
+        ? closedMinuteKey
+        : previous.lastConfirmationMinuteKey,
       reasons,
       events: enteringTransition
         ? [
@@ -323,7 +479,7 @@ export function updateSessionMapManager(
             {
               timestamp: live.capturedAt,
               from: previous.phase,
-              to: "TRANSITION" as SessionMapState,
+              to: "TRANSITION",
               reason: reasons.join(" "),
               center: live.center,
               lowerWing: live.lowerWing,
@@ -346,6 +502,53 @@ export function getControllingMarketMap(
   return state.opening;
 }
 
+function nextBreachStartedAt(args: {
+  previous: SessionMapManagerState;
+  live: MarketMapSnapshot;
+  railBreached: "UPPER" | "LOWER" | "NONE";
+}) {
+  if (args.railBreached === "NONE") return null;
+  if (
+    args.previous.railBreached === args.railBreached &&
+    args.previous.railBreachStartedAt
+  ) {
+    return args.previous.railBreachStartedAt;
+  }
+  return args.live.capturedAt;
+}
+
+function buildMissingEvidence(args: {
+  railBreached: SessionMapManagerState["railBreached"];
+  structuralShift: boolean;
+  confidenceConfirms: boolean;
+  flowRejects: boolean;
+  strikeFlow: ZeroDteStrikeFlowRead | null;
+  migrationScore: number;
+}) {
+  const reasons: string[] = [];
+  if (args.railBreached === "NONE") {
+    reasons.push("Price remains inside the controlling rails.");
+  } else {
+    reasons.push(`${args.railBreached.toLowerCase()} controlling rail is breached.`);
+  }
+  if (!args.structuralShift) {
+    reasons.push("Center, walls and pin have not migrated far enough to establish a replacement structure.");
+  }
+  if (!args.confidenceConfirms) {
+    reasons.push("Neither structural confidence nor displacement is strong enough to validate migration.");
+  }
+  if (!args.strikeFlow?.hasClosedMinute) {
+    reasons.push("Completed one-minute delta-volume flow is not available yet.");
+  } else if (args.flowRejects) {
+    reasons.push(`Strike flow rejects migration: ${args.strikeFlow.mapMessage}`);
+  } else if (!args.strikeFlow.confirmationReady) {
+    reasons.push(`Rolling ${args.strikeFlow.confirmationWindowMinutes}-minute flow confirmation is still building.`);
+  } else {
+    reasons.push(`Strike-flow state is ${args.strikeFlow.mapDirection}; migration score ${args.migrationScore}/100.`);
+  }
+  return reasons;
+}
+
 function hydrateStoredSessionMapManager(
   stored: SessionMapManagerState,
   live: MarketMapSnapshot,
@@ -355,6 +558,7 @@ function hydrateStoredSessionMapManager(
   const candidate = stored.candidate
     ? hydrateSnapshot(stored.candidate, live)
     : null;
+  const clock = getZeroDteSessionClock(live.capturedAt);
 
   return {
     ...stored,
@@ -365,6 +569,13 @@ function hydrateStoredSessionMapManager(
       ? hydrateSnapshot(stored.previousLive, live)
       : null,
     candidate,
+    sessionStatus: stored.sessionStatus ?? clock.sessionStatus,
+    confirmationRequired: 2,
+    lastConfirmationMinuteKey: stored.lastConfirmationMinuteKey ?? null,
+    railBreachStartedAt: stored.railBreachStartedAt ?? null,
+    migrationScore: stored.migrationScore ?? 0,
+    flowConfirmation: stored.flowConfirmation ?? "UNAVAILABLE",
+    flowDirection: stored.flowDirection ?? null,
     reasons: Array.isArray(stored.reasons) ? stored.reasons : [],
     events: Array.isArray(stored.events) ? stored.events : [],
   };
@@ -375,7 +586,6 @@ function hydrateSnapshot(
   fallback: MarketMapSnapshot,
 ): MarketMapSnapshot {
   if (!snapshot) return fallback;
-
   return {
     ...fallback,
     ...snapshot,
@@ -392,7 +602,9 @@ export function loadSessionMapManager(
 ): SessionMapManagerState | null {
   if (typeof window === "undefined") return null;
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(key(tradeDate)) ?? "null");
+    const parsed = JSON.parse(
+      window.localStorage.getItem(key(tradeDate)) ?? "null",
+    );
     return parsed?.tradeDate === tradeDate ? parsed : null;
   } catch {
     return null;
@@ -415,16 +627,16 @@ export function resetSessionMapManager(tradeDate: string) {
 
 function loadExistingOpenMap(tradeDate: string): ExistingOpenMapLike | null {
   if (typeof window === "undefined") return null;
-
   for (const storageKey of legacyKeys(tradeDate)) {
     try {
-      const parsed = JSON.parse(window.localStorage.getItem(storageKey) ?? "null");
+      const parsed = JSON.parse(
+        window.localStorage.getItem(storageKey) ?? "null",
+      );
       if (parsed && typeof parsed === "object") return parsed;
     } catch {
       // Try the next legacy key.
     }
   }
-
   return null;
 }
 
@@ -449,13 +661,22 @@ function normalizeExistingOpenMap(
     putWall: nullable(raw.putWall, fallback.putWall),
     pin: nullable(raw.pin ?? raw.strongestPin, fallback.pin),
     expectedMove: number(raw.expectedMove, fallback.expectedMove),
-    confidence: number(raw.confidenceScore ?? raw.confidence, fallback.confidence),
+    confidence: number(
+      raw.confidenceScore ?? raw.confidence,
+      fallback.confidence,
+    ),
     dealerPressure: number(raw.dealerPressure, fallback.dealerPressure),
-    spxPressure: number(raw.spxDealerPressure ?? raw.spxPressure, fallback.spxPressure),
-    spyPressure: number(raw.spyDealerPressure ?? raw.spyPressure, fallback.spyPressure),
+    spxPressure: number(
+      raw.spxDealerPressure ?? raw.spxPressure,
+      fallback.spxPressure,
+    ),
+    spyPressure: number(
+      raw.spyDealerPressure ?? raw.spyPressure,
+      fallback.spyPressure,
+    ),
     structure:
       "structure" in raw && raw.structure
-        ? raw.structure as MarketStructureRead
+        ? (raw.structure as MarketStructureRead)
         : raw.rows?.length
           ? buildMarketStructureRead({
               spot: number(raw.spxPrice ?? raw.spot, fallback.spot),
@@ -466,10 +687,7 @@ function normalizeExistingOpenMap(
               expectedMove: number(raw.expectedMove, fallback.expectedMove),
             })
           : fallback.structure,
-    strikes:
-      raw.rows?.length
-        ? buildStrikeBaseline(raw.rows)
-        : fallback.strikes,
+    strikes: raw.rows?.length ? buildStrikeBaseline(raw.rows) : fallback.strikes,
   };
 }
 
@@ -544,4 +762,8 @@ function safe(value: number | null | undefined) {
 
 function signed(value: number) {
   return `${value > 0 ? "+" : ""}${value.toFixed(0)}`;
+}
+
+function clampScore(value: number) {
+  return Math.max(0, Math.min(100, Math.round(value)));
 }
