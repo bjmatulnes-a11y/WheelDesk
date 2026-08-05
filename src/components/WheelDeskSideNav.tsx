@@ -21,7 +21,7 @@ const navItems: NavItem[] = [
   { key: "control-center", href: "/control-center", label: "Control Center" },
   { key: "wheel", href: "/dashboard/wheel", label: "Wheel" },
   { key: "validation", href: "/dashboard/validation", label: "Validation" },
-  { key: "zero-dte", href: "/zero-dte", label: "0DTE Command" },
+  { key: "zero-dte", href: "/zero-dte/chart", label: "0DTE Command" },
   { key: "news", href: "/news", label: "News Pulse" },
   { key: "positions", href: "/portfolio", label: "Portfolio" },
 
