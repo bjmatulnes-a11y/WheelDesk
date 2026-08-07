@@ -313,38 +313,17 @@ export function ExecutionTradeDock({
           </div>
 
           <div style={styles.trackingStrip}>
-            <div>
+            <div style={styles.trackingSetup}>
               <span>{setupMode === "manual" ? "Manual Setup" : "Tracked"}</span>
-              <strong>{formatLegs(ticket.candidate?.legs ?? candidate?.legs ?? [])}</strong>
+              <strong style={styles.trackingValue}>{formatLegs(ticket.candidate?.legs ?? candidate?.legs ?? [])}</strong>
             </div>
-            <div>
-              <span>Age</span>
-              <strong>{activeRead.candidateAgeCandles} candles</strong>
-            </div>
-            <div>
-              <span>Lock Credit</span>
-              <strong>{money(tracks?.[selectedStrategy]?.lockedCredit)}</strong>
-            </div>
-            <div>
-              <span>Mark</span>
-              <strong>{money(activeRead.currentCredit)}</strong>
-            </div>
-            <div>
-              <span>Sellable</span>
-              <strong>{money(activeRead.currentSellableCredit)}</strong>
-            </div>
-            <div>
-              <span>Buyback</span>
-              <strong>{money(activeRead.currentBuybackDebit)}</strong>
-            </div>
-            <div>
-              <span>Peak</span>
-              <strong>{money(activeRead.peakCredit)}</strong>
-            </div>
-            <div>
-              <span>Tape</span>
-              <strong>{activeRead.premiumSampleCount} pts</strong>
-            </div>
+            <div style={styles.trackingCell}><span>Age</span><strong style={styles.trackingValue}>{activeRead.candidateAgeCandles} candles</strong></div>
+            <div style={styles.trackingCell}><span>Lock Credit</span><strong style={styles.trackingValue}>{money(tracks?.[selectedStrategy]?.lockedCredit)}</strong></div>
+            <div style={styles.trackingCell}><span>Mark</span><strong style={styles.trackingValue}>{money(activeRead.currentCredit)}</strong></div>
+            <div style={styles.trackingCell}><span>Sellable</span><strong style={styles.trackingValue}>{money(activeRead.currentSellableCredit)}</strong></div>
+            <div style={styles.trackingCell}><span>Buyback</span><strong style={styles.trackingValue}>{money(activeRead.currentBuybackDebit)}</strong></div>
+            <div style={styles.trackingCell}><span>Peak</span><strong style={styles.trackingValue}>{money(activeRead.peakCredit)}</strong></div>
+            <div style={styles.trackingCell}><span>Tape</span><strong style={styles.trackingValue}>{activeRead.premiumSampleCount} pts</strong></div>
           </div>
 
           <div style={styles.modeRow}>
@@ -872,6 +851,10 @@ function signed(value: number) {
 
 const styles: Record<string, React.CSSProperties> = {
   card: {
+    minWidth: 0,
+    maxWidth: "100%",
+    boxSizing: "border-box",
+    overflow: "hidden",
     background: "#0a141d",
     border: "1px solid #1d3b53",
     borderRadius: 13,
@@ -920,6 +903,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     justifyContent: "space-between",
     gap: 8,
+    flexWrap: "wrap",
     color: "#8ea3b6",
     fontSize: 9,
   },
@@ -991,11 +975,10 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#eaf7ff",
     borderColor: "#2d709e",
   },
-  trackingStrip: {
-    display: "grid",
-    gridTemplateColumns: "1.5fr .7fr .8fr",
-    gap: 5,
-  },
+  trackingStrip: { minWidth: 0, display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 5 },
+  trackingSetup: { minWidth: 0, gridColumn: "1 / -1", display: "grid", gap: 2, paddingBottom: 3 },
+  trackingCell: { minWidth: 0, display: "grid", gap: 2 },
+  trackingValue: { minWidth: 0, whiteSpace: "normal", overflowWrap: "anywhere", wordBreak: "break-word", lineHeight: 1.25 },
   modeRow: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 },
   modeButton: {
     border: "1px solid #26394b",

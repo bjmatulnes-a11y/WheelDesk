@@ -207,7 +207,9 @@ function SpreadCard({
         </div>
         <div>
           <div style={styles.scoreCaption}>Scanner quality</div>
-          <div style={{ ...styles.score, color: tone(spread?.confidence ?? 0) }}>{spread ? `${spread.confidence}%` : "—"}</div>
+          <div style={{ ...styles.score, color: tone(spread?.shortStrike ? spread.confidence : 0) }}>
+            {spread?.shortStrike ? `${spread.confidence}%` : "—"}
+          </div>
         </div>
       </div>
 
@@ -234,7 +236,10 @@ function SpreadCard({
           {spread.reasons.slice(0, 4).map((reason, idx) => <div key={idx} style={styles.reasonLine}>• {reason}</div>)}
         </>
       ) : (
-        <div style={styles.emptySpread}>No quote-complete scanner candidate from the current SPX rows and risk filters.</div>
+        <>
+          <div style={styles.emptySpread}>No scanner candidate currently clears all quote and risk-policy gates.</div>
+          {spread ? <ScannerRejectionDiagnostics spread={spread} /> : null}
+        </>
       )}
 
       <div style={styles.trackedBox}>
@@ -259,6 +264,38 @@ function SpreadCard({
         ) : (
           <div style={styles.muted}>No exact spread is currently locked for candle-close evaluation.</div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function ScannerRejectionDiagnostics({ spread }: { spread: ZeroDteCreditSpreadSelection }) {
+  const d = spread.rejectionDiagnostics;
+  const labels: Record<string, string> = {
+    missing_expected_move: "Expected move missing",
+    missing_long_leg: "Long leg unavailable",
+    incomplete_quote: "Incomplete bid/ask",
+    nonpositive_mark: "Package mark ≤ 0",
+    nonpositive_sellable: "Crossed sellable ≤ 0",
+    invalid_width: "Width invalid",
+    below_min_credit: "Sellable < min credit",
+    below_credit_risk: "Credit/risk below floor",
+    above_max_risk: "Max risk exceeded",
+    inside_absolute_distance: "Inside absolute distance",
+    inside_expected_move_distance: "Inside EM distance",
+    missing_delta: "Delta missing",
+    above_delta_limit: "Delta above cap",
+  };
+  const top = Object.entries(d.rejected).filter(([,n]) => n > 0).sort((a,b) => b[1]-a[1]).slice(0,6);
+  const f = d.filters;
+  return (
+    <div style={styles.diagnosticBox}>
+      <div style={styles.diagnosticTitle}>Filter diagnostics · {d.tested} combinations tested · {d.accepted} passed</div>
+      <div style={styles.diagnosticPolicy}>
+        Policy: {f.minWidth}–{f.maxWidth} wide · max risk {f.maxRiskDollars == null ? "OFF" : `$${Math.round(f.maxRiskDollars)}`} · min sellable ${f.minCredit.toFixed(2)} · C/R ≥ {(f.minCreditToRiskPct*100).toFixed(0)}% · Δ ≤ {f.shortDeltaMax.toFixed(2)} · abs ≥ {f.minAbsoluteDistancePoints.toFixed(1)} pts · EM ≥ {(f.minDistancePctOfExpectedMove*100).toFixed(0)}%
+      </div>
+      <div style={styles.diagnosticGrid}>
+        {top.map(([reason,count]) => <div key={reason} style={styles.diagnosticChip}><strong>{count}</strong><span>{labels[reason] ?? reason}</span></div>)}
       </div>
     </div>
   );
@@ -534,6 +571,12 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 10,
     textAlign: "right",
   },
+  diagnosticBox: { marginTop: 8, display: "grid", gap: 6, border: "1px solid rgba(251,113,133,.28)", borderRadius: 9, padding: 8, background: "rgba(90,18,29,.10)" },
+  diagnosticTitle: { color: "#f4b4bb", fontSize: 9, fontWeight: 850 },
+  diagnosticPolicy: { color: "#8296aa", fontSize: 8, lineHeight: 1.45 },
+  diagnosticGrid: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 5 },
+  diagnosticChip: { minWidth: 0, display: "grid", gap: 2, border: "1px solid #22384b", borderRadius: 7, padding: 6, background: "#08131c", color: "#8da1b4", fontSize: 8 },
+
   rankingGrid: {
     display: "grid",
     gap: 8,

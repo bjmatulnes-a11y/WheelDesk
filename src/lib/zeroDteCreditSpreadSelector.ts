@@ -5,6 +5,37 @@ export type CreditSpreadSide = "put" | "call";
 export type CreditSpreadRiskMode = "conservative" | "balanced" | "aggressive";
 export type CreditSpreadSelectionMode = "auto-oi-dealer" | "calculated-mood" | "manual-mood" | "manual-tos-mood" | "dealer-pressure" | "two-sided-review";
 
+export type CreditSpreadRejectionReason =
+  | "missing_expected_move"
+  | "missing_long_leg"
+  | "incomplete_quote"
+  | "nonpositive_mark"
+  | "nonpositive_sellable"
+  | "invalid_width"
+  | "below_min_credit"
+  | "below_credit_risk"
+  | "above_max_risk"
+  | "inside_absolute_distance"
+  | "inside_expected_move_distance"
+  | "missing_delta"
+  | "above_delta_limit";
+
+export type CreditSpreadRejectionDiagnostics = {
+  tested: number;
+  accepted: number;
+  rejected: Record<CreditSpreadRejectionReason, number>;
+  filters: {
+    maxRiskDollars: number | null;
+    minCredit: number;
+    minCreditToRiskPct: number;
+    minDistancePctOfExpectedMove: number;
+    minAbsoluteDistancePoints: number;
+    shortDeltaMax: number;
+    minWidth: number;
+    maxWidth: number;
+  };
+};
+
 export type ZeroDteCreditSpreadBook = {
   preferredSide: CreditSpreadSide | "none";
   selectionMode: CreditSpreadSelectionMode;
@@ -49,6 +80,7 @@ export type ZeroDteCreditSpreadSelection = {
   reasons: string[];
   warnings: string[];
   candidates: CreditSpreadCandidate[];
+  rejectionDiagnostics: CreditSpreadRejectionDiagnostics;
 };
 
 export type CreditSpreadCandidate = {
@@ -185,6 +217,17 @@ export function selectZeroDteCreditSpread(input: SelectCreditSpreadInput): ZeroD
     ),
   );
 
+  const rejectionDiagnostics = createRejectionDiagnostics({
+    maxRiskDollars,
+    minCredit,
+    minCreditToRiskPct,
+    minPct,
+    minAbsoluteDistancePoints,
+    shortDeltaMax,
+    minWidth: minAllowedWidth,
+    maxWidth: maxAllowedWidth,
+  });
+
   const candidates = rec.spxChainMap
     .filter((row) => isCandidateSide(row, side, spot))
     .flatMap((row) =>
@@ -210,6 +253,7 @@ export function selectZeroDteCreditSpread(input: SelectCreditSpreadInput): ZeroD
             shortDeltaMax,
             minAbsoluteDistancePoints,
             oiMagnitude,
+            rejectionDiagnostics,
           })
         )
         .filter((candidate): candidate is CreditSpreadCandidate => candidate !== null)
@@ -278,6 +322,7 @@ export function selectZeroDteCreditSpread(input: SelectCreditSpreadInput): ZeroD
     reasons,
     warnings: unique(warnings),
     candidates: candidates.slice(0, 12),
+    rejectionDiagnostics,
   };
 }
 
@@ -301,6 +346,7 @@ function scoreCandidate(args: {
   shortDeltaMax: number;
   minAbsoluteDistancePoints: number;
   oiMagnitude: number;
+  rejectionDiagnostics: CreditSpreadRejectionDiagnostics;
 }): CreditSpreadCandidate | null {
   const {
     row,
@@ -322,14 +368,16 @@ function scoreCandidate(args: {
     shortDeltaMax,
     minAbsoluteDistancePoints,
     oiMagnitude,
+    rejectionDiagnostics,
   } = args;
+  rejectionDiagnostics.tested += 1;
   const spot = rec.spxPrice;
-  if (!(expectedMoveRemaining > 0)) return null;
+  if (!(expectedMoveRemaining > 0)) return rejectCandidate(rejectionDiagnostics, "missing_expected_move");
   const shortRow = findExactOptionRow(rows, side, row.strike);
-  if (!shortRow) return null;
+  if (!shortRow) return rejectCandidate(rejectionDiagnostics, "incomplete_quote");
 
   const longRow = findLongOptionRow(rows, row.strike, side, requestedWidth);
-  if (!longRow) return null;
+  if (!longRow) return rejectCandidate(rejectionDiagnostics, "missing_long_leg");
 
   const shortMid = getMid(shortRow);
   const longMid = getMid(longRow);
@@ -349,7 +397,7 @@ function scoreCandidate(args: {
     shortAsk < shortBid ||
     longAsk < longBid
   ) {
-    return null;
+    return rejectCandidate(rejectionDiagnostics, "incomplete_quote");
   }
 
   const estimatedCredit = roundMoney(shortMid - longMid);
@@ -359,36 +407,37 @@ function scoreCandidate(args: {
     !Number.isFinite(estimatedCredit) ||
     !Number.isFinite(sellableCredit) ||
     !Number.isFinite(buybackDebit) ||
-    estimatedCredit <= 0 ||
-    sellableCredit <= 0 ||
     buybackDebit < 0
-  ) return null;
+  ) return rejectCandidate(rejectionDiagnostics, "incomplete_quote");
+  if (estimatedCredit <= 0) return rejectCandidate(rejectionDiagnostics, "nonpositive_mark");
+  if (sellableCredit <= 0) return rejectCandidate(rejectionDiagnostics, "nonpositive_sellable");
 
   const actualWidth = Math.abs(row.strike - longRow.strike);
-  if (actualWidth <= 0 || actualWidth > maxAllowedWidth) return null;
+  if (actualWidth <= 0 || actualWidth > maxAllowedWidth) return rejectCandidate(rejectionDiagnostics, "invalid_width");
 
   // Defined-risk economics use the conservative sellable credit, not midpoint.
   const maxLoss = roundMoney(actualWidth - sellableCredit);
-  if (maxLoss <= 0) return null;
+  if (maxLoss <= 0) return rejectCandidate(rejectionDiagnostics, "invalid_width");
 
   const maxLossDollars = Math.round(maxLoss * 100);
   const creditToWidthPct = sellableCredit / actualWidth;
   const creditToRiskPct = sellableCredit / maxLoss;
 
-  if (minCredit > 0 && sellableCredit < minCredit) return null;
-  if (minCreditToRiskPct > 0 && creditToRiskPct < minCreditToRiskPct) return null;
-  if (maxRiskDollars !== null && maxLossDollars > maxRiskDollars) return null;
+  if (minCredit > 0 && sellableCredit < minCredit) return rejectCandidate(rejectionDiagnostics, "below_min_credit");
+  if (minCreditToRiskPct > 0 && creditToRiskPct < minCreditToRiskPct) return rejectCandidate(rejectionDiagnostics, "below_credit_risk");
+  if (maxRiskDollars !== null && maxLossDollars > maxRiskDollars) return rejectCandidate(rejectionDiagnostics, "above_max_risk");
 
   const distanceFromSpot = Math.abs(spot - row.strike);
-  if (distanceFromSpot < minAbsoluteDistancePoints) return null;
+  if (distanceFromSpot < minAbsoluteDistancePoints) return rejectCandidate(rejectionDiagnostics, "inside_absolute_distance");
   const distanceAsExpectedMovePct = distanceFromSpot / expectedMoveRemaining;
   // Risk-mode distance is a true eligibility floor. It can no longer be
   // overcome by rich premium or another weighted score component.
-  if (distanceAsExpectedMovePct < minPct) return null;
+  if (distanceAsExpectedMovePct < minPct) return rejectCandidate(rejectionDiagnostics, "inside_expected_move_distance");
   const breakeven = side === "put" ? row.strike - sellableCredit : row.strike + sellableCredit;
   const shortDeltaAbs = cleanAbs(shortRow.delta);
   // Delta is a hard 0DTE safety input. Missing delta is not scored as neutral.
-  if (shortDeltaAbs === null || shortDeltaAbs > shortDeltaMax) return null;
+  if (shortDeltaAbs === null) return rejectCandidate(rejectionDiagnostics, "missing_delta");
+  if (shortDeltaAbs > shortDeltaMax) return rejectCandidate(rejectionDiagnostics, "above_delta_limit");
 
   const sideOi = side === "put" ? row.putOi : row.callOi;
   const totalOi = row.totalOi;
@@ -444,6 +493,7 @@ function scoreCandidate(args: {
   if (mood?.moodPercent != null) reasons.push(`SPX Mood contributes ${Math.round(moodScore)}/100 for the ${side} side (${mood.moodPercent.toFixed(1)}%, ${mood.coverage.status}).`);
   if (sideOi > 0) reasons.push(`Side-specific OI at strike is ${Math.round(sideOi).toLocaleString()}.`);
 
+  rejectionDiagnostics.accepted += 1;
   return {
     strike: row.strike,
     longStrike: longRow.strike,
@@ -709,6 +759,55 @@ function describeWallRelationship(side: CreditSpreadSide, strike: number, wall: 
   if (strike > wall) return `Short call is above the SPX call wall (${wall}), using OI resistance as cushion.`;
   if (strike === wall) return `Short call is directly at the SPX call wall (${wall}); higher premium but wall-touch risk.`;
   return `Short call is below the SPX call wall (${wall}); aggressive because it sells inside resistance.`;
+}
+
+function createRejectionDiagnostics(args: {
+  maxRiskDollars: number | null;
+  minCredit: number;
+  minCreditToRiskPct: number;
+  minPct: number;
+  minAbsoluteDistancePoints: number;
+  shortDeltaMax: number;
+  minWidth: number;
+  maxWidth: number;
+}): CreditSpreadRejectionDiagnostics {
+  return {
+    tested: 0,
+    accepted: 0,
+    rejected: {
+      missing_expected_move: 0,
+      missing_long_leg: 0,
+      incomplete_quote: 0,
+      nonpositive_mark: 0,
+      nonpositive_sellable: 0,
+      invalid_width: 0,
+      below_min_credit: 0,
+      below_credit_risk: 0,
+      above_max_risk: 0,
+      inside_absolute_distance: 0,
+      inside_expected_move_distance: 0,
+      missing_delta: 0,
+      above_delta_limit: 0,
+    },
+    filters: {
+      maxRiskDollars: args.maxRiskDollars,
+      minCredit: args.minCredit,
+      minCreditToRiskPct: args.minCreditToRiskPct,
+      minDistancePctOfExpectedMove: args.minPct,
+      minAbsoluteDistancePoints: args.minAbsoluteDistancePoints,
+      shortDeltaMax: args.shortDeltaMax,
+      minWidth: args.minWidth,
+      maxWidth: args.maxWidth,
+    },
+  };
+}
+
+function rejectCandidate(
+  diagnostics: CreditSpreadRejectionDiagnostics,
+  reason: CreditSpreadRejectionReason,
+): null {
+  diagnostics.rejected[reason] += 1;
+  return null;
 }
 
 export function minimumDistanceExpectedMovePctForRiskMode(mode: CreditSpreadRiskMode) {

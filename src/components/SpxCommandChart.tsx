@@ -2246,11 +2246,13 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 2,
   },
   sideRail: {
+    minWidth: 0,
     display: "flex",
     flexDirection: "column",
     gap: 10,
     maxHeight: 610,
     overflowY: "auto",
+    overflowX: "hidden",
     paddingRight: 3,
   },
   signalCard: {
