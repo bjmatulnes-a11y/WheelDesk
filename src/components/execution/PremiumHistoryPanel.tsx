@@ -7,6 +7,7 @@ import {
   LineSeries,
   type IChartApi,
   type ISeriesApi,
+  type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -228,10 +229,15 @@ export function PremiumHistoryPanel({
         vertLines: { color: "rgba(90,120,145,.09)" },
         horzLines: { color: "rgba(90,120,145,.09)" },
       },
+      localization: {
+        locale: "en-US",
+        timeFormatter: formatCentralPremiumTime,
+      },
       timeScale: {
         timeVisible: true,
         secondsVisible: false,
         borderColor: "#203448",
+        tickMarkFormatter: (time) => formatCentralPremiumTime(time),
       },
       rightPriceScale: {
         borderColor: "#203448",
@@ -418,6 +424,41 @@ function setupLabel(label: string | null, setupKey: string) {
 
 function fmt(value: number | null | undefined) {
   return value === null || value === undefined ? "—" : value.toFixed(2);
+}
+
+const CENTRAL_PREMIUM_TIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  hour: "numeric",
+  minute: "2-digit",
+  hour12: false,
+});
+
+function formatCentralPremiumTime(time: Time) {
+  const date = premiumTimeToDate(time);
+  return date ? CENTRAL_PREMIUM_TIME_FORMATTER.format(date) : "";
+}
+
+function premiumTimeToDate(time: Time) {
+  if (typeof time === "number") {
+    return new Date(Number(time) * 1000);
+  }
+
+  if (typeof time === "string") {
+    const parsed = Date.parse(time);
+    return Number.isFinite(parsed) ? new Date(parsed) : null;
+  }
+
+  if (
+    time &&
+    typeof time === "object" &&
+    "year" in time &&
+    "month" in time &&
+    "day" in time
+  ) {
+    return new Date(Date.UTC(time.year, time.month - 1, time.day, 12, 0, 0));
+  }
+
+  return null;
 }
 
 const styles: Record<string, React.CSSProperties> = {

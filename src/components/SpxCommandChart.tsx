@@ -531,12 +531,17 @@ export default function SpxCommandChart() {
         borderColor: "#223548",
         scaleMargins: { top: 0.08, bottom: 0.08 },
       },
+      localization: {
+        locale: "en-US",
+        timeFormatter: formatCentralChartTime,
+      },
       timeScale: {
         borderColor: "#223548",
         timeVisible: true,
         secondsVisible: false,
         rightOffset: 8,
         barSpacing: 9,
+        tickMarkFormatter: (time) => formatCentralChartTime(time),
       },
       crosshair: {
         vertLine: { color: "#5d7185", labelBackgroundColor: "#223548" },
@@ -1563,6 +1568,41 @@ function selectCashSessionCandles(
     if (!parts || parts.date !== tradeDate) return false;
     return parts.minutes >= 8 * 60 + 30 && parts.minutes <= 15 * 60;
   });
+}
+
+const CENTRAL_CHART_TIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  hour: "numeric",
+  minute: "2-digit",
+  hour12: false,
+});
+
+function formatCentralChartTime(time: Time) {
+  const date = chartTimeToDate(time);
+  return date ? CENTRAL_CHART_TIME_FORMATTER.format(date) : "";
+}
+
+function chartTimeToDate(time: Time) {
+  if (typeof time === "number") {
+    return new Date(Number(time) * 1000);
+  }
+
+  if (typeof time === "string") {
+    const parsed = Date.parse(time);
+    return Number.isFinite(parsed) ? new Date(parsed) : null;
+  }
+
+  if (
+    time &&
+    typeof time === "object" &&
+    "year" in time &&
+    "month" in time &&
+    "day" in time
+  ) {
+    return new Date(Date.UTC(time.year, time.month - 1, time.day, 12, 0, 0));
+  }
+
+  return null;
 }
 
 function centralDateTimeParts(time: number) {
