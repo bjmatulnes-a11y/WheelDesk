@@ -198,6 +198,15 @@ export default function SpxCommandChart() {
   const [selectedExecutionStrategy, setSelectedExecutionStrategy] =
     useState<ExecutionStrategy>("iron-fly");
   const [executionBusy, setExecutionBusy] = useState(false);
+  const [railExpanded, setRailExpanded] = useState({
+    execution: true,
+    score: true,
+    structure: true,
+  });
+
+  const toggleRailSection = (key: keyof typeof railExpanded) => {
+    setRailExpanded((current) => ({ ...current, [key]: !current[key] }));
+  };
   const [signalPaintFilter, setSignalPaintFilter] =
     useState<ExecutionSignalPaintFilter>("all");
   const [riskPolicy, setRiskPolicy] = useState<ZeroDteRiskPolicy>(() =>
@@ -1426,27 +1435,44 @@ export default function SpxCommandChart() {
                     : styles.executionAvoid),
             }}
           >
-            <div style={styles.signalLabel}>Execution Engine</div>
-            <div style={styles.executionAction}>
-              {liveExecutionRead?.lifecycle.replaceAll("_", " ") ?? "WAIT"}
-            </div>
-            <div style={styles.scoreValue}>
-              {liveExecutionRead?.confidence ?? 0}
-            </div>
-            <div style={styles.signalNote}>
-              {liveExecutionRead?.position ? "Exit Readiness" : "Entry Readiness"}
+            <div style={styles.collapsibleHeader}>
+              <div style={styles.signalLabel}>Execution Engine</div>
+              <button
+                type="button"
+                onClick={() => toggleRailSection("execution")}
+                style={styles.collapseButton}
+              >
+                {railExpanded.execution ? "−" : "+"}
+              </button>
             </div>
 
-            <div style={styles.reasonList}>
-              {(liveExecutionRead?.reasons ?? ["Building live execution context"])
-                .slice(0, 4)
-                .map((reason) => (
-                  <div key={reason} style={styles.reasonItem}>
-                    <span style={styles.reasonDot} />
-                    {reason}
-                  </div>
-                ))}
+            <div style={styles.executionSummaryRow}>
+              <div style={styles.executionAction}>
+                {liveExecutionRead?.lifecycle.replaceAll("_", " ") ?? "WAIT"}
+              </div>
+              {!railExpanded.execution ? (
+                <strong style={styles.collapsedScore}>{liveExecutionRead?.confidence ?? 0}</strong>
+              ) : null}
             </div>
+
+            {railExpanded.execution ? (
+              <>
+                <div style={styles.scoreValue}>{liveExecutionRead?.confidence ?? 0}</div>
+                <div style={styles.signalNote}>
+                  {liveExecutionRead?.position ? "Exit Readiness" : "Entry Readiness"}
+                </div>
+                <div style={styles.reasonList}>
+                  {(liveExecutionRead?.reasons ?? ["Building live execution context"])
+                    .slice(0, 4)
+                    .map((reason) => (
+                      <div key={reason} style={styles.reasonItem}>
+                        <span style={styles.reasonDot} />
+                        {reason}
+                      </div>
+                    ))}
+                </div>
+              </>
+            ) : null}
           </div>
 
           <ExecutionTradeDock
@@ -1653,55 +1679,53 @@ export default function SpxCommandChart() {
           />
 
           <div style={styles.railCard}>
-            <div style={styles.railTitle}>{liveExecutionRead?.position ? "Exit Score" : "Entry Score"}</div>
-            <div style={styles.breakdownList}>
-              {(liveExecutionRead?.components ?? []).map((component) => (
-                <div key={component.key} style={styles.breakdownRow}>
-                  <div style={styles.breakdownHeader}>
-                    <span>{component.label}</span>
-                    <strong>
-                      {component.value.toFixed(1)}/{component.max}
-                    </strong>
-                  </div>
-                  <div style={styles.breakdownTrack}>
-                    <div
-                      style={{
-                        ...styles.breakdownFill,
-                        width: `${Math.max(
-                          0,
-                          Math.min(100, (component.value / component.max) * 100),
-                        )}%`,
-                      }}
-                    />
-                  </div>
-                </div>
-              ))}
+            <div style={styles.collapsibleHeader}>
+              <div style={styles.railTitle}>{liveExecutionRead?.position ? "Exit Score" : "Entry Score"}</div>
+              <button type="button" onClick={() => toggleRailSection("score")} style={styles.collapseButton}>
+                {railExpanded.score ? "−" : "+"}
+              </button>
             </div>
+            {railExpanded.score ? (
+              <div style={styles.breakdownList}>
+                {(liveExecutionRead?.components ?? []).map((component) => (
+                  <div key={component.key} style={styles.breakdownRow}>
+                    <div style={styles.breakdownHeader}>
+                      <span>{component.label}</span>
+                      <strong>{component.value.toFixed(1)}/{component.max}</strong>
+                    </div>
+                    <div style={styles.breakdownTrack}>
+                      <div
+                        style={{
+                          ...styles.breakdownFill,
+                          width: `${Math.max(0, Math.min(100, (component.value / component.max) * 100))}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </div>
 
           <div style={styles.railCard}>
-            <div style={styles.railTitle}>Structure Read</div>
-            <RailRow
-              label="Bias"
-              value={recommendation?.pressureBias?.toUpperCase() ?? "—"}
-            />
-            <RailRow
-              label="Center Distance"
-              value={
-                liveExecutionRead
-                  ? `${liveExecutionRead.centerDistance.toFixed(1)} pts`
-                  : "—"
-              }
-            />
-            <RailRow label="SPX Rows" value={String(spxRows.length)} />
-            <RailRow
-              label="Expiration"
-              value={harvest?.spx?.expirationDate ?? "—"}
-            />
-            <RailRow
-              label="Feed"
-              value={harvest?.provider?.toUpperCase() ?? "SCHWAB"}
-            />
+            <div style={styles.collapsibleHeader}>
+              <div style={styles.railTitle}>Structure Read</div>
+              <button type="button" onClick={() => toggleRailSection("structure")} style={styles.collapseButton}>
+                {railExpanded.structure ? "−" : "+"}
+              </button>
+            </div>
+            {railExpanded.structure ? (
+              <>
+                <RailRow label="Bias" value={recommendation?.pressureBias?.toUpperCase() ?? "—"} />
+                <RailRow
+                  label="Center Distance"
+                  value={liveExecutionRead ? `${liveExecutionRead.centerDistance.toFixed(1)} pts` : "—"}
+                />
+                <RailRow label="SPX Rows" value={String(spxRows.length)} />
+                <RailRow label="Expiration" value={harvest?.spx?.expirationDate ?? "—"} />
+                <RailRow label="Feed" value={harvest?.provider?.toUpperCase() ?? "SCHWAB"} />
+              </>
+            ) : null}
           </div>
         </aside>
       </div>
@@ -2250,7 +2274,44 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     gap: 10,
-    overflow: "visible",
+    maxHeight: 610,
+    overflowY: "auto",
+    overflowX: "hidden",
+    scrollbarGutter: "stable",
+    paddingRight: 6,
+  },
+  collapsibleHeader: {
+    minWidth: 0,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  collapseButton: {
+    flex: "0 0 auto",
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    border: "1px solid #31506a",
+    background: "#07131d",
+    color: "#7dd3fc",
+    fontSize: 17,
+    fontWeight: 900,
+    lineHeight: "20px",
+    cursor: "pointer",
+    padding: 0,
+  },
+  executionSummaryRow: {
+    minWidth: 0,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  collapsedScore: {
+    color: "#dbeafe",
+    fontSize: 16,
+    fontWeight: 900,
   },
   signalCard: {
     borderRadius: 13,

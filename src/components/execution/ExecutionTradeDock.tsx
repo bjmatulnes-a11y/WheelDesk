@@ -63,6 +63,7 @@ export function ExecutionTradeDock({
   const [quantity, setQuantity] = useState("1");
   const [entryCredit, setEntryCredit] = useState("");
   const [showEntry, setShowEntry] = useState(true);
+  const [collapsed, setCollapsed] = useState(false);
   const [overrideEnabled, setOverrideEnabled] = useState(false);
   const [overrideReason, setOverrideReason] = useState("");
 
@@ -226,26 +227,33 @@ export function ExecutionTradeDock({
   return (
     <div style={styles.card}>
       <div style={styles.headerRow}>
-        <div>
+        <div style={styles.headerTitleBlock}>
           <div style={styles.eyebrow}>Portfolio Dock</div>
           <div style={styles.title}>
             {positions.length ? "Manage 0DTE Profile" : "Enter Actual Position"}
           </div>
         </div>
-        <div
-          style={{
-            ...styles.enginePill,
-            color: engineCleared ? "#71e0b4" : "#f5c542",
-            borderColor: engineCleared
-              ? "rgba(113,224,180,.45)"
-              : "rgba(245,197,66,.42)",
-          }}
-        >
-          {activeRead.lifecycle.replaceAll("_", " ")}
+        <div style={styles.headerActions}>
+          <div
+            style={{
+              ...styles.enginePill,
+              color: engineCleared ? "#71e0b4" : "#f5c542",
+              borderColor: engineCleared
+                ? "rgba(113,224,180,.45)"
+                : "rgba(245,197,66,.42)",
+            }}
+          >
+            {activeRead.lifecycle.replaceAll("_", " ")}
+          </div>
+          <button type="button" onClick={() => setCollapsed((current) => !current)} style={styles.collapseButton}>
+            {collapsed ? "+" : "−"}
+          </button>
         </div>
       </div>
 
-      {portfolio ? <PortfolioSummary portfolio={portfolio} /> : null}
+      {!collapsed ? (
+        <>
+          {portfolio ? <PortfolioSummary portfolio={portfolio} /> : null}
 
       {positions.length ? (
         <div style={styles.positionStack}>
@@ -546,6 +554,8 @@ export function ExecutionTradeDock({
               ? "Saving…"
               : `Add / Track ${strategyName(selectedStrategy)}`}
           </button>
+        </>
+      ) : null}
         </>
       ) : null}
     </div>
@@ -861,6 +871,26 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 13,
     display: "grid",
     gap: 11,
+  },
+  headerTitleBlock: { minWidth: 0 },
+  headerActions: {
+    flex: "0 0 auto",
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+  },
+  collapseButton: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    border: "1px solid #31506a",
+    background: "#07131d",
+    color: "#7dd3fc",
+    fontSize: 17,
+    fontWeight: 900,
+    lineHeight: "20px",
+    cursor: "pointer",
+    padding: 0,
   },
   headerRow: {
     display: "flex",
