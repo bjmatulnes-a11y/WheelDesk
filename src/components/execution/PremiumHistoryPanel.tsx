@@ -35,6 +35,7 @@ export function PremiumHistoryPanel({
   const seriesRef = useRef<ISeriesApi<"Area"> | null>(null);
   const officialSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const [selectedSetupKey, setSelectedSetupKey] = useState<string | null>(null);
+  const [selectionMode, setSelectionMode] = useState<"AUTO" | "MANUAL">("AUTO");
 
   const setupOptions = useMemo(() => {
     const options = new Map<
@@ -85,17 +86,25 @@ export function PremiumHistoryPanel({
 
   useEffect(() => {
     const preferred = preferredSetupKey ?? read?.setupKey ?? null;
-    if (preferred && setupOptions.some((item) => item.setupKey === preferred)) {
-      setSelectedSetupKey(preferred);
-      return;
-    }
+
     setSelectedSetupKey((current) => {
+      // A user-selected setup is sticky. Market refreshes, scanner reranking,
+      // and preferredSetupKey changes must never steal the Premium History view.
+      if (selectionMode === "MANUAL" && current) {
+        return current;
+      }
+
+      if (preferred && setupOptions.some((item) => item.setupKey === preferred)) {
+        return preferred;
+      }
+
       if (current && setupOptions.some((item) => item.setupKey === current)) {
         return current;
       }
+
       return setupOptions[0]?.setupKey ?? null;
     });
-  }, [preferredSetupKey, read?.setupKey, setupOptions]);
+  }, [preferredSetupKey, read?.setupKey, selectionMode, setupOptions]);
 
   const selectedRead = useMemo(
     () =>
@@ -268,6 +277,8 @@ export function PremiumHistoryPanel({
     }
   }, [chartData, officialData, selectedSetupKey]);
 
+  const preferred = preferredSetupKey ?? read?.setupKey ?? null;
+  const preferredOption = setupOptions.find((item) => item.setupKey === preferred);
   const selectedOption = setupOptions.find(
     (item) => item.setupKey === selectedSetupKey,
   );
@@ -280,7 +291,7 @@ export function PremiumHistoryPanel({
             {selectedOption?.label ?? "Exact-Setup Premium"}
           </div>
           <div style={styles.subTitle}>
-            Cyan is the raw exact-leg tape. Amber is the completed one-minute median used by the signal engine; raw quote oscillation cannot directly fire SELL READY.
+            Cyan is the raw exact-leg tape. Amber is the completed one-minute median used by the signal engine. Selecting a setup creates a MANUAL LOCK; scanner reranking will not change this chart until you choose another setup or click Follow Preferred.
           </div>
         </div>
         <div style={styles.controls}>
@@ -288,9 +299,13 @@ export function PremiumHistoryPanel({
             Tracked setup
             <select
               value={selectedSetupKey ?? ""}
-              onChange={(event) =>
-                setSelectedSetupKey(event.target.value || null)
-              }
+              onChange={(event) => {
+                const next = event.target.value || null;
+                setSelectedSetupKey(next);
+                if (next) {
+                  setSelectionMode("MANUAL");
+                }
+              }}
               style={styles.select}
             >
               {!setupOptions.length ? (
@@ -303,6 +318,41 @@ export function PremiumHistoryPanel({
               ))}
             </select>
           </label>
+          <div style={styles.modeControl}>
+            <span
+              style={{
+                ...styles.modeBadge,
+                ...(selectionMode === "MANUAL"
+                  ? styles.modeBadgeManual
+                  : styles.modeBadgeAuto),
+              }}
+            >
+              {selectionMode === "MANUAL" ? "MANUAL LOCK" : "AUTO"}
+            </span>
+            <button
+              type="button"
+              style={styles.autoButton}
+              disabled={selectionMode === "AUTO"}
+              onClick={() => {
+                setSelectionMode("AUTO");
+                if (
+                  preferred &&
+                  setupOptions.some((item) => item.setupKey === preferred)
+                ) {
+                  setSelectedSetupKey(preferred);
+                } else {
+                  setSelectedSetupKey(setupOptions[0]?.setupKey ?? null);
+                }
+              }}
+              title={
+                preferredOption
+                  ? `Follow WheelDesk preferred setup: ${preferredOption.label}`
+                  : "Follow WheelDesk preferred tracked setup"
+              }
+            >
+              Follow Preferred
+            </button>
+          </div>
           <div style={styles.metrics}>
             <Metric label="Raw" value={fmt(metrics.rawCurrent)} />
             <Metric label="Official 1m" value={fmt(metrics.officialCurrent)} />
@@ -404,6 +454,39 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 3,
     color: "#6f8397",
     fontSize: 9,
+  },
+  modeControl: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+  },
+  modeBadge: {
+    borderRadius: 999,
+    padding: "5px 8px",
+    fontSize: 9,
+    fontWeight: 850,
+    letterSpacing: ".04em",
+    border: "1px solid",
+  },
+  modeBadgeAuto: {
+    color: "#67e8f9",
+    background: "rgba(6,182,212,.08)",
+    borderColor: "rgba(34,211,238,.32)",
+  },
+  modeBadgeManual: {
+    color: "#fbbf24",
+    background: "rgba(251,191,36,.08)",
+    borderColor: "rgba(251,191,36,.34)",
+  },
+  autoButton: {
+    background: "#0c1a25",
+    color: "#c7d8e6",
+    border: "1px solid #29465d",
+    borderRadius: 8,
+    padding: "7px 9px",
+    fontSize: 9,
+    fontWeight: 750,
+    cursor: "pointer",
   },
   select: {
     minWidth: 230,
