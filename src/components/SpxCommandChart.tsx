@@ -541,7 +541,7 @@ export default function SpxCommandChart() {
         secondsVisible: false,
         rightOffset: 8,
         barSpacing: 9,
-        tickMarkFormatter: (time) => formatCentralChartTime(time),
+        tickMarkFormatter: (time: Time) => formatCentralChartTime(time),
       },
       crosshair: {
         vertLine: { color: "#5d7185", labelBackgroundColor: "#223548" },

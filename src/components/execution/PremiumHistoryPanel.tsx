@@ -237,7 +237,7 @@ export function PremiumHistoryPanel({
         timeVisible: true,
         secondsVisible: false,
         borderColor: "#203448",
-        tickMarkFormatter: (time) => formatCentralPremiumTime(time),
+        tickMarkFormatter: (time: Time) => formatCentralPremiumTime(time),
       },
       rightPriceScale: {
         borderColor: "#203448",
