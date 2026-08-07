@@ -45,8 +45,11 @@ export async function GET(request: NextRequest) {
   const maxWidth = optionalNumberParam(request, "maxWidth") ?? 50;
   const maxRiskDollars = optionalNumberParam(request, "maxRisk");
   const minCredit = optionalNumberParam(request, "minCredit");
-  const strictZeroDte = request.nextUrl.searchParams.get("strict") === "1";
+  // This route powers the SPX 0DTE engine. Strict same-day expiration is the
+  // safe default; callers must never silently fall forward to 1–7 DTE.
+  const strictZeroDte = request.nextUrl.searchParams.get("strict") !== "0";
   const riskMode = riskModeParam(request);
+  const includeTradeSelection = request.nextUrl.searchParams.get("selection") !== "0";
   const errors: string[] = [];
 
   let spx: SchwabHarvestSymbol | undefined;
@@ -128,7 +131,7 @@ export async function GET(request: NextRequest) {
   }
 
   const tradeSelection =
-    recommendation && spx
+    includeTradeSelection && recommendation && spx
       ? buildZeroDteTradeSelection({
           recommendation,
           spxRows: spx.rows,
@@ -250,9 +253,7 @@ async function harvestSchwabSymbol(args: {
     symbol: args.symbol,
     providerSymbol: args.providerSymbol,
     price,
-    expirationTimestamp: Math.floor(
-      Date.parse(`${expiration.date}T16:00:00-04:00`) / 1000,
-    ),
+    expirationTimestamp: expirationTimestampEastern(expiration.date),
     expirationDate: expiration.date,
     isZeroDte: expiration.date === args.tradeDate,
     rows,
@@ -301,11 +302,17 @@ function mapContract(
   optionType: "call" | "put",
   contract: SchwabOptionContract,
 ): ZeroDteChainRow {
-  const bid = finite(contract.bid) ?? 0;
-  const ask = finite(contract.ask) ?? 0;
+  const bid = finite(contract.bid);
+  const ask = finite(contract.ask);
   const mark = finite(contract.mark);
-  const last = finite(contract.last) ?? 0;
-  const mid = mark ?? (bid > 0 && ask > 0 ? (bid + ask) / 2 : last);
+  const last = finite(contract.last);
+  // Missing quotes stay missing. Last trade can be hours stale in 0DTE wings
+  // and is informational only; it is never promoted into a live mark.
+  const mid =
+    mark ??
+    (bid !== null && ask !== null && bid >= 0 && ask > 0 && ask >= bid
+      ? (bid + ask) / 2
+      : null);
 
   return {
     symbol,
@@ -347,10 +354,10 @@ function buildQualityChecks(
       : spx || spy
         ? {
             label: "Expiration",
-            status: "warn",
+            status: "fail",
             message: `SPX=${spx?.expirationDate ?? "none"}, SPY=${
               spy?.expirationDate ?? "none"
-            }, trade date=${tradeDate}.`,
+            }, trade date=${tradeDate}. Non-0DTE data is blocked.`,
           }
         : {
             label: "Expiration",
@@ -403,6 +410,32 @@ function nyDateString(date: Date) {
     month: "2-digit",
     day: "2-digit",
   }).format(date);
+}
+
+function expirationTimestampEastern(dateString: string) {
+  const noonUtc = new Date(`${dateString}T12:00:00Z`);
+  const zone = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    timeZoneName: "shortOffset",
+    hour: "2-digit",
+  }).formatToParts(noonUtc);
+  const offsetLabel =
+    zone.find((part) => part.type === "timeZoneName")?.value ?? "GMT-5";
+  const match = offsetLabel.match(/GMT([+-]\d{1,2})(?::(\d{2}))?/);
+  const offsetHours = match ? Number(match[1]) : -5;
+  const offsetMinutes = match?.[2]
+    ? Math.sign(offsetHours || 1) * Number(match[2])
+    : 0;
+  const [year, month, day] = dateString.split("-").map(Number);
+  const utcMs = Date.UTC(
+    year,
+    month - 1,
+    day,
+    16 - offsetHours,
+    -offsetMinutes,
+    0,
+  );
+  return Math.floor(utcMs / 1000);
 }
 
 function addDays(date: string, days: number) {

@@ -8,6 +8,7 @@ import {
   buildLiveMapSnapshot,
   initializeSessionMapManager,
   resetSessionMapManager,
+  saveSessionMapManager,
   updateSessionMapManager,
   type SessionMapManagerState,
 } from "./mapEngine";
@@ -60,22 +61,30 @@ export function useSessionMapManager(args: {
   useEffect(() => {
     if (!live || !openingMap) return;
 
-    setState((current) => {
-      const needsInitialization = !current || current.tradeDate !== live.tradeDate;
-      const openingWasFallback =
-        current?.tradeDate === live.tradeDate &&
-        current.opening.source === "first-live-fallback";
+    const needsInitialization = !state || state.tradeDate !== live.tradeDate;
+    const openingWasFallback =
+      state?.tradeDate === live.tradeDate &&
+      state.opening.source === "first-live-fallback";
 
-      if (!needsInitialization && !openingWasFallback) return current;
+    if (!needsInitialization && !openingWasFallback) return;
 
-      resetSessionMapManager(live.tradeDate);
-      return updateSessionMapManager(
+    // Rebuild against the verified opening map outside a React state updater.
+    // This keeps persistence/state-machine I/O out of updater callbacks, which
+    // React StrictMode is allowed to invoke more than once in development.
+    resetSessionMapManager(live.tradeDate);
+    setState(
+      updateSessionMapManager(
         initializeSessionMapManager(live, openingMap),
         live,
         strikeFlow,
-      );
-    });
-  }, [live, openingMap, strikeFlow]);
+      ),
+    );
+  }, [live, openingMap, state, strikeFlow]);
+
+  useEffect(() => {
+    if (!state) return;
+    saveSessionMapManager(state);
+  }, [state]);
 
   return {
     state,

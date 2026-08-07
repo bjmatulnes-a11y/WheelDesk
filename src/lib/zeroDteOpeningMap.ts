@@ -53,6 +53,23 @@ export function getOpeningMapKey(tradeDate: string) {
   return `${PREFIX}${tradeDate}`;
 }
 
+export function isOpeningMapCaptureOnTime(lockedAt: string) {
+  const date = new Date(lockedAt);
+  if (!Number.isFinite(date.getTime())) return false;
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const hour = Number(parts.find((part) => part.type === "hour")?.value ?? 0);
+  const minute = Number(parts.find((part) => part.type === "minute")?.value ?? 0);
+  const minuteOfDay = hour * 60 + minute;
+  // A browser snapshot captured after the first 30 cash-session minutes is not
+  // allowed to masquerade as the immutable opening thesis.
+  return minuteOfDay >= 8 * 60 + 30 && minuteOfDay <= 9 * 60;
+}
+
 export function isValidOpeningMap(
   value: unknown,
   expectedTradeDate?: string,

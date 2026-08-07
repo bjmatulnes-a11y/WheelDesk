@@ -21,10 +21,14 @@ type Props = {
   tracks: Record<ExecutionStrategy, StableExecutionCandidateTrack> | null;
   selectedStrategy: ExecutionStrategy;
   onStrategyChange: (strategy: ExecutionStrategy) => void;
+  evaluateCandidate?: (candidate: ExecutionCandidate) => ZeroDteExecutionRead | null;
   onOpen: (args: {
     candidate: ExecutionCandidate;
     entryCredit: number;
     quantity: number;
+    setupSource: "engine" | "manual";
+    engineClearedAtEntry: boolean;
+    overrideReason: string | null;
   }) => void | Promise<void>;
   onClose: (positionId: string, exitDebit: number) => void | Promise<void>;
   busy?: boolean;
@@ -48,6 +52,7 @@ export function ExecutionTradeDock({
   tracks,
   selectedStrategy,
   onStrategyChange,
+  evaluateCandidate,
   onOpen,
   onClose,
   busy = false,
@@ -58,6 +63,8 @@ export function ExecutionTradeDock({
   const [quantity, setQuantity] = useState("1");
   const [entryCredit, setEntryCredit] = useState("");
   const [showEntry, setShowEntry] = useState(true);
+  const [overrideEnabled, setOverrideEnabled] = useState(false);
+  const [overrideReason, setOverrideReason] = useState("");
 
   const candidate = candidates[selectedStrategy] ?? null;
   const candidateKey = candidate?.setupKey ?? `${selectedStrategy}:none`;
@@ -66,6 +73,11 @@ export function ExecutionTradeDock({
   useEffect(() => {
     if (!positions.length) setShowEntry(true);
   }, [positions.length]);
+
+  useEffect(() => {
+    setOverrideEnabled(false);
+    setOverrideReason("");
+  }, [candidateKey, setupMode, selectedStrategy]);
 
   useEffect(() => {
     if (setupMode === "manual") return;
@@ -88,7 +100,12 @@ export function ExecutionTradeDock({
   const ticket = useMemo(() => {
     if (!candidate) return { candidate: null, error: "No tracked setup is available." };
     if (setupMode === "recommended") {
-      const credit = parsedEntryCredit ?? read?.currentCredit ?? candidate.estimatedCredit;
+      const credit =
+        parsedEntryCredit ??
+        read?.currentSellableCredit ??
+        read?.currentCredit ??
+        candidate.sellableCredit ??
+        candidate.estimatedCredit;
       return {
         candidate: {
           ...candidate,
@@ -111,23 +128,43 @@ export function ExecutionTradeDock({
     const validation = validateLegs(selectedStrategy, legs);
     if (validation) return { candidate: null, error: validation };
 
-    const credit = parsedEntryCredit ?? read?.currentCredit ?? candidate.estimatedCredit;
+    const credit =
+      parsedEntryCredit ??
+      read?.currentSellableCredit ??
+      read?.currentCredit ??
+      null;
     return {
       candidate: {
-        ...candidate,
+        strategy: selectedStrategy,
         label: `Manual ${strategyName(selectedStrategy)}`,
         legs,
         setupKey: makeExecutionSetupKey(selectedStrategy, legs),
+        score: 0,
+        eligible: false,
         estimatedCredit: credit,
+        sellableCredit: null,
+        buybackDebit: null,
+        shortDeltaAbs: null,
         maxRiskDollars: calculateMaxRisk(selectedStrategy, legs, credit),
+        mapPhase: candidate.mapPhase,
+        mapCenter: candidate.mapCenter,
+        railBreached: candidate.railBreached,
         reasons: [
-          "Manual execution legs entered in the WheelDesk Portfolio Dock.",
-          ...candidate.reasons,
+          "Manual execution legs entered in the WheelDesk Portfolio Dock and independently re-evaluated by the execution engine.",
         ],
+        blockers: [],
       },
       error: null,
     };
-  }, [candidate, draftLegs, parsedEntryCredit, read?.currentCredit, selectedStrategy, setupMode]);
+  }, [
+    candidate,
+    draftLegs,
+    parsedEntryCredit,
+    read?.currentCredit,
+    read?.currentSellableCredit,
+    selectedStrategy,
+    setupMode,
+  ]);
 
   if (!read) {
     return (
@@ -138,15 +175,53 @@ export function ExecutionTradeDock({
     );
   }
 
+  const activeRead =
+    setupMode === "manual" && ticket.candidate && evaluateCandidate
+      ? evaluateCandidate(ticket.candidate) ?? read
+      : read;
+  const signalCleared =
+    activeRead.lifecycle === "SELL_READY" && !activeRead.entryHardBlocked;
+  const ticketRiskDollars =
+    (ticket.candidate?.maxRiskDollars ?? 0) * parsedQuantity;
+  const projectedGrossRiskDollars =
+    (portfolio?.grossRiskDollars ?? 0) + ticketRiskDollars;
+  const ticketRiskExceedsBudget = Boolean(
+    portfolio &&
+      ticketRiskDollars > 0 &&
+      projectedGrossRiskDollars > portfolio.riskBudgetDollars,
+  );
+  const remainingRiskBudget = portfolio
+    ? Math.max(0, portfolio.riskBudgetDollars - portfolio.grossRiskDollars)
+    : null;
+  const oneLotRisk = ticket.candidate?.maxRiskDollars ?? null;
+  const recommendedMaxQuantity =
+    remainingRiskBudget !== null && oneLotRisk !== null && oneLotRisk > 0
+      ? Math.max(
+          0,
+          Math.floor(
+            (remainingRiskBudget * activeRead.recommendedSizeMultiplier) / oneLotRisk,
+          ),
+        )
+      : null;
+  const ticketSizeExceedsRecommendation = Boolean(
+    recommendedMaxQuantity !== null && parsedQuantity > recommendedMaxQuantity,
+  );
   const engineCleared =
-    read.lifecycle === "ARMED" || read.lifecycle === "SELL_READY";
+    signalCleared &&
+    !ticketRiskExceedsBudget &&
+    !ticketSizeExceedsRecommendation;
   const contribution =
-    portfolio?.candidateContribution[selectedStrategy] ?? null;
+    setupMode === "recommended"
+      ? portfolio?.candidateContribution[selectedStrategy] ?? null
+      : null;
+  const overrideValid =
+    overrideEnabled && overrideReason.trim().length >= 4;
   const canOpen =
     !busy &&
     ticket.candidate !== null &&
     parsedEntryCredit !== null &&
-    parsedEntryCredit > 0;
+    parsedEntryCredit > 0 &&
+    (engineCleared || overrideValid);
 
   return (
     <div style={styles.card}>
@@ -166,7 +241,7 @@ export function ExecutionTradeDock({
               : "rgba(245,197,66,.42)",
           }}
         >
-          {read.lifecycle.replaceAll("_", " ")}
+          {activeRead.lifecycle.replaceAll("_", " ")}
         </div>
       </div>
 
@@ -199,9 +274,9 @@ export function ExecutionTradeDock({
       {showEntry ? (
         <>
           <div style={styles.regimeBar}>
-            <span>{read.timeRegime.label}</span>
-            <strong>{read.timeRegime.centralTime} CT</strong>
-            <em>{Math.round(read.timeRegime.sizeMultiplier * 100)}% size</em>
+            <span>{activeRead.timeRegime.label}</span>
+            <strong>{activeRead.timeRegime.centralTime} CT</strong>
+            <em>{Math.round(activeRead.recommendedSizeMultiplier * 100)}% size</em>
           </div>
 
           <div style={styles.strategyGrid}>
@@ -239,28 +314,36 @@ export function ExecutionTradeDock({
 
           <div style={styles.trackingStrip}>
             <div>
-              <span>Tracked</span>
-              <strong>{formatLegs(candidate?.legs ?? [])}</strong>
+              <span>{setupMode === "manual" ? "Manual Setup" : "Tracked"}</span>
+              <strong>{formatLegs(ticket.candidate?.legs ?? candidate?.legs ?? [])}</strong>
             </div>
             <div>
               <span>Age</span>
-              <strong>{read.candidateAgeCandles} candles</strong>
+              <strong>{activeRead.candidateAgeCandles} candles</strong>
             </div>
             <div>
               <span>Lock Credit</span>
               <strong>{money(tracks?.[selectedStrategy]?.lockedCredit)}</strong>
             </div>
             <div>
-              <span>Live Credit</span>
-              <strong>{money(read.currentCredit)}</strong>
+              <span>Mark</span>
+              <strong>{money(activeRead.currentCredit)}</strong>
+            </div>
+            <div>
+              <span>Sellable</span>
+              <strong>{money(activeRead.currentSellableCredit)}</strong>
+            </div>
+            <div>
+              <span>Buyback</span>
+              <strong>{money(activeRead.currentBuybackDebit)}</strong>
             </div>
             <div>
               <span>Peak</span>
-              <strong>{money(read.peakCredit)}</strong>
+              <strong>{money(activeRead.peakCredit)}</strong>
             </div>
             <div>
               <span>Tape</span>
-              <strong>{read.premiumSampleCount} pts</strong>
+              <strong>{activeRead.premiumSampleCount} pts</strong>
             </div>
           </div>
 
@@ -347,29 +430,30 @@ export function ExecutionTradeDock({
               />
               <button
                 type="button"
-                disabled={read.currentCredit == null}
+                disabled={(activeRead.currentSellableCredit ?? activeRead.currentCredit) == null}
                 onClick={() => {
-                  if (read.currentCredit == null) return;
-                  setEntryCredit(read.currentCredit.toFixed(2));
+                  const live = activeRead.currentSellableCredit ?? activeRead.currentCredit;
+                  if (live == null) return;
+                  setEntryCredit(live.toFixed(2));
                 }}
                 style={{
                   ...styles.useLiveButton,
-                  opacity: read.currentCredit == null ? 0.45 : 1,
+                  opacity: (activeRead.currentSellableCredit ?? activeRead.currentCredit) == null ? 0.45 : 1,
                 }}
               >
-                Use Live {money(read.currentCredit)}
+                Use Sellable {money(activeRead.currentSellableCredit ?? activeRead.currentCredit)}
               </button>
             </label>
           </div>
 
           <div style={styles.metricGrid}>
-            <DockMetric label="Tape Open" value={money(read.openingCredit)} />
+            <DockMetric label="Tape Open" value={money(activeRead.openingCredit)} />
             <DockMetric
               label="Velocity"
               value={
-                read.premiumVelocityPerMinute == null
+                activeRead.premiumVelocityPerMinute == null
                   ? "—"
-                  : `${read.premiumVelocityPerMinute >= 0 ? "+" : ""}${read.premiumVelocityPerMinute.toFixed(3)}/m`
+                  : `${activeRead.premiumVelocityPerMinute >= 0 ? "+" : ""}${activeRead.premiumVelocityPerMinute.toFixed(3)}/m`
               }
             />
             <DockMetric
@@ -379,28 +463,84 @@ export function ExecutionTradeDock({
               )}
             />
             <DockMetric
+              label="Ticket Risk"
+              value={dollars(ticketRiskDollars)}
+            />
+            <DockMetric
+              label="Engine Max Qty"
+              value={recommendedMaxQuantity == null ? "—" : String(recommendedMaxQuantity)}
+            />
+            <DockMetric
               label="Short Distance"
               value={
-                read.shortDistancePoints == null
+                activeRead.shortDistancePoints == null
                   ? "—"
-                  : `${read.shortDistancePoints.toFixed(1)} pts`
+                  : `${activeRead.shortDistancePoints.toFixed(1)} pts`
+              }
+            />
+            <DockMetric
+              label="Delta / Touch Proxy"
+              value={
+                activeRead.shortDeltaAbs == null
+                  ? "—"
+                  : `${activeRead.shortDeltaAbs.toFixed(2)} / ~${Math.round(activeRead.touchRiskProxyPct ?? 0)}%`
               }
             />
             <DockMetric
               label="Entry Readiness"
-              value={String(Math.round(read.entryScore))}
+              value={`${Math.round(activeRead.entryScore)} / ${activeRead.minimumEntryScore}`}
             />
           </div>
 
+          {ticketRiskExceedsBudget ? (
+            <div style={styles.error}>
+              This quantity would raise gross defined risk to {dollars(projectedGrossRiskDollars)},
+              above the {dollars(portfolio?.riskBudgetDollars ?? 0)} policy budget.
+              Recording it requires an explicit override.
+            </div>
+          ) : null}
+          {ticketSizeExceedsRecommendation ? (
+            <div style={styles.error}>
+              This quantity exceeds the engine's {Math.round(activeRead.recommendedSizeMultiplier * 100)}%
+              regime/event-risk size recommendation
+              {recommendedMaxQuantity !== null ? ` (max ${recommendedMaxQuantity} contract${recommendedMaxQuantity === 1 ? "" : "s"})` : ""}.
+              Recording it requires an explicit override.
+            </div>
+          ) : null}
           {contribution?.blockers.length ? (
             <div style={styles.error}>{contribution.blockers.join(" ")}</div>
           ) : null}
 
           {!engineCleared ? (
             <div style={styles.warning}>
-              The engine has not confirmed a candle-close sell entry. WheelDesk
-              will still store an actual fill, but it is treated as a manual
-              portfolio override.
+              Engine approval requires SELL READY with no hard blocker. To record
+              a broker fill anyway, explicitly enable a manual override below.
+            </div>
+          ) : null}
+
+          {!engineCleared ? (
+            <div style={styles.overrideBox}>
+              <label style={styles.overrideCheck}>
+                <input
+                  type="checkbox"
+                  checked={overrideEnabled}
+                  onChange={(event) => setOverrideEnabled(event.target.checked)}
+                />
+                Record as manual override
+              </label>
+              {overrideEnabled ? (
+                <input
+                  value={overrideReason}
+                  onChange={(event) => setOverrideReason(event.target.value)}
+                  placeholder="Override reason (required)"
+                  style={styles.input}
+                />
+              ) : null}
+              {activeRead.entryHardBlocked ? (
+                <div style={styles.error}>
+                  Hard block: {activeRead.warnings.join(" ") || "Execution safety gate failed."}
+                </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -416,6 +556,9 @@ export function ExecutionTradeDock({
                 candidate: ticket.candidate,
                 entryCredit: parsedEntryCredit,
                 quantity: parsedQuantity,
+                setupSource: setupMode === "manual" ? "manual" : "engine",
+                engineClearedAtEntry: engineCleared,
+                overrideReason: engineCleared ? null : overrideReason.trim(),
               });
             }}
             style={{ ...styles.openButton, opacity: canOpen ? 1 : 0.45 }}
@@ -502,7 +645,7 @@ function PortfolioPositionCard({
 
       <div style={styles.positionQuickGrid}>
         <DockMetric label="Entry" value={money(position.entryCredit)} />
-        <DockMetric label="Debit" value={money(read?.currentCredit)} />
+        <DockMetric label="Buyback" value={money(read?.currentBuybackDebit ?? read?.currentCredit)} />
         <DockMetric label="Captured" value={percent(read?.capturedPremiumPct)} />
         <DockMetric label="P/L" value={dollars(read?.livePnlDollars)} />
       </div>
@@ -537,17 +680,18 @@ function PortfolioPositionCard({
             />
             <button
               type="button"
-              disabled={read?.currentCredit == null}
+              disabled={(read?.currentBuybackDebit ?? read?.currentCredit) == null}
               onClick={() => {
-                if (read?.currentCredit == null) return;
-                setExitDebit(read.currentCredit.toFixed(2));
+                const live = read?.currentBuybackDebit ?? read?.currentCredit;
+                if (live == null) return;
+                setExitDebit(live.toFixed(2));
               }}
               style={{
                 ...styles.useLiveButton,
-                opacity: read?.currentCredit == null ? 0.45 : 1,
+                opacity: (read?.currentBuybackDebit ?? read?.currentCredit) == null ? 0.45 : 1,
               }}
             >
-              Use Live {money(read?.currentCredit)}
+              Use Buyback {money(read?.currentBuybackDebit ?? read?.currentCredit)}
             </button>
           </label>
           <button
@@ -980,6 +1124,23 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 8,
     color: "#b8c6d3",
     fontSize: 10,
+  },
+  overrideBox: {
+    display: "grid",
+    gap: 8,
+    marginTop: 10,
+    padding: 10,
+    border: "1px solid rgba(245,197,66,.28)",
+    borderRadius: 9,
+    background: "rgba(245,197,66,.06)",
+  },
+  overrideCheck: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    color: "#f3d77c",
+    fontSize: 11,
+    fontWeight: 800,
   },
   closePreview: {
     display: "grid",

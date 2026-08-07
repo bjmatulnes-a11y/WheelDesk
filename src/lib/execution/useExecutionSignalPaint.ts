@@ -174,10 +174,14 @@ export function useExecutionSignalPaint(args: {
       }
 
       if (!changed) return previous;
-      saveStore(next);
       return next;
     });
   }, [candles, frequencyMinutes, reads, tradeDate]);
+
+  useEffect(() => {
+    if (!store.tradeDate) return;
+    saveStore(store);
+  }, [store]);
 
   const clearToday = useCallback(() => {
     if (!tradeDate) return;

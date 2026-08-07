@@ -20,6 +20,17 @@ import {
   buildPremiumCrestRead,
   type ZeroDtePremiumCrestRead,
 } from "./zeroDtePremiumCrestEngine";
+import {
+  absoluteDistanceFloorPoints,
+  eventRiskScoreAdjustment,
+  eventRiskSizeMultiplier,
+  volContextScoreAdjustment,
+  volContextSizeMultiplier,
+  type ZeroDteRiskPolicy,
+  type ZeroDteVolContext,
+} from "./zeroDteRiskPolicy";
+import { isOpeningMapCaptureOnTime } from "./zeroDteOpeningMap";
+import { minimumDistanceExpectedMovePctForRiskMode } from "./zeroDteCreditSpreadSelector";
 
 export type ExecutionLifecycle =
   | "WAIT"
@@ -69,7 +80,11 @@ export type ExecutionCandidate = {
   score: number;
   eligible: boolean;
   legs: ExecutionLeg[];
+  /** Mid-based package mark used for the premium signal. */
   estimatedCredit: number | null;
+  sellableCredit?: number | null;
+  buybackDebit?: number | null;
+  shortDeltaAbs?: number | null;
   maxRiskDollars: number | null;
   mapPhase: SessionMapManagerState["phase"];
   mapCenter: number;
@@ -108,6 +123,8 @@ export type ExecutionPremiumSample = {
   shortDistanceExpectedMovePct: number | null;
   candidateAgeCandles: number;
   trackedSince: string | null;
+  dealerPressure?: number | null;
+  strikeFlowState?: string | null;
 };
 
 export type ExecutionPositionMemory = {
@@ -127,6 +144,17 @@ export type ExecutionPositionMemory = {
   entryReasons: string[];
   entryTimeRegime: ZeroDteTimeRegimeRead["regime"];
   side: "upper" | "lower" | "center";
+  setupSource?: "engine" | "manual";
+  engineClearedAtEntry?: boolean;
+  overrideReason?: string | null;
+  signalTime?: string | null;
+  signalCredit?: number | null;
+  entryMarkCredit?: number | null;
+  entrySellableCredit?: number | null;
+  entryShortDeltaAbs?: number | null;
+  entryTouchRiskProxyPct?: number | null;
+  entryRangeConsumptionPct?: number | null;
+  entryEventRisk?: "NORMAL" | "HIGH" | null;
 };
 
 export type ExecutionClosedTrade = ExecutionPositionMemory & {
@@ -166,7 +194,15 @@ export type ZeroDteExecutionRead = {
   strategyLabel: string;
   setupKey: string | null;
   candidate: ExecutionCandidate | null;
+  /** Mid package mark used for premium crest analytics. */
   currentCredit: number | null;
+  currentSellableCredit: number | null;
+  currentBuybackDebit: number | null;
+  shortDeltaAbs: number | null;
+  touchRiskProxyPct: number | null;
+  recommendedSizeMultiplier: number;
+  volContext: ZeroDteVolContext | null;
+  eventRisk: "NORMAL" | "HIGH";
   openingCredit: number | null;
   peakCredit: number | null;
   entryCredit: number | null;
@@ -241,6 +277,10 @@ export function buildZeroDteExecutionRead(args: {
   portfolio?: ZeroDtePortfolioRead | null;
   priceAction?: ZeroDtePriceActionContext | null;
   premiumTape?: ExecutionPremiumTapePoint[];
+  riskPolicy?: ZeroDteRiskPolicy | null;
+  volContext?: ZeroDteVolContext | null;
+  dailyLossBlocked?: boolean;
+  leaderCandidate?: ExecutionCandidate | null;
 }): ZeroDteExecutionRead {
   const {
     tradeDate,
@@ -269,9 +309,18 @@ export function buildZeroDteExecutionRead(args: {
   const strategy = position?.strategy ?? candidate?.strategy ?? null;
   const setupKey = position?.setupKey ?? candidate?.setupKey ?? null;
   const legs = position?.legs ?? candidate?.legs ?? [];
-  const currentCredit = legs.length
-    ? calculateStrategyCredit(spxRows, legs)
+  const packageQuote = legs.length
+    ? calculateStrategyPackageQuote(spxRows, legs)
     : null;
+  const currentCredit = packageQuote?.markCredit ?? null;
+  const currentSellableCredit = packageQuote?.sellableCredit ?? null;
+  const currentBuybackDebit = packageQuote?.buybackDebit ?? null;
+  const shortDeltaAbs =
+    strategy === "put-credit-spread" || strategy === "call-credit-spread"
+      ? findShortDeltaAbs(spxRows, legs)
+      : null;
+  const touchRiskProxyPct =
+    shortDeltaAbs !== null ? Math.min(100, shortDeltaAbs * 200) : null;
 
   const premiumWindowStart = position?.openedAt ?? args.tracking?.lockedAt ?? null;
   const premiumWindowStartMs = premiumWindowStart
@@ -344,6 +393,7 @@ export function buildZeroDteExecutionRead(args: {
     candidate,
     mapState,
     currentCredit,
+    currentSellableCredit,
     premiumExpansionPct,
     premiumCrest,
     strikeFlow,
@@ -353,6 +403,10 @@ export function buildZeroDteExecutionRead(args: {
     shortDistance,
     portfolioContribution,
     tracking: args.tracking ?? null,
+    riskPolicy: args.riskPolicy ?? null,
+    volContext: args.volContext ?? null,
+    dailyLossBlocked: Boolean(args.dailyLossBlocked),
+    shortDeltaAbs,
   });
 
   const exitRead = buildExitRead({
@@ -360,11 +414,15 @@ export function buildZeroDteExecutionRead(args: {
     candidate,
     mapState,
     currentCredit,
+    currentBuybackDebit,
     premiumVelocityPerMinute,
     peakDetected,
     recommendation,
     strikeFlow,
     generatedAt,
+    timeRegime,
+    leaderCandidate: args.leaderCandidate ?? candidate,
+    memory,
   });
 
   const cooldownActive = Boolean(
@@ -410,7 +468,7 @@ export function buildZeroDteExecutionRead(args: {
     lifecycle = "ARMED";
     action = premiumCrest.rolloverConfirmed
       ? entryRead.priceRejectionReady
-        ? `ARMED — ${candidate?.label ?? "strategy"} crest and price rejection are confirmed; conviction is ${entryRead.entryScore}/${timeRegime.minimumEntryScore}.`
+        ? `ARMED — ${candidate?.label ?? "strategy"} crest and price rejection are confirmed; conviction is ${entryRead.entryScore}/${entryRead.minimumEntryScore}.`
         : `ARMED — ${candidate?.label ?? "strategy"} crest is confirmed; strategy-specific price rejection is still building.`
       : premiumCrest.rolloverStarted
         ? `ARMED — ${candidate?.label ?? "strategy"} has begun a closed-minute premium rollover; waiting for confirmation.`
@@ -422,13 +480,14 @@ export function buildZeroDteExecutionRead(args: {
   }
 
   const entryCredit = position?.entryCredit ?? null;
+  const managementDebit = position ? currentBuybackDebit ?? currentCredit : currentCredit;
   const capturedPremiumPct =
-    position && currentCredit !== null && position.entryCredit > 0
-      ? ((position.entryCredit - currentCredit) / position.entryCredit) * 100
+    position && managementDebit !== null && position.entryCredit > 0
+      ? ((position.entryCredit - managementDebit) / position.entryCredit) * 100
       : null;
   const livePnlDollars =
-    position && currentCredit !== null
-      ? (position.entryCredit - currentCredit) * 100 * position.quantity
+    position && managementDebit !== null
+      ? (position.entryCredit - managementDebit) * 100 * position.quantity
       : null;
   const maxRiskDollars =
     position?.maxRiskDollars ?? candidate?.maxRiskDollars ?? null;
@@ -462,6 +521,16 @@ export function buildZeroDteExecutionRead(args: {
     setupKey,
     candidate,
     currentCredit,
+    currentSellableCredit,
+    currentBuybackDebit,
+    shortDeltaAbs,
+    touchRiskProxyPct,
+    recommendedSizeMultiplier:
+      timeRegime.sizeMultiplier *
+      (args.riskPolicy ? eventRiskSizeMultiplier(args.riskPolicy) : 1) *
+      volContextSizeMultiplier(args.volContext ?? null),
+    volContext: args.volContext ?? null,
+    eventRisk: args.riskPolicy?.eventRisk ?? "NORMAL",
     openingCredit,
     peakCredit,
     entryCredit,
@@ -503,8 +572,8 @@ export function buildZeroDteExecutionRead(args: {
     scannerScore: args.tracking?.scannerCandidate?.score ?? null,
     trackingStatus: args.tracking?.status ?? null,
     portfolioContributionScore: portfolioContribution?.score ?? 70,
-    minimumEntryScore: timeRegime.minimumEntryScore,
-    entryScoreGap: Math.max(0, Math.round(timeRegime.minimumEntryScore - entryRead.entryScore)),
+    minimumEntryScore: entryRead.minimumEntryScore,
+    entryScoreGap: Math.max(0, Math.round(entryRead.minimumEntryScore - entryRead.entryScore)),
     regimeTriggerReady: entryRead.regimeTriggerReady,
     entryHardBlocked: entryRead.hardBlocked,
   };
@@ -556,6 +625,9 @@ export function buildExecutionCandidate(
   const controlling = getControllingMarketMap(mapState);
   let legs: ExecutionLeg[] = [];
   let estimatedCredit: number | null = ranking?.estimatedCredit ?? null;
+  let sellableCredit: number | null = null;
+  let buybackDebit: number | null = null;
+  let shortDeltaAbs: number | null = null;
   let maxRiskDollars: number | null = ranking?.maxRiskDollars ?? null;
 
   if (strategy === "iron-fly") {
@@ -599,6 +671,9 @@ export function buildExecutionCandidate(
         { optionType: "put", action: "buy", strike: spread.longStrike },
       ];
       estimatedCredit ??= spread.estimatedCredit;
+      sellableCredit = spread.sellableCredit;
+      buybackDebit = spread.buybackDebit;
+      shortDeltaAbs = spread.shortDeltaAbs;
       maxRiskDollars ??= spread.maxLossDollars;
     }
   }
@@ -611,6 +686,9 @@ export function buildExecutionCandidate(
         { optionType: "call", action: "buy", strike: spread.longStrike },
       ];
       estimatedCredit ??= spread.estimatedCredit;
+      sellableCredit = spread.sellableCredit;
+      buybackDebit = spread.buybackDebit;
+      shortDeltaAbs = spread.shortDeltaAbs;
       maxRiskDollars ??= spread.maxLossDollars;
     }
   }
@@ -631,6 +709,9 @@ export function buildExecutionCandidate(
     eligible: ranking?.eligible ?? selection.tradeType !== "no-trade",
     legs,
     estimatedCredit,
+    sellableCredit,
+    buybackDebit,
+    shortDeltaAbs,
     maxRiskDollars,
     mapPhase: mapState.phase,
     mapCenter: controlling.center,
@@ -696,6 +777,9 @@ function buildSpreadExecutionCandidateBook(
             score: spread.score,
             confidence: spread.confidence,
             estimatedCredit: spread.estimatedCredit,
+            sellableCredit: spread.sellableCredit ?? spread.estimatedCredit,
+            buybackDebit: spread.buybackDebit ?? spread.estimatedCredit,
+            shortDeltaAbs: spread.shortDeltaAbs,
             maxLossDollars: spread.maxLossDollars,
             reasons: spread.reasons,
             warnings: spread.warnings,
@@ -745,6 +829,9 @@ function buildSpreadExecutionCandidateBook(
       eligible,
       legs,
       estimatedCredit: row.estimatedCredit,
+      sellableCredit: row.sellableCredit,
+      buybackDebit: row.buybackDebit,
+      shortDeltaAbs: row.shortDeltaAbs,
       maxRiskDollars: row.maxLossDollars,
       mapPhase: mapState.phase,
       mapCenter: controlling.center,
@@ -762,16 +849,24 @@ export function repriceExecutionCandidate(
   candidate: ExecutionCandidate,
   rows: ZeroDteChainRow[],
 ): ExecutionCandidate {
-  const liveCredit = calculateStrategyCredit(rows, candidate.legs);
-  if (liveCredit === null) return candidate;
+  const quote = calculateStrategyPackageQuote(rows, candidate.legs);
+  if (!quote || quote.markCredit === null) return candidate;
+  const riskCredit = quote.sellableCredit ?? quote.markCredit;
 
   return {
     ...candidate,
-    estimatedCredit: liveCredit,
+    estimatedCredit: quote.markCredit,
+    sellableCredit: quote.sellableCredit,
+    buybackDebit: quote.buybackDebit,
+    shortDeltaAbs:
+      candidate.strategy === "put-credit-spread" ||
+      candidate.strategy === "call-credit-spread"
+        ? findShortDeltaAbs(rows, candidate.legs)
+        : null,
     maxRiskDollars: calculateDefinedRiskDollars(
       candidate.strategy,
       candidate.legs,
-      liveCredit,
+      riskCredit,
     ),
   };
 }
@@ -800,20 +895,53 @@ function calculateDefinedRiskDollars(
   return Math.max(0, Math.abs(shortStrike - longStrike) - credit) * 100;
 }
 
+export type StrategyPackageQuote = {
+  markCredit: number | null;
+  sellableCredit: number | null;
+  buybackDebit: number | null;
+};
+
+export function calculateStrategyPackageQuote(
+  rows: ZeroDteChainRow[],
+  legs: ExecutionLeg[],
+): StrategyPackageQuote | null {
+  if (!legs.length) return null;
+
+  let markCredit = 0;
+  let sellableCredit = 0;
+  let buybackDebit = 0;
+
+  for (const leg of legs) {
+    const quote = optionQuote(rows, leg.strike, leg.optionType);
+    if (!quote || quote.mid === null) return null;
+    markCredit += leg.action === "sell" ? quote.mid : -quote.mid;
+
+    // A 0DTE mark is considered current only when both sides of every leg have
+    // a live market. Never let a mark/last-only row create a premium-tape spike.
+    if (quote.bid === null || quote.ask === null) return null;
+    sellableCredit += leg.action === "sell" ? quote.bid : -quote.ask;
+    // Closing reverses every leg: buy shorts at ask, sell longs at bid.
+    buybackDebit += leg.action === "sell" ? quote.ask : -quote.bid;
+  }
+
+  return {
+    markCredit: Number.isFinite(markCredit) && markCredit >= 0 ? roundCredit(markCredit) : null,
+    sellableCredit:
+      Number.isFinite(sellableCredit) && sellableCredit >= 0
+        ? roundCredit(sellableCredit)
+        : null,
+    buybackDebit:
+      Number.isFinite(buybackDebit) && buybackDebit >= 0
+        ? roundCredit(buybackDebit)
+        : null,
+  };
+}
+
 export function calculateStrategyCredit(
   rows: ZeroDteChainRow[],
   legs: ExecutionLeg[],
 ): number | null {
-  if (!legs.length) return null;
-
-  let credit = 0;
-  for (const leg of legs) {
-    const mid = optionMid(rows, leg.strike, leg.optionType);
-    if (mid === null) return null;
-    credit += leg.action === "sell" ? mid : -mid;
-  }
-
-  return Number.isFinite(credit) && credit >= 0 ? credit : null;
+  return calculateStrategyPackageQuote(rows, legs)?.markCredit ?? null;
 }
 
 function mergePremiumSeries(
@@ -844,6 +972,7 @@ function buildEntryRead(args: {
   candidate: ExecutionCandidate | null;
   mapState: SessionMapManagerState;
   currentCredit: number | null;
+  currentSellableCredit: number | null;
   premiumExpansionPct: number | null;
   premiumCrest: ZeroDtePremiumCrestRead;
   strikeFlow: ZeroDteStrikeFlowRead | null;
@@ -853,11 +982,16 @@ function buildEntryRead(args: {
   shortDistance: { points: number | null; expectedMovePct: number | null };
   portfolioContribution: CandidatePortfolioContribution | null;
   tracking: ExecutionCandidateTracking | null;
+  riskPolicy: ZeroDteRiskPolicy | null;
+  volContext: ZeroDteVolContext | null;
+  dailyLossBlocked: boolean;
+  shortDeltaAbs: number | null;
 }) {
   const {
     candidate,
     mapState,
     currentCredit,
+    currentSellableCredit,
     premiumExpansionPct,
     premiumCrest,
     strikeFlow,
@@ -867,6 +1001,10 @@ function buildEntryRead(args: {
     shortDistance,
     portfolioContribution,
     tracking,
+    riskPolicy,
+    volContext,
+    dailyLossBlocked,
+    shortDeltaAbs,
   } = args;
   // Candidate discovery blockers are snapshots from the scanner. Once an exact
   // setup is locked, live execution gates below become authoritative so stale
@@ -875,7 +1013,26 @@ function buildEntryRead(args: {
   const reasons = [...(candidate?.reasons ?? []), ...timeRegime.reasons];
 
   if (!candidate) blockers.push("No tracked strategy candidate is available.");
-  if (candidate && currentCredit === null) blockers.push("Live mids cannot price every strategy leg.");
+  if (candidate && currentCredit === null) blockers.push("Live bid/ask markets cannot price every strategy leg.");
+  if (candidate && riskPolicy) {
+    if (
+      currentSellableCredit === null ||
+      currentSellableCredit < riskPolicy.minSellableCredit
+    ) {
+      blockers.push(
+        `Conservative sellable credit is below the $${riskPolicy.minSellableCredit.toFixed(2)} risk-policy floor.`,
+      );
+    }
+    if (
+      riskPolicy.maxRiskPerTradeDollars !== null &&
+      (candidate.maxRiskDollars === null ||
+        candidate.maxRiskDollars > riskPolicy.maxRiskPerTradeDollars)
+    ) {
+      blockers.push(
+        `Defined risk per 1× exceeds the $${Math.round(riskPolicy.maxRiskPerTradeDollars).toLocaleString()} risk-policy limit.`,
+      );
+    }
+  }
   if (
     candidate &&
     getControllingMarketMap(mapState).structure.structuralConfidence < 30
@@ -883,6 +1040,7 @@ function buildEntryRead(args: {
     blockers.push("Current controlling structure confidence is below 30%.");
   }
   if (!timeRegime.entryAllowed) blockers.push(`${timeRegime.label} does not permit new risk.`);
+  if (dailyLossBlocked) blockers.push("Daily realized-loss circuit breaker is active; no new positions are permitted.");
   if (tracking?.status === "STRUCTURE_INVALID") {
     blockers.push(tracking.lastReplacementReason ?? "The tracked candidate is structurally invalid.");
   }
@@ -890,6 +1048,12 @@ function buildEntryRead(args: {
   if (candidate?.strategy === "iron-fly") {
     if (mapState.phase === "TRANSITION") blockers.push("Iron Fly entry is blocked during map transition.");
     if (mapState.railBreached !== "NONE") blockers.push("Iron Fly entry is blocked outside the controlling rails.");
+    if (!isOpeningMapCaptureOnTime(mapState.opening.capturedAt)) {
+      blockers.push("Iron Fly is disabled because the opening map was captured after the valid opening window.");
+    }
+    if (timeRegime.regime !== "OPENING_OPPORTUNITY") {
+      blockers.push("New Iron Fly entries are restricted to the opening-opportunity window.");
+    }
   }
 
   if (candidate?.strategy === "put-credit-spread") {
@@ -938,16 +1102,36 @@ function buildEntryRead(args: {
   const isCreditSpread =
     candidate?.strategy === "put-credit-spread" ||
     candidate?.strategy === "call-credit-spread";
-  if (
-    isCreditSpread &&
-    shortDistance.expectedMovePct !== null &&
-    shortDistance.expectedMovePct < timeRegime.minimumDistanceExpectedMovePct
-  ) {
-    blockers.push(
-      `Short-strike distance is below the ${Math.round(
-        timeRegime.minimumDistanceExpectedMovePct * 100,
-      )}% expected-move floor for ${timeRegime.label.toLowerCase()}.`,
+  if (isCreditSpread) {
+    const riskModeExpectedMoveFloor = riskPolicy
+      ? minimumDistanceExpectedMovePctForRiskMode(riskPolicy.riskMode)
+      : 0;
+    const effectiveExpectedMoveFloor = Math.max(
+      timeRegime.minimumDistanceExpectedMovePct,
+      riskModeExpectedMoveFloor,
     );
+    if (!(recommendation.expectedMove > 0) || shortDistance.expectedMovePct === null) {
+      blockers.push("ATM expected move is unavailable; short-strike safety cannot be verified.");
+    } else if (shortDistance.expectedMovePct < effectiveExpectedMoveFloor) {
+      blockers.push(
+        `Short-strike distance is below the ${Math.round(
+          effectiveExpectedMoveFloor * 100,
+        )}% expected-move floor required by the time regime / risk policy.`,
+      );
+    }
+
+    const absoluteFloor = riskPolicy
+      ? absoluteDistanceFloorPoints(riskPolicy, recommendation.spxPrice)
+      : Math.max(15, recommendation.spxPrice * 0.0022);
+    if (shortDistance.points === null || shortDistance.points < absoluteFloor) {
+      blockers.push(`Short strike is inside the absolute ${absoluteFloor.toFixed(1)}-point safety floor.`);
+    }
+    const deltaLimit = riskPolicy?.shortDeltaMax ?? 0.20;
+    if (shortDeltaAbs === null) {
+      blockers.push("Short-option delta is unavailable; 0DTE probability safety cannot be verified.");
+    } else if (shortDeltaAbs > deltaLimit) {
+      blockers.push(`Short delta ${shortDeltaAbs.toFixed(2)} exceeds the ${deltaLimit.toFixed(2)} risk-policy limit.`);
+    }
   }
   if (candidate && tracking && tracking.ageCandles < 1) {
     blockers.push(
@@ -958,7 +1142,14 @@ function buildEntryRead(args: {
   const distanceScore = scoreShortDistance(
     candidate,
     shortDistance.expectedMovePct,
-    timeRegime.minimumDistanceExpectedMovePct,
+    isCreditSpread
+      ? Math.max(
+          timeRegime.minimumDistanceExpectedMovePct,
+          riskPolicy
+            ? minimumDistanceExpectedMovePctForRiskMode(riskPolicy.riskMode)
+            : 0,
+        )
+      : timeRegime.minimumDistanceExpectedMovePct,
   );
   const structureScore = scoreStructure(candidate, mapState);
   const dealerFlowScore = scoreDealerFlow(
@@ -1017,6 +1208,18 @@ function buildEntryRead(args: {
   }
   if (portfolioContribution) reasons.push(...portfolioContribution.reasons);
 
+  const minimumEntryScore = Math.min(100,
+    timeRegime.minimumEntryScore +
+      (riskPolicy ? eventRiskScoreAdjustment(riskPolicy) : 0) +
+      volContextScoreAdjustment(volContext),
+  );
+  if (riskPolicy?.eventRisk === "HIGH") {
+    reasons.push("High event-risk mode raises required conviction by 6 points and halves preferred size.");
+  }
+  if (volContext?.regime === "HOT" || volContext?.regime === "EXTREME") {
+    reasons.push(`Session range has consumed ${Math.round(volContext.rangeConsumptionPct ?? 0)}% of opening implied move; conviction and size are tightened.`);
+  }
+
   const hardBlocked = unique(blockers).length > 0;
   const stableThroughClose = !tracking || tracking.ageCandles >= 1;
   const regimeTriggerReady = Boolean(
@@ -1031,18 +1234,19 @@ function buildEntryRead(args: {
       candidate &&
         !hardBlocked &&
         premiumCrest.armed &&
-        entryScore >= timeRegime.minimumEntryScore - 12,
+        entryScore >= minimumEntryScore - 12,
     ),
     sellReady: Boolean(
       candidate &&
         !hardBlocked &&
-        entryScore >= timeRegime.minimumEntryScore &&
+        entryScore >= minimumEntryScore &&
         regimeTriggerReady,
     ),
     hardBlocked,
     regimeTriggerReady,
     priceRejectionScore,
     priceRejectionReady,
+    minimumEntryScore,
     reasons: unique(reasons),
     blockers: unique(blockers),
     components: [
@@ -1094,22 +1298,30 @@ function buildExitRead(args: {
   candidate: ExecutionCandidate | null;
   mapState: SessionMapManagerState;
   currentCredit: number | null;
+  currentBuybackDebit: number | null;
   premiumVelocityPerMinute: number | null;
   peakDetected: boolean;
   recommendation: ZeroDteRecommendation;
   strikeFlow: ZeroDteStrikeFlowRead | null;
   generatedAt: string;
+  timeRegime: ZeroDteTimeRegimeRead;
+  leaderCandidate: ExecutionCandidate | null;
+  memory: ZeroDteExecutionMemory;
 }) {
   const {
     position,
     candidate,
     mapState,
     currentCredit,
+    currentBuybackDebit,
     premiumVelocityPerMinute,
     peakDetected,
     recommendation,
     strikeFlow,
     generatedAt,
+    timeRegime,
+    leaderCandidate,
+    memory,
   } = args;
 
   if (!position) {
@@ -1129,57 +1341,117 @@ function buildExitRead(args: {
     0,
     (Date.parse(generatedAt) - Date.parse(position.openedAt)) / 60_000,
   );
+  const managementDebit = currentBuybackDebit ?? currentCredit;
   const capturedPct =
-    currentCredit !== null && position.entryCredit > 0
-      ? ((position.entryCredit - currentCredit) / position.entryCredit) * 100
+    managementDebit !== null && position.entryCredit > 0
+      ? ((position.entryCredit - managementDebit) / position.entryCredit) * 100
       : 0;
   const adversePct =
-    currentCredit !== null && position.entryCredit > 0
-      ? ((currentCredit - position.entryCredit) / position.entryCredit) * 100
+    managementDebit !== null && position.entryCredit > 0
+      ? ((managementDebit - position.entryCredit) / position.entryCredit) * 100
       : 0;
 
   let mapFailure = false;
   let wallFailure = false;
+  let hardThreat = false;
+  const shortStrike = position.legs.find((leg) => leg.action === "sell")?.strike ?? null;
+  const spot = recommendation.spxPrice;
+  const shortDistancePoints = shortStrike === null
+    ? null
+    : position.strategy === "put-credit-spread"
+      ? spot - shortStrike
+      : position.strategy === "call-credit-spread"
+        ? shortStrike - spot
+        : Math.abs(spot - shortStrike);
+  const shortItm = Boolean(
+    shortStrike !== null &&
+      ((position.strategy === "put-credit-spread" && spot <= shortStrike) ||
+        (position.strategy === "call-credit-spread" && spot >= shortStrike)),
+  );
 
   if (position.strategy === "iron-fly") {
     mapFailure =
       mapState.phase === "TRANSITION" ||
       mapState.railBreached !== "NONE" ||
       Math.abs(currentMap.center - position.entryMapCenter) >= 15;
-    if (mapFailure) warnings.push("The symmetric Iron Fly map is no longer controlling price.");
+    hardThreat = mapState.railBreached !== "NONE" && timeRegime.regime === "FINAL_ENTRY";
+    if (mapFailure) warnings.push("The symmetric Iron Fly map is weakening or no longer controlling price.");
   }
 
   if (position.strategy === "put-credit-spread") {
     wallFailure = strikeFlow?.putWall.state === "breaking";
     mapFailure =
       mapState.railBreached === "LOWER" ||
-      currentMap.center <= position.entryMapCenter - 10 ||
+      currentMap.center <= position.entryMapCenter - Math.max(15, Math.abs(position.entryMapCenter - (shortStrike ?? position.entryMapCenter)) * 0.35) ||
       recommendation.dealerPressure <= -35;
+    hardThreat =
+      shortItm ||
+      (mapState.railBreached === "LOWER" &&
+        shortDistancePoints !== null &&
+        shortDistancePoints <= Math.max(15, recommendation.expectedMove * 0.35));
     if (wallFailure) warnings.push("Put wall is breaking beneath the open put spread.");
-    if (mapFailure) warnings.push("Bullish map alignment has failed or reversed.");
+    if (mapFailure) warnings.push("Bullish map alignment is weakening or reversed.");
   }
 
   if (position.strategy === "call-credit-spread") {
     wallFailure = strikeFlow?.callWall.state === "attacked";
     mapFailure =
       mapState.railBreached === "UPPER" ||
-      currentMap.center >= position.entryMapCenter + 10 ||
+      currentMap.center >= position.entryMapCenter + Math.max(15, Math.abs((shortStrike ?? position.entryMapCenter) - position.entryMapCenter) * 0.35) ||
       recommendation.dealerPressure >= 35;
+    hardThreat =
+      shortItm ||
+      (mapState.railBreached === "UPPER" &&
+        shortDistancePoints !== null &&
+        shortDistancePoints <= Math.max(15, recommendation.expectedMove * 0.35));
     if (wallFailure) warnings.push("Call wall is being attacked above the open call spread.");
-    if (mapFailure) warnings.push("Bearish map alignment has failed or reversed.");
+    if (mapFailure) warnings.push("Bearish map alignment is weakening or reversed.");
   }
 
-  const strategyRotated = Boolean(
-    candidate &&
-      candidate.strategy !== position.strategy &&
-      candidate.score >= position.entryScore + 12,
+  const priorSample = memory.samples
+    .filter((sample) => sample.setupKey === position.setupKey)
+    .at(-1) ?? null;
+  const structuralCenterThreshold = Math.max(
+    15,
+    Math.abs((shortStrike ?? position.entryMapCenter) - position.entryMapCenter) * 0.35,
   );
-  if (strategyRotated) warnings.push(`Strategy leadership rotated to ${candidate?.label}.`);
+  const priorStructuralFailure = Boolean(
+    priorSample &&
+      (position.strategy === "put-credit-spread"
+        ? priorSample.railBreached === "LOWER" ||
+          priorSample.mapCenter <= position.entryMapCenter - structuralCenterThreshold ||
+          (priorSample.dealerPressure ?? 0) <= -35 ||
+          priorSample.strikeFlowState === "breaking"
+        : position.strategy === "call-credit-spread"
+          ? priorSample.railBreached === "UPPER" ||
+            priorSample.mapCenter >= position.entryMapCenter + structuralCenterThreshold ||
+            (priorSample.dealerPressure ?? 0) >= 35 ||
+            priorSample.strikeFlowState === "attacked"
+          : priorSample.railBreached !== "NONE" ||
+            Math.abs(priorSample.mapCenter - position.entryMapCenter) >= 15),
+  );
+  const confirmedStructuralFailure = Boolean(
+    (mapFailure || wallFailure) && priorStructuralFailure,
+  );
+
+  const strategyRotated = Boolean(
+    leaderCandidate &&
+      leaderCandidate.strategy !== position.strategy &&
+      leaderCandidate.score >= position.entryScore + 12,
+  );
+  if (strategyRotated) warnings.push(`Strategy leadership rotated to ${leaderCandidate?.label}.`);
 
   if (capturedPct >= 15) reasons.push(`${capturedPct.toFixed(1)}% of entry premium has been harvested.`);
   if (peakDetected) reasons.push("Live debit is rolling down from its tracked peak.");
   if ((premiumVelocityPerMinute ?? 0) < -0.05) reasons.push("Close debit is contracting with favorable velocity.");
   if (ageMinutes >= 30) reasons.push(`Position has been open ${Math.round(ageMinutes)} minutes.`);
+  if (shortItm) warnings.push("The short strike is at or through spot; terminal 0DTE risk is active.");
+  const terminalThreat = Boolean(
+    timeRegime.regime === "FINAL_ENTRY" &&
+      shortDistancePoints !== null &&
+      shortDistancePoints <= Math.max(15, recommendation.expectedMove * 0.35),
+  );
+  if (terminalThreat) warnings.push("Late-session gamma risk is elevated because spot is approaching the short strike.");
 
   const profitComponent = clamp((capturedPct / 40) * 58, 0, 58);
   const velocityComponent =
@@ -1188,7 +1460,7 @@ function buildExitRead(args: {
       : clamp(-premiumVelocityPerMinute * 35, 0, 14);
   const timeComponent = clamp((ageMinutes / 45) * 10, 0, 10);
   const rotationComponent = strategyRotated ? 10 : 0;
-  const invalidationComponent = mapFailure || wallFailure ? 25 : 0;
+  const invalidationComponent = hardThreat ? 25 : confirmedStructuralFailure ? 18 : mapFailure || wallFailure ? 8 : 0;
   let exitScore = clamp(
     profitComponent +
       velocityComponent +
@@ -1199,20 +1471,18 @@ function buildExitRead(args: {
     100,
   );
 
-  if (capturedPct >= 50) {
-    exitScore = Math.max(exitScore, 85);
-    reasons.push("At least half of the entry premium has been harvested.");
-  } else if (capturedPct >= 35) {
-    exitScore = Math.max(exitScore, 76);
-  }
+  // Keep capture scoring continuous; avoid 35%/50% one-cent cliffs.
+  if (capturedPct >= 50) reasons.push("At least half of the entry premium has been harvested.");
+  if (terminalThreat) exitScore = Math.max(exitScore, 88);
 
   const emergencyExit = Boolean(
-    wallFailure ||
-      mapFailure ||
+    shortItm ||
+      hardThreat ||
+      (confirmedStructuralFailure && terminalThreat) ||
       adversePct >= 35 ||
       (position.maxRiskDollars !== null &&
-        currentCredit !== null &&
-        (currentCredit - position.entryCredit) * 100 >=
+        managementDebit !== null &&
+        (managementDebit - position.entryCredit) * 100 >=
           position.maxRiskDollars * 0.35),
   );
   if (emergencyExit) {
@@ -1259,7 +1529,7 @@ function buildExitRead(args: {
         label: "Map / wall invalidation",
         value: invalidationComponent,
         max: 25,
-        reason: mapFailure || wallFailure ? "Trade thesis invalidated" : "Trade thesis remains intact",
+        reason: hardThreat ? "Hard short-strike / rail threat" : confirmedStructuralFailure ? "Structural failure confirmed" : mapFailure || wallFailure ? "Thesis weakening; awaiting confirmation" : "Trade thesis remains intact",
       },
     ] satisfies ExecutionScoreComponent[],
   };
@@ -1384,27 +1654,43 @@ export function makeExecutionSetupKey(
     .join("-")}`;
 }
 
-function optionMid(
+function optionQuote(
   rows: ZeroDteChainRow[],
   strike: number,
   optionType: "call" | "put",
-): number | null {
+) {
   const row = rows.find(
     (item) =>
       item.optionType === optionType && Math.abs(item.strike - strike) < 0.01,
   );
   if (!row) return null;
-  if (Number.isFinite(row.mid) && Number(row.mid) > 0) return Number(row.mid);
-  if (
-    Number.isFinite(row.bid) &&
-    Number.isFinite(row.ask) &&
-    Number(row.bid) >= 0 &&
-    Number(row.ask) > 0
-  ) {
-    return (Number(row.bid) + Number(row.ask)) / 2;
-  }
-  if (Number.isFinite(row.last) && Number(row.last) > 0) return Number(row.last);
-  return null;
+  const bid = Number.isFinite(row.bid) && Number(row.bid) >= 0 ? Number(row.bid) : null;
+  const ask = Number.isFinite(row.ask) && Number(row.ask) > 0 ? Number(row.ask) : null;
+  const suppliedMid = Number.isFinite(row.mid) && Number(row.mid) > 0 ? Number(row.mid) : null;
+  const mid = suppliedMid ?? (bid !== null && ask !== null && ask >= bid ? (bid + ask) / 2 : null);
+  return { bid, ask, mid };
+}
+
+function optionMid(
+  rows: ZeroDteChainRow[],
+  strike: number,
+  optionType: "call" | "put",
+): number | null {
+  return optionQuote(rows, strike, optionType)?.mid ?? null;
+}
+
+function findShortDeltaAbs(rows: ZeroDteChainRow[], legs: ExecutionLeg[]) {
+  const short = legs.find((leg) => leg.action === "sell");
+  if (!short) return null;
+  const row = rows.find(
+    (item) =>
+      item.optionType === short.optionType && Math.abs(item.strike - short.strike) < 0.01,
+  );
+  return row && Number.isFinite(row.delta) ? Math.abs(Number(row.delta)) : null;
+}
+
+function roundCredit(value: number) {
+  return Math.round(value * 100) / 100;
 }
 
 function classifyEdge(

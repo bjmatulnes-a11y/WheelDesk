@@ -5,6 +5,8 @@ export type ZeroDteSessionClock = {
   hour: number;
   minute: number;
   minuteOfDay: number;
+  weekday: number;
+  isTradingWeekday: boolean;
   minuteIndex: number;
   sessionStatus: ZeroDteCashSessionStatus;
   minuteKey: string;
@@ -26,6 +28,7 @@ export function getZeroDteSessionClock(
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
+    weekday: "short",
     hourCycle: "h23",
   }).formatToParts(date);
 
@@ -35,8 +38,13 @@ export function getZeroDteSessionClock(
   const hour = Number(part(parts, "hour") ?? 0);
   const minute = Number(part(parts, "minute") ?? 0);
   const minuteOfDay = hour * 60 + minute;
+  const weekdayLabel = part(parts, "weekday") ?? "";
+  const weekday = weekdayNumber(weekdayLabel);
+  const isTradingWeekday = weekday >= 1 && weekday <= 5;
   const sessionStatus: ZeroDteCashSessionStatus =
-    minuteOfDay < OPEN_MINUTE
+    !isTradingWeekday
+      ? "CLOSED"
+      : minuteOfDay < OPEN_MINUTE
       ? "PREOPEN"
       : minuteOfDay >= CLOSE_MINUTE
         ? "CLOSED"
@@ -48,6 +56,8 @@ export function getZeroDteSessionClock(
     hour,
     minute,
     minuteOfDay,
+    weekday,
+    isTradingWeekday,
     minuteIndex: minuteOfDay - OPEN_MINUTE,
     sessionStatus,
     minuteKey: String(epochMinute),
@@ -70,6 +80,17 @@ export function isSameOrLaterMinute(a: string, b: string) {
   return Number(a) >= Number(b);
 }
 
-function part(parts: Intl.DateTimeFormatPart[], type: Intl.DateTimeFormatPartTypes) {
+function part(parts: Intl.DateTimeFormatPart[], type: string) {
   return parts.find((item) => item.type === type)?.value;
+}
+
+function weekdayNumber(label: string) {
+  const normalized = label.slice(0, 3).toLowerCase();
+  if (normalized === "mon") return 1;
+  if (normalized === "tue") return 2;
+  if (normalized === "wed") return 3;
+  if (normalized === "thu") return 4;
+  if (normalized === "fri") return 5;
+  if (normalized === "sat") return 6;
+  return 0;
 }

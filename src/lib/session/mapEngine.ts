@@ -177,7 +177,6 @@ export function initializeSessionMapManager(
   const stored = loadSessionMapManager(live.tradeDate);
   if (stored) {
     const hydrated = hydrateStoredSessionMapManager(stored, live);
-    saveSessionMapManager(hydrated);
     return hydrated;
   }
 
@@ -216,7 +215,6 @@ export function initializeSessionMapManager(
     events: [],
   };
 
-  saveSessionMapManager(initial);
   return initial;
 }
 
@@ -352,7 +350,6 @@ export function updateSessionMapManager(
           : `${railBreached.toLowerCase()} rail is outside the controlling map, but no after-hours confirmation is counted.`,
       ],
     };
-    saveSessionMapManager(next);
     return next;
   }
 
@@ -389,7 +386,6 @@ export function updateSessionMapManager(
       };
     }
 
-    saveSessionMapManager(next);
     return next;
   }
 
@@ -401,7 +397,6 @@ export function updateSessionMapManager(
         "Waiting for the first completed one-minute strike-flow read before opening a candidate map.",
       ],
     };
-    saveSessionMapManager(next);
     return next;
   }
 
@@ -490,7 +485,6 @@ export function updateSessionMapManager(
     };
   }
 
-  saveSessionMapManager(next);
   return next;
 }
 

@@ -84,6 +84,17 @@ export async function openExecutionPositionDb(args: {
   contracts: number;
   read: ZeroDteExecutionRead;
   candidate?: ExecutionCandidate;
+  setupSource?: "engine" | "manual";
+  engineClearedAtEntry?: boolean;
+  overrideReason?: string | null;
+  signalTime?: string | null;
+  signalCredit?: number | null;
+  entryMarkCredit?: number | null;
+  entrySellableCredit?: number | null;
+  entryShortDeltaAbs?: number | null;
+  entryTouchRiskProxyPct?: number | null;
+  entryRangeConsumptionPct?: number | null;
+  entryEventRisk?: "NORMAL" | "HIGH" | null;
 }): Promise<ZeroDteExecutionMemory> {
   const candidate = args.candidate ?? args.read.candidate;
   if (!candidate) {

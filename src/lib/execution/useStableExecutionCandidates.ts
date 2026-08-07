@@ -217,10 +217,21 @@ export function useStableExecutionCandidates(args: {
           continue;
         }
 
+        const challengerAgeSeconds =
+          track.challengerStartedCandleTime === null
+            ? 0
+            : latestCandle.time - track.challengerStartedCandleTime;
+        // A live exhaustion track should not be discarded because one scanner
+        // refresh briefly ranks another spread higher. Distinct second-position
+        // discovery may rotate after one close; an unfilled active track needs
+        // two completed candles of sustained superiority.
+        const requiredSurvivalSeconds =
+          Math.max(1, frequencyMinutes) * 60 * (trackedSetupIsOpen ? 1 : 2);
         const survivedClosedCandle =
           track.challengerStartedCandleTime !== null &&
-          (latestCandle.time > track.challengerStartedCandleTime ||
-            (latestCandle.time === track.challengerStartedCandleTime &&
+          (challengerAgeSeconds >= requiredSurvivalSeconds ||
+            (trackedSetupIsOpen &&
+              challengerAgeSeconds === 0 &&
               candleIsClosed));
 
         if (survivedClosedCandle) {
@@ -231,7 +242,7 @@ export function useStableExecutionCandidates(args: {
             latestCandle.time,
             trackedSetupIsOpen
               ? "The prior tracked spread is already open; the highest-ranked distinct spread remained competitive through a candle close."
-              : `The scanner remained ${Math.round(superiority)} points stronger through a candle close.`,
+              : `The scanner remained ${Math.round(superiority)} points stronger through two completed candles.`,
           );
           track.status = "REPLACED";
         } else {
@@ -239,7 +250,6 @@ export function useStableExecutionCandidates(args: {
         }
       }
 
-      saveStore(next);
       return next;
     });
   }, [
@@ -252,6 +262,11 @@ export function useStableExecutionCandidates(args: {
     scannerCandidates,
     tradeDate,
   ]);
+
+  useEffect(() => {
+    if (!store.tradeDate) return;
+    saveStore(store);
+  }, [store]);
 
   return useMemo(() => {
     const candidates: Partial<

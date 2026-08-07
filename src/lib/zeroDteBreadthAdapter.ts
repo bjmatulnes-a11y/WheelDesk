@@ -59,7 +59,14 @@ type NativeTickState = {
 
 const globalBreadth = globalThis as typeof globalThis & {
   __wheelDeskSpxNativeTickState?: NativeTickState;
+  __wheelDeskSpxNativeBreadthCache?: {
+    tradeDate: string;
+    capturedAtMs: number;
+    snapshot: ZeroDteBreadthSnapshot;
+  };
 };
+
+const NATIVE_BREADTH_CACHE_MS = 55_000;
 
 export async function fetchZeroDteBreadthSnapshot(args: {
   tradeDate: string;
@@ -168,11 +175,35 @@ export async function fetchZeroDteBreadthSnapshot(args: {
   }
 
   try {
-    return await buildSchwabNativeBreadth({
+    const nowMs = Date.parse(args.generatedAt);
+    const cached = globalBreadth.__wheelDeskSpxNativeBreadthCache;
+    if (
+      cached?.tradeDate === args.tradeDate &&
+      Number.isFinite(nowMs) &&
+      nowMs - cached.capturedAtMs >= 0 &&
+      nowMs - cached.capturedAtMs < NATIVE_BREADTH_CACHE_MS
+    ) {
+      return {
+        ...cached.snapshot,
+        generatedAt: args.generatedAt,
+        warnings: [
+          ...cached.snapshot.warnings,
+          `Schwab constituent breadth is cached for the official one-minute cadence (${Math.round((nowMs - cached.capturedAtMs) / 1000)}s old).`,
+        ],
+      };
+    }
+
+    const snapshot = await buildSchwabNativeBreadth({
       tradeDate: args.tradeDate,
       generatedAt: args.generatedAt,
       warnings: fallbackWarnings,
     });
+    globalBreadth.__wheelDeskSpxNativeBreadthCache = {
+      tradeDate: args.tradeDate,
+      capturedAtMs: Number.isFinite(nowMs) ? nowMs : Date.now(),
+      snapshot,
+    };
+    return snapshot;
   } catch (error) {
     return makeSnapshot(
       args.generatedAt,

@@ -66,7 +66,10 @@ export function buildPremiumCrestRead(args: {
   currentCredit?: number | null;
 }): ZeroDtePremiumCrestRead {
   const samples = normalizeSamples(args.samples);
-  const bars = buildCompletedPremiumMinuteBars(samples, args.generatedAt);
+  const displayBars = buildCompletedPremiumMinuteBars(samples, args.generatedAt);
+  // A single quote is not a median and is too fragile to participate in a
+  // premium-exhaustion signal. Keep it out of the official signal series.
+  const bars = displayBars.filter((bar) => bar.sampleCount >= 2);
   const officialCredit = bars.at(-1)?.median ?? null;
   const rawSampleCount = samples.length;
   const completedMinuteCount = bars.length;
@@ -79,7 +82,7 @@ export function buildPremiumCrestRead(args: {
       officialCredit,
       bars,
       reasons: [
-        `Need at least ${MIN_COMPLETED_BARS} completed one-minute premium bars before an exhaustion cycle can be trusted.`,
+        `Need at least ${MIN_COMPLETED_BARS} completed one-minute premium bars with at least two exact-leg observations each before an exhaustion cycle can be trusted.`,
       ],
     });
   }

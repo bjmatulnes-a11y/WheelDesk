@@ -1,3 +1,4 @@
+import { getZeroDteSessionClock } from "./zeroDteSessionClock";
 export type ZeroDteTimeRegime =
   | "PREMARKET"
   | "OPENING_OPPORTUNITY"
@@ -74,6 +75,24 @@ export function classifyZeroDteTimeRegime(args: {
   const open = 8 * 60 + 30;
   const minutesFromOpen = clockMinutes - open;
   const centralTime = CENTRAL_TIME.format(date);
+  const sessionClock = getZeroDteSessionClock(args.generatedAt);
+
+  if (!sessionClock.isTradingWeekday) {
+    return makeRead({
+      regime: "CLOSED",
+      label: "Market closed",
+      centralTime,
+      minutesFromOpen,
+      entryAllowed: false,
+      newRiskPreferred: false,
+      requiresPeakRollover: false,
+      minimumEntryScore: 100,
+      minimumDistanceExpectedMovePct: 1,
+      sizeMultiplier: 0,
+      weights: [30, 25, 20, 15, 10],
+      reasons: ["SPX 0DTE entries are disabled on weekends."],
+    });
+  }
 
   if (clockMinutes < open) {
     return makeRead({

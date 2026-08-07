@@ -269,6 +269,17 @@ async function loadMemory(tradeDate: string): Promise<ZeroDteExecutionMemory> {
       entryReasons: textArray(row.entry_reasons),
       entryTimeRegime: normalizeTimeRegime(row.entry_time_regime),
       side: normalizeSide(row.setup_side),
+      setupSource: row.setup_source === "manual" ? "manual" : "engine",
+      engineClearedAtEntry: Boolean(row.engine_cleared_at_entry),
+      overrideReason: row.override_reason ?? null,
+      signalTime: row.signal_time ?? null,
+      signalCredit: numeric(row.signal_credit),
+      entryMarkCredit: numeric(row.entry_mark_credit),
+      entrySellableCredit: numeric(row.entry_sellable_credit),
+      entryShortDeltaAbs: numeric(row.entry_short_delta_abs),
+      entryTouchRiskProxyPct: numeric(row.entry_touch_risk_proxy_pct),
+      entryRangeConsumptionPct: numeric(row.entry_range_consumption_pct),
+      entryEventRisk: row.entry_event_risk === "HIGH" ? "HIGH" : row.entry_event_risk === "NORMAL" ? "NORMAL" : null,
     };
   };
 
@@ -316,6 +327,8 @@ async function loadMemory(tradeDate: string): Promise<ZeroDteExecutionMemory> {
         ),
         candidateAgeCandles: Number(row.candidate_age_candles ?? 0),
         trackedSince: row.tracked_since ?? null,
+        dealerPressure: numeric(row.dealer_pressure),
+        strikeFlowState: typeof row.strike_flow_state === "string" ? row.strike_flow_state : null,
       } as ExecutionPremiumSample;
     },
   );
@@ -452,6 +465,13 @@ export async function POST(request: NextRequest) {
             candidate_age_candles: sample.candidateAgeCandles,
             tracked_since: sample.trackedSince,
             portfolio_contribution_score: read.portfolioContributionScore,
+            sellable_credit: numeric(read.currentSellableCredit),
+            buyback_debit: numeric(read.currentBuybackDebit),
+            short_delta_abs: numeric(read.shortDeltaAbs),
+            touch_risk_proxy_pct: numeric(read.touchRiskProxyPct),
+            range_consumption_pct: numeric(read.volContext?.rangeConsumptionPct),
+            minimum_entry_score: numeric(read.minimumEntryScore),
+            event_risk: read.eventRisk === "HIGH" ? "HIGH" : "NORMAL",
           },
         ];
       });
@@ -519,6 +539,19 @@ export async function POST(request: NextRequest) {
           entry_rail_breached: candidate.railBreached,
           entry_reasons: candidate.reasons ?? [],
           entry_time_regime: body.read?.timeRegime?.regime ?? null,
+          setup_source: body.setupSource === "manual" ? "manual" : "engine",
+          engine_cleared_at_entry: Boolean(body.engineClearedAtEntry),
+          override_reason:
+            body.engineClearedAtEntry ? null : body.overrideReason ?? null,
+          signal_time: body.signalTime ?? null,
+          signal_credit: numeric(body.signalCredit),
+          entry_mark_credit: numeric(body.entryMarkCredit),
+          entry_sellable_credit: numeric(body.entrySellableCredit),
+          entry_short_delta_abs: numeric(body.entryShortDeltaAbs),
+          entry_touch_risk_proxy_pct: numeric(body.entryTouchRiskProxyPct),
+          entry_range_consumption_pct: numeric(body.entryRangeConsumptionPct),
+          entry_event_risk:
+            body.entryEventRisk === "HIGH" ? "HIGH" : "NORMAL",
         });
 
       if (error) throw error;

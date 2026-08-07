@@ -141,10 +141,14 @@ export function useExecutionPremiumTape(args: {
       if (!changed) return previous;
 
       next.points = dedupeAndTrim(next.points);
-      saveStore(next);
       return next;
     });
   }, [generatedAt, rows, setups, spot, tradeDate]);
+
+  useEffect(() => {
+    if (!store.tradeDate) return;
+    saveStore(store);
+  }, [store]);
 
   return useMemo(
     () => ({

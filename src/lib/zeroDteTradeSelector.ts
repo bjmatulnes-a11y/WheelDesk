@@ -84,6 +84,8 @@ export type BuildZeroDteTradeSelectionInput = {
   minCredit?: number | null;
   minCreditToRiskPct?: number | null;
   riskMode?: CreditSpreadRiskMode;
+  shortDeltaMax?: number | null;
+  minAbsoluteDistancePoints?: number | null;
   strikeFlow?: ZeroDteStrikeFlowRead | null;
 };
 
@@ -103,9 +105,11 @@ export function buildZeroDteTradeSelection(input: BuildZeroDteTradeSelectionInpu
     minCredit: input.minCredit,
     minCreditToRiskPct: input.minCreditToRiskPct,
     riskMode: input.riskMode ?? "balanced",
+    shortDeltaMax: input.shortDeltaMax,
+    minAbsoluteDistancePoints: input.minAbsoluteDistancePoints,
   });
 
-  reasons.push("Credit-spread strikes are selected from live SPX option mids plus the SPX OI chain map.");
+  reasons.push("Credit-spread strikes are selected from live SPX quote packages (mark plus conservative bid/ask execution references) plus the SPX OI chain map.");
   reasons.push("SPY is used only as alignment/confirmation, not as the traded strike map.");
   reasons.push(...creditSpreadBook.notes);
   warnings.push(...creditSpreadBook.warnings);
