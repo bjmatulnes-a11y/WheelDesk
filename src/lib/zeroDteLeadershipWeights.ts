@@ -22,6 +22,23 @@ export type ZeroDteLeadershipWeightSnapshot = {
   warnings: string[];
 };
 
+export type ZeroDteBreadthUniverseConstituent = {
+  symbol: string;
+  providerSymbol: string;
+  name: string;
+  weightPct: number;
+};
+
+export type ZeroDteBreadthUniverseSnapshot = {
+  tradeDate: string;
+  asOfDate: string | null;
+  source: "STATE_STREET_SPY_DAILY";
+  sourceUrl: string;
+  fetchedAt: string;
+  constituents: ZeroDteBreadthUniverseConstituent[];
+  warnings: string[];
+};
+
 const DEFAULT_HOLDINGS_URL =
   "https://www.ssga.com/library-content/products/fund-data/etfs/us/holdings-daily-us-en-spy.xlsx";
 
@@ -39,6 +56,7 @@ const FALLBACK_2023: Array<[string, string, number]> = [
 ];
 
 const memory = new Map<string, ZeroDteLeadershipWeightSnapshot>();
+const breadthUniverseMemory = new Map<string, ZeroDteBreadthUniverseSnapshot>();
 
 export async function getDailyLeadershipWeightSnapshot(args: {
   tradeDate: string;
@@ -150,6 +168,68 @@ export function normalizeLeadershipProviderSymbol(symbol: string) {
   if (upper === "BRK.B" || upper === "BRK-B") return "BRK/B";
   if (upper === "BF.B" || upper === "BF-B") return "BF/B";
   return upper.replace(".", "/");
+}
+
+export async function getDailySp500BreadthUniverse(args: {
+  tradeDate: string;
+  forceRefresh?: boolean;
+}): Promise<ZeroDteBreadthUniverseSnapshot> {
+  if (!args.forceRefresh) {
+    const cached = breadthUniverseMemory.get(args.tradeDate);
+    if (cached) return cached;
+  }
+
+  const sourceUrl =
+    process.env.ZERO_DTE_SPY_HOLDINGS_URL?.trim() || DEFAULT_HOLDINGS_URL;
+
+  const response = await fetch(sourceUrl, {
+    headers: {
+      accept:
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/octet-stream;q=0.9,*/*;q=0.5",
+      "user-agent": "WheelDesk/1.0 SPX-Breadth-Universe",
+    },
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`State Street breadth-universe request failed ${response.status}`);
+  }
+
+  const rows = parseSpyHoldingsXlsx(Buffer.from(await response.arrayBuffer()));
+  validateParsedHoldings(rows);
+
+  // SPY normally contains just over 500 equity lines because multiple share
+  // classes can be represented separately. Refuse a truncated workbook.
+  if (rows.length < 450) {
+    throw new Error(
+      `Only ${rows.length} usable SPY equity holdings were parsed; breadth requires the full constituent universe.`,
+    );
+  }
+
+  const asOfDate = inferAsOfDate(
+    rows.flatMap((row) => [row.name, row.rawDate ?? ""]),
+  );
+
+  const snapshot: ZeroDteBreadthUniverseSnapshot = {
+    tradeDate: args.tradeDate,
+    asOfDate,
+    source: "STATE_STREET_SPY_DAILY",
+    sourceUrl,
+    fetchedAt: new Date().toISOString(),
+    constituents: [...rows]
+      .filter((row) => row.symbol && row.weightPct > 0)
+      .sort((a, b) => b.weightPct - a.weightPct)
+      .map((row) => ({
+        symbol: row.symbol,
+        providerSymbol: normalizeLeadershipProviderSymbol(row.symbol),
+        name: row.name,
+        weightPct: row.weightPct,
+      })),
+    warnings: [],
+  };
+
+  breadthUniverseMemory.set(args.tradeDate, snapshot);
+  return snapshot;
 }
 
 type ParsedHolding = {

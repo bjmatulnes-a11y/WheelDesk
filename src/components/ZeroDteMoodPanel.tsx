@@ -15,7 +15,7 @@ export function ZeroDteMoodPanel({ mood }: { mood: ZeroDteMoodRead | null | unde
           <div style={styles.eyebrow}>Layer 6D.4 · SPX Mood + Leadership</div>
           <h2 style={styles.title}>Closed-Minute SPX Mood Engine</h2>
           <div style={styles.muted}>
-            Daily session-frozen leadership weights, Schwab constituent returns, optional breadth internals, EMA smoothing, and divergence.
+            Daily session-frozen leadership weights, Schwab constituent returns, Schwab-native S&P breadth, EMA smoothing, and divergence.
           </div>
         </div>
         <div style={{ ...styles.badge, color: moodTone(mood.moodPercent) }}>
@@ -66,9 +66,37 @@ export function ZeroDteMoodPanel({ mood }: { mood: ZeroDteMoodRead | null | unde
           <div style={styles.panelTitle}>Breadth + Mood Components</div>
           <div style={styles.statGrid}>
             <SmallStat label="Breadth source" value={breadth?.source.replaceAll("_", " ") ?? "UNAVAILABLE"} />
-            <SmallStat label="TICK" value={number(breadth?.tick)} />
+            <SmallStat
+              label="Universe quotes"
+              value={
+                breadth?.quotedCount != null && breadth?.universeCount != null
+                  ? `${breadth.quotedCount}/${breadth.universeCount}`
+                  : "—"
+              }
+            />
+            <SmallStat
+              label="Quote coverage"
+              value={breadth?.quoteCoveragePct == null ? "—" : `${breadth.quoteCoveragePct.toFixed(0)}%`}
+            />
+            <SmallStat label="TICK proxy" value={number(breadth?.tick)} />
+            <SmallStat
+              label="TICK coverage"
+              value={breadth?.tickCoveragePct == null ? "—" : `${breadth.tickCoveragePct.toFixed(0)}%`}
+            />
             <SmallStat label="UVOL/DVOL" value={number(breadth?.uvolDvolRatio, 2)} />
             <SmallStat label="A-D" value={number(breadth?.advanceDecline)} />
+            <SmallStat
+              label="Adv / Dec"
+              value={
+                breadth?.advances != null && breadth?.declines != null
+                  ? `${breadth.advances} / ${breadth.declines}`
+                  : "—"
+              }
+            />
+            <SmallStat
+              label="Volume coverage"
+              value={breadth?.volumeCoveragePct == null ? "—" : `${breadth.volumeCoveragePct.toFixed(0)}%`}
+            />
           </div>
           <div style={styles.componentGrid}>
             {activeComponents.map((component) => (
@@ -82,8 +110,8 @@ export function ZeroDteMoodPanel({ mood }: { mood: ZeroDteMoodRead | null | unde
           </div>
           <div style={styles.note}>
             {mood.calculationMode === "FAST_OPEN"
-              ? "Fast-open mode uses SPX change, leadership pull, TICK, UVOL/DVOL, and advance-decline. Normal mode begins after five completed one-minute samples."
-              : "Normal mode includes component trends and the WheelDesk market-stage adaptation. Mood is smoothed with EMA-3."}
+              ? "Fast-open mode uses SPX change, leadership pull, the Schwab S&P TICK proxy, UVOL/DVOL, and advance-decline. Normal mode begins after five completed one-minute samples."
+              : "Normal mode includes component trends and the WheelDesk market-stage adaptation. Mood is smoothed with EMA-3. The Schwab TICK value is a constituent one-minute direction proxy, not the proprietary $TIKSP feed."}
           </div>
         </div>
       </div>

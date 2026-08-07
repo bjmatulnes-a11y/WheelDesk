@@ -58,8 +58,12 @@ export type SchwabQuoteFields = {
   closePrice?: number;
   netChange?: number;
   netPercentChange?: number;
+  totalVolume?: number;
+  tradeTime?: number;
+  quoteTime?: number;
   regularMarketLastPrice?: number;
   regularMarketPercentChange?: number;
+  regularMarketTradeTime?: number;
 };
 
 export type SchwabQuoteInstrument = {

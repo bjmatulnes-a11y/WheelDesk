@@ -61,6 +61,7 @@ export async function loadZeroDteMoodMarketData(args: {
       endDate: Date.now(),
     }),
     fetchZeroDteBreadthSnapshot({
+      tradeDate: args.tradeDate,
       generatedAt: args.generatedAt,
       requestValues: args.requestValues,
     }),

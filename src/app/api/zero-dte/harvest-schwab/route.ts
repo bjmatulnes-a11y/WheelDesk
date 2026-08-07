@@ -151,6 +151,16 @@ export async function GET(request: NextRequest) {
       message: `${leadership.availableCount}/${leadership.selectedCount} constituents · ${leadership.quoteCoveragePct.toFixed(0)}% selected-weight coverage.`,
     });
   }
+  if (breadth) {
+    qualityChecks.push({
+      label: "SPX Breadth",
+      status: breadth.coverage === "FULL" ? "ok" : "warn",
+      message:
+        breadth.source === "SCHWAB_SPX_UNIVERSE"
+          ? `${breadth.coverage} · Schwab native · ${breadth.quotedCount ?? 0}/${breadth.universeCount ?? 0} quotes · TICK ${breadth.tick == null ? "warming" : breadth.tick}.`
+          : `${breadth.coverage} · ${breadth.source.replaceAll("_", " ")}.`,
+    });
+  }
   if (mood) {
     qualityChecks.push({
       label: "SPX Mood",

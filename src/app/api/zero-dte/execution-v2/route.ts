@@ -13,11 +13,74 @@ import type { ZeroDteTimeRegime } from "../../../../lib/zeroDteTimeRegime";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const err = (error: unknown, status = 500) =>
-  NextResponse.json(
-    { ok: false, error: error instanceof Error ? error.message : String(error) },
+function executionErrorDetails(error: unknown) {
+  if (error instanceof Error) {
+    return {
+      message: error.message,
+      name: error.name,
+      code: null as string | null,
+      details: null as string | null,
+      hint: null as string | null,
+    };
+  }
+
+  if (error && typeof error === "object") {
+    const value = error as Record<string, unknown>;
+    const code = typeof value.code === "string" ? value.code : null;
+    const message =
+      typeof value.message === "string" && value.message.trim()
+        ? value.message
+        : "Execution database operation failed";
+    const details =
+      typeof value.details === "string" && value.details.trim()
+        ? value.details
+        : null;
+    const hint =
+      typeof value.hint === "string" && value.hint.trim()
+        ? value.hint
+        : null;
+
+    return {
+      message,
+      name: null as string | null,
+      code,
+      details,
+      hint,
+    };
+  }
+
+  return {
+    message: String(error),
+    name: null as string | null,
+    code: null as string | null,
+    details: null as string | null,
+    hint: null as string | null,
+  };
+}
+
+function executionErrorMessage(error: unknown) {
+  const details = executionErrorDetails(error);
+  return [
+    details.code ? `[${details.code}]` : "",
+    details.message,
+    details.details,
+    details.hint ? `Hint: ${details.hint}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+const err = (error: unknown, status = 500) => {
+  const details = executionErrorDetails(error);
+  return NextResponse.json(
+    {
+      ok: false,
+      error: executionErrorMessage(error),
+      errorDetails: details,
+    },
     { status },
   );
+};
 
 const numeric = (value: unknown): number | null => {
   if (typeof value === "number" && Number.isFinite(value)) return value;
