@@ -44,9 +44,11 @@ export type ExecutionCandidateTracking = {
   scannerCandidate: ExecutionCandidate | null;
   lockedAt: string | null;
   lockedCandleTime: number | null;
+  lockedCredit: number | null;
   ageCandles: number;
   status:
     | "LOCKED"
+    | "WATCH_LOCKED"
     | "CHALLENGER_BUILDING"
     | "REPLACED"
     | "STRUCTURE_INVALID"
@@ -76,6 +78,14 @@ export type ExecutionCandidateBook = Record<
   ExecutionStrategy,
   ExecutionCandidate[]
 >;
+
+export type ExecutionPremiumTapePoint = {
+  timestamp: string;
+  spot: number;
+  strategy: ExecutionStrategy;
+  setupKey: string;
+  credit: number;
+};
 
 export type ExecutionPremiumSample = {
   timestamp: string;
@@ -168,6 +178,8 @@ export type ZeroDteExecutionRead = {
   centerDistance: number;
   edge: "upper" | "lower" | "center";
   peakDetected: boolean;
+  premiumSampleCount: number;
+  premiumTapeStartedAt: string | null;
   emergencyExit: boolean;
   action: string;
   reasons: string[];
@@ -189,6 +201,10 @@ export type ZeroDteExecutionRead = {
   scannerScore: number | null;
   trackingStatus: ExecutionCandidateTracking["status"] | null;
   portfolioContributionScore: number;
+  minimumEntryScore: number;
+  entryScoreGap: number;
+  regimeTriggerReady: boolean;
+  entryHardBlocked: boolean;
 };
 
 export function emptyExecutionMemory(tradeDate: string): ZeroDteExecutionMemory {
@@ -217,6 +233,7 @@ export function buildZeroDteExecutionRead(args: {
   tracking?: ExecutionCandidateTracking | null;
   portfolio?: ZeroDtePortfolioRead | null;
   priceAction?: ZeroDtePriceActionContext | null;
+  premiumTape?: ExecutionPremiumTapePoint[];
 }): ZeroDteExecutionRead {
   const {
     tradeDate,
@@ -249,8 +266,19 @@ export function buildZeroDteExecutionRead(args: {
     ? calculateStrategyCredit(spxRows, legs)
     : null;
 
+  const premiumWindowStart = position?.openedAt ?? args.tracking?.lockedAt ?? null;
+  const premiumWindowStartMs = premiumWindowStart
+    ? Date.parse(premiumWindowStart)
+    : null;
   const relevantSamples = setupKey
-    ? memory.samples.filter((sample) => sample.setupKey === setupKey)
+    ? mergePremiumSeries(
+        memory.samples.filter((sample) => sample.setupKey === setupKey),
+        (args.premiumTape ?? []).filter((sample) => sample.setupKey === setupKey),
+      ).filter((sample) =>
+        premiumWindowStartMs === null || !Number.isFinite(premiumWindowStartMs)
+          ? true
+          : Date.parse(sample.timestamp) >= premiumWindowStartMs,
+      )
     : [];
   const openingCredit = relevantSamples[0]?.credit ?? currentCredit;
   const peakCredit = relevantSamples.length
@@ -431,6 +459,8 @@ export function buildZeroDteExecutionRead(args: {
     centerDistance,
     edge,
     peakDetected,
+    premiumSampleCount: relevantSamples.length,
+    premiumTapeStartedAt: relevantSamples[0]?.timestamp ?? null,
     emergencyExit: exitRead.emergencyExit,
     action,
     reasons,
@@ -452,6 +482,10 @@ export function buildZeroDteExecutionRead(args: {
     scannerScore: args.tracking?.scannerCandidate?.score ?? null,
     trackingStatus: args.tracking?.status ?? null,
     portfolioContributionScore: portfolioContribution?.score ?? 70,
+    minimumEntryScore: timeRegime.minimumEntryScore,
+    entryScoreGap: Math.max(0, Math.round(timeRegime.minimumEntryScore - entryRead.entryScore)),
+    regimeTriggerReady: entryRead.regimeTriggerReady,
+    entryHardBlocked: entryRead.hardBlocked,
   };
 }
 
@@ -504,19 +538,16 @@ export function buildExecutionCandidate(
   let maxRiskDollars: number | null = ranking?.maxRiskDollars ?? null;
 
   if (strategy === "iron-fly") {
-    const ironFly =
-      selection.ironFly ??
-      (selection.mapContext
-        ? {
-            center: selection.mapContext.controllingCenter,
-            lowerWing: selection.mapContext.controllingLowerWing,
-            upperWing: selection.mapContext.controllingUpperWing,
-            wingWidth: Math.abs(
-              selection.mapContext.controllingUpperWing -
-                selection.mapContext.controllingCenter,
-            ),
-          }
-        : null);
+    // The IF is the opening thesis. Its exact center and wings stay fixed for
+    // the trade date even if the active directional map later migrates.
+    const ironFly = {
+      center: mapState.opening.center,
+      lowerWing: mapState.opening.lowerWing,
+      upperWing: mapState.opening.upperWing,
+      wingWidth: Math.abs(
+        mapState.opening.upperWing - mapState.opening.center,
+      ),
+    };
 
     if (ironFly) {
       legs = [
@@ -706,6 +737,48 @@ function buildSpreadExecutionCandidateBook(
   });
 }
 
+export function repriceExecutionCandidate(
+  candidate: ExecutionCandidate,
+  rows: ZeroDteChainRow[],
+): ExecutionCandidate {
+  const liveCredit = calculateStrategyCredit(rows, candidate.legs);
+  if (liveCredit === null) return candidate;
+
+  return {
+    ...candidate,
+    estimatedCredit: liveCredit,
+    maxRiskDollars: calculateDefinedRiskDollars(
+      candidate.strategy,
+      candidate.legs,
+      liveCredit,
+    ),
+  };
+}
+
+function calculateDefinedRiskDollars(
+  strategy: ExecutionStrategy,
+  legs: ExecutionLeg[],
+  credit: number,
+) {
+  if (strategy === "iron-fly") {
+    const center = legs.find((leg) => leg.action === "sell")?.strike ?? null;
+    const longPut = legs.find(
+      (leg) => leg.action === "buy" && leg.optionType === "put",
+    )?.strike ?? null;
+    const longCall = legs.find(
+      (leg) => leg.action === "buy" && leg.optionType === "call",
+    )?.strike ?? null;
+    if (center === null || longPut === null || longCall === null) return null;
+    const width = Math.max(center - longPut, longCall - center);
+    return Math.max(0, width - credit) * 100;
+  }
+
+  const shortStrike = legs.find((leg) => leg.action === "sell")?.strike ?? null;
+  const longStrike = legs.find((leg) => leg.action === "buy")?.strike ?? null;
+  if (shortStrike === null || longStrike === null) return null;
+  return Math.max(0, Math.abs(shortStrike - longStrike) - credit) * 100;
+}
+
 export function calculateStrategyCredit(
   rows: ZeroDteChainRow[],
   legs: ExecutionLeg[],
@@ -720,6 +793,30 @@ export function calculateStrategyCredit(
   }
 
   return Number.isFinite(credit) && credit >= 0 ? credit : null;
+}
+
+function mergePremiumSeries(
+  persisted: Array<Pick<ExecutionPremiumSample, "timestamp" | "credit">>,
+  live: ExecutionPremiumTapePoint[],
+) {
+  const byTimestamp = new Map<string, { timestamp: string; credit: number }>();
+  for (const sample of persisted) {
+    if (!Number.isFinite(sample.credit)) continue;
+    byTimestamp.set(sample.timestamp, {
+      timestamp: sample.timestamp,
+      credit: sample.credit,
+    });
+  }
+  for (const sample of live) {
+    if (!Number.isFinite(sample.credit)) continue;
+    byTimestamp.set(sample.timestamp, {
+      timestamp: sample.timestamp,
+      credit: sample.credit,
+    });
+  }
+  return [...byTimestamp.values()].sort(
+    (left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp),
+  );
 }
 
 function buildEntryRead(args: {
@@ -752,12 +849,20 @@ function buildEntryRead(args: {
     portfolioContribution,
     tracking,
   } = args;
-  const blockers = [...(candidate?.blockers ?? [])];
+  // Candidate discovery blockers are snapshots from the scanner. Once an exact
+  // setup is locked, live execution gates below become authoritative so stale
+  // scanner blockers cannot permanently suppress a later valid signal.
+  const blockers: string[] = [];
   const reasons = [...(candidate?.reasons ?? []), ...timeRegime.reasons];
 
-  if (!candidate) blockers.push("No executable tracked strategy candidate is available.");
-  if (candidate && !candidate.eligible) blockers.push("The strategy orchestrator marked this candidate ineligible.");
+  if (!candidate) blockers.push("No tracked strategy candidate is available.");
   if (candidate && currentCredit === null) blockers.push("Live mids cannot price every strategy leg.");
+  if (
+    candidate &&
+    getControllingMarketMap(mapState).structure.structuralConfidence < 30
+  ) {
+    blockers.push("Current controlling structure confidence is below 30%.");
+  }
   if (!timeRegime.entryAllowed) blockers.push(`${timeRegime.label} does not permit new risk.`);
   if (tracking?.status === "STRUCTURE_INVALID") {
     blockers.push(tracking.lastReplacementReason ?? "The tracked candidate is structurally invalid.");
@@ -789,6 +894,21 @@ function buildEntryRead(args: {
     }
     if (recommendation.dealerPressure >= 35) {
       blockers.push("Dealer pressure is too bullish for a call credit spread.");
+    }
+  }
+
+  if (candidate) {
+    const controlling = getControllingMarketMap(mapState);
+    const shortStrike = candidate.legs.find((leg) => leg.action === "sell")?.strike ?? null;
+    if (candidate.strategy === "put-credit-spread" && shortStrike !== null) {
+      if (controlling.putWall !== null && shortStrike > controlling.putWall) {
+        blockers.push("The tracked put short is inside the current controlling put wall.");
+      }
+    }
+    if (candidate.strategy === "call-credit-spread" && shortStrike !== null) {
+      if (controlling.callWall !== null && shortStrike < controlling.callWall) {
+        blockers.push("The tracked call short is inside the current controlling call wall.");
+      }
     }
   }
 
@@ -911,6 +1031,8 @@ function buildEntryRead(args: {
         entryScore >= timeRegime.minimumEntryScore &&
         regimeTriggerReady,
     ),
+    hardBlocked,
+    regimeTriggerReady,
     reasons: unique(reasons),
     blockers: unique(blockers),
     components: [

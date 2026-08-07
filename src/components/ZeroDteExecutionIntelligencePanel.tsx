@@ -32,7 +32,7 @@ export function ZeroDteExecutionIntelligencePanel({
       ? Number(manualCredit)
       : read.currentCredit ?? 0;
   const canOpen =
-    Boolean(read.candidate?.eligible) &&
+    Boolean(read.candidate) &&
     activeCredit > 0 &&
     (read.lifecycle === "ARMED" || read.lifecycle === "SELL_READY") &&
     !read.position;
@@ -70,7 +70,7 @@ export function ZeroDteExecutionIntelligencePanel({
           <div style={styles.legs}>
             {hasTrackedSetup
               ? formatLegs(read.position?.legs ?? read.candidate?.legs ?? [])
-              : "The scanner has not produced an eligible exact strike set."}
+              : "The scanner has not produced a watchable exact strike set."}
           </div>
         </div>
         <div style={styles.mapRead}>
@@ -93,6 +93,10 @@ export function ZeroDteExecutionIntelligencePanel({
         <Metric label="Tracking State" value={read.trackingStatus?.replaceAll("_", " ") ?? "NO TRACK"} />
         <Metric label="Candidate Age" value={hasTrackedSetup ? `${read.candidateAgeCandles} candle${read.candidateAgeCandles === 1 ? "" : "s"}` : "—"} />
         <Metric label="Scanner Score" value={read.scannerScore == null ? "—" : String(Math.round(read.scannerScore))} />
+        <Metric label="Premium Tape" value={`${read.premiumSampleCount} points`} />
+        <Metric label="Entry Gate" value={`${Math.round(read.entryScore)}/${Math.round(read.minimumEntryScore)}`} />
+        <Metric label="Trigger" value={read.regimeTriggerReady ? "READY" : "BUILDING"} />
+        <Metric label="Hard Block" value={read.entryHardBlocked ? "YES" : "NO"} />
       </div>
 
       <div

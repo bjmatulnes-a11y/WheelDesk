@@ -27,6 +27,7 @@ import {
   buildExecutionCandidateBooks,
   buildZeroDteExecutionRead,
   emptyExecutionMemory,
+  repriceExecutionCandidate,
   sampleFromRead,
   type ExecutionCandidate,
   type ExecutionStrategy,
@@ -55,6 +56,7 @@ import {
   type ExecutionSignalPaintFilter,
 } from "../lib/execution/useExecutionSignalPaint";
 import { useStableExecutionCandidates } from "../lib/execution/useStableExecutionCandidates";
+import { useExecutionPremiumTape } from "../lib/execution/useExecutionPremiumTape";
 import { buildZeroDtePortfolioRead } from "../lib/zeroDtePortfolioEngine";
 import { buildZeroDtePriceActionContext } from "../lib/zeroDteTimeRegime";
 
@@ -277,7 +279,33 @@ export default function SpxCommandChart() {
       (position) => position.setupKey,
     ),
   });
-  const executionCandidates = stableCandidateTracker.candidates;
+  const executionCandidates = useMemo<
+    Partial<Record<ExecutionStrategy, ExecutionCandidate | null>>
+  >(() => {
+    const output: Partial<
+      Record<ExecutionStrategy, ExecutionCandidate | null>
+    > = {};
+    for (const strategy of [
+      "iron-fly",
+      "put-credit-spread",
+      "call-credit-spread",
+    ] as ExecutionStrategy[]) {
+      const candidate = stableCandidateTracker.candidates[strategy] ?? null;
+      output[strategy] = candidate
+        ? repriceExecutionCandidate(candidate, spxRows)
+        : null;
+    }
+    return output;
+  }, [spxRows, stableCandidateTracker.candidates]);
+
+  const premiumTape = useExecutionPremiumTape({
+    tradeDate: harvest?.tradeDate,
+    generatedAt: harvest?.generatedAt,
+    spot: currentPrice,
+    rows: spxRows,
+    tracks: stableCandidateTracker.tracks,
+    positions: executionMemory?.positions ?? [],
+  });
 
   const priceAction = useMemo(
     () => buildZeroDtePriceActionContext(candles),
@@ -747,6 +775,7 @@ export default function SpxCommandChart() {
       tracking: stableCandidateTracker.tracks[selectedExecutionStrategy],
       portfolio: portfolioRead,
       priceAction,
+      premiumTape: premiumTape.points,
     });
   }, [
     executionCandidates,
@@ -756,6 +785,7 @@ export default function SpxCommandChart() {
     mapAwareTradeSelection,
     mapManager.state,
     portfolioRead,
+    premiumTape.points,
     priceAction,
     recommendation,
     selectedExecutionStrategy,
@@ -796,6 +826,7 @@ export default function SpxCommandChart() {
           tracking: stableCandidateTracker.tracks[position.strategy],
           portfolio: portfolioRead,
           priceAction,
+          premiumTape: premiumTape.points,
         }),
       ]),
     );
@@ -807,6 +838,7 @@ export default function SpxCommandChart() {
     mapAwareTradeSelection,
     mapManager.state,
     portfolioRead,
+    premiumTape.points,
     priceAction,
     recommendation,
     spxRows,
@@ -860,6 +892,7 @@ export default function SpxCommandChart() {
           tracking: stableCandidateTracker.tracks[strategy],
           portfolio: portfolioRead,
           priceAction,
+          premiumTape: premiumTape.points,
         }),
       ];
     });
@@ -881,6 +914,7 @@ export default function SpxCommandChart() {
     mapManager.state,
     portfolioRead,
     positionExecutionReads,
+    premiumTape.points,
     priceAction,
     recommendation,
     spxRows,
@@ -1222,6 +1256,7 @@ export default function SpxCommandChart() {
                   tracking: stableCandidateTracker.tracks[candidate.strategy],
                   portfolio: portfolioRead,
                   priceAction,
+                  premiumTape: premiumTape.points,
                 });
 
                 if (!executionMemory.tradeDayId) {
@@ -1444,6 +1479,7 @@ export default function SpxCommandChart() {
       <div style={styles.premiumSection}>
         <PremiumHistoryPanel
           history={executionMemory?.samples ?? []}
+          liveTape={premiumTape.points}
           read={liveExecutionRead}
           availableReads={executionReadsForPaint}
           preferredSetupKey={entryExecutionRead?.setupKey ?? liveExecutionRead?.setupKey ?? null}

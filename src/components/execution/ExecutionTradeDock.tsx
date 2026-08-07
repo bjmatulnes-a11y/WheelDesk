@@ -77,11 +77,9 @@ export function ExecutionTradeDock({
     setDraftLegs(
       candidate.legs.map((leg) => ({ ...leg, strike: leg.strike.toFixed(0) })),
     );
-    setEntryCredit(
-      candidate.estimatedCredit == null
-        ? ""
-        : candidate.estimatedCredit.toFixed(2),
-    );
+    // Actual fill is user-entered execution data. Never pin a scanner snapshot
+    // into this field and make it look like a live market quote.
+    setEntryCredit("");
   }, [candidateKey, setupMode]);
 
   const parsedEntryCredit = parseNonNegative(entryCredit);
@@ -90,7 +88,7 @@ export function ExecutionTradeDock({
   const ticket = useMemo(() => {
     if (!candidate) return { candidate: null, error: "No tracked setup is available." };
     if (setupMode === "recommended") {
-      const credit = parsedEntryCredit ?? candidate.estimatedCredit;
+      const credit = parsedEntryCredit ?? read?.currentCredit ?? candidate.estimatedCredit;
       return {
         candidate: {
           ...candidate,
@@ -113,7 +111,7 @@ export function ExecutionTradeDock({
     const validation = validateLegs(selectedStrategy, legs);
     if (validation) return { candidate: null, error: validation };
 
-    const credit = parsedEntryCredit ?? candidate.estimatedCredit;
+    const credit = parsedEntryCredit ?? read?.currentCredit ?? candidate.estimatedCredit;
     return {
       candidate: {
         ...candidate,
@@ -129,7 +127,7 @@ export function ExecutionTradeDock({
       },
       error: null,
     };
-  }, [candidate, draftLegs, parsedEntryCredit, selectedStrategy, setupMode]);
+  }, [candidate, draftLegs, parsedEntryCredit, read?.currentCredit, selectedStrategy, setupMode]);
 
   if (!read) {
     return (
@@ -249,8 +247,20 @@ export function ExecutionTradeDock({
               <strong>{read.candidateAgeCandles} candles</strong>
             </div>
             <div>
-              <span>Portfolio fit</span>
-              <strong>{Math.round(read.portfolioContributionScore)}</strong>
+              <span>Lock Credit</span>
+              <strong>{money(tracks?.[selectedStrategy]?.lockedCredit)}</strong>
+            </div>
+            <div>
+              <span>Live Credit</span>
+              <strong>{money(read.currentCredit)}</strong>
+            </div>
+            <div>
+              <span>Peak</span>
+              <strong>{money(read.peakCredit)}</strong>
+            </div>
+            <div>
+              <span>Tape</span>
+              <strong>{read.premiumSampleCount} pts</strong>
             </div>
           </div>
 
@@ -332,14 +342,36 @@ export function ExecutionTradeDock({
                 type="number"
                 min="0"
                 step="0.05"
-                placeholder={read.currentCredit?.toFixed(2) ?? "0.00"}
+                placeholder="enter actual fill"
                 style={styles.input}
               />
+              <button
+                type="button"
+                disabled={read.currentCredit == null}
+                onClick={() => {
+                  if (read.currentCredit == null) return;
+                  setEntryCredit(read.currentCredit.toFixed(2));
+                }}
+                style={{
+                  ...styles.useLiveButton,
+                  opacity: read.currentCredit == null ? 0.45 : 1,
+                }}
+              >
+                Use Live {money(read.currentCredit)}
+              </button>
             </label>
           </div>
 
           <div style={styles.metricGrid}>
-            <DockMetric label="Live Credit" value={money(read.currentCredit)} />
+            <DockMetric label="Tape Open" value={money(read.openingCredit)} />
+            <DockMetric
+              label="Velocity"
+              value={
+                read.premiumVelocityPerMinute == null
+                  ? "—"
+                  : `${read.premiumVelocityPerMinute >= 0 ? "+" : ""}${read.premiumVelocityPerMinute.toFixed(3)}/m`
+              }
+            />
             <DockMetric
               label="Max Risk / 1×"
               value={dollars(
@@ -439,8 +471,8 @@ function PortfolioPositionCard({
   const [exitDebit, setExitDebit] = useState("");
 
   useEffect(() => {
-    setExitDebit(read?.currentCredit == null ? "" : read.currentCredit.toFixed(2));
-  }, [read?.currentCredit]);
+    setExitDebit("");
+  }, [position.id]);
 
   const parsedExitDebit = parseNonNegative(exitDebit);
   const closeLegs = position.legs.map(invertLeg);
@@ -500,8 +532,23 @@ function PortfolioPositionCard({
               type="number"
               min="0"
               step="0.05"
+              placeholder="enter actual buyback"
               style={styles.input}
             />
+            <button
+              type="button"
+              disabled={read?.currentCredit == null}
+              onClick={() => {
+                if (read?.currentCredit == null) return;
+                setExitDebit(read.currentCredit.toFixed(2));
+              }}
+              style={{
+                ...styles.useLiveButton,
+                opacity: read?.currentCredit == null ? 0.45 : 1,
+              }}
+            >
+              Use Live {money(read?.currentCredit)}
+            </button>
           </label>
           <button
             type="button"
@@ -871,6 +918,17 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 7,
     color: "#708399",
     fontSize: 8,
+  },
+  useLiveButton: {
+    marginTop: 6,
+    border: "1px solid #2d5873",
+    borderRadius: 7,
+    background: "#0b1a25",
+    color: "#8ddcf5",
+    padding: "5px 7px",
+    fontSize: 8,
+    fontWeight: 800,
+    cursor: "pointer",
   },
   openButton: {
     border: 0,

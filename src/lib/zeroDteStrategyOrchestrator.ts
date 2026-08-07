@@ -57,7 +57,7 @@ export function orchestrateZeroDteStrategySelection(
     controlling,
     strikeFlow: input.strikeFlow ?? null,
   });
-  const ironFly = buildIronFlyRanking({ rec, spxRows, mapState, controlling });
+  const ironFly = buildIronFlyRanking({ rec, spxRows, mapState });
   const noTrade = buildNoTradeRanking({
     rec,
     mapState,
@@ -123,10 +123,12 @@ export function orchestrateZeroDteStrategySelection(
       confidence: winner.score,
       creditSpread: null,
       ironFly: {
-        center: controlling.center,
-        lowerWing: controlling.lowerWing,
-        upperWing: controlling.upperWing,
-        wingWidth: Math.abs(controlling.upperWing - controlling.center),
+        center: mapState.opening.center,
+        lowerWing: mapState.opening.lowerWing,
+        upperWing: mapState.opening.upperWing,
+        wingWidth: Math.abs(
+          mapState.opening.upperWing - mapState.opening.center,
+        ),
       },
       reasons: unique([...commonReasons, ...baseSelection.reasons]),
       warnings: unique([...baseSelection.warnings, ...winner.blockers]),
@@ -287,9 +289,9 @@ function buildIronFlyRanking(args: {
   rec: ZeroDteRecommendation;
   spxRows: ZeroDteChainRow[];
   mapState: SessionMapManagerState;
-  controlling: MarketMapSnapshot;
 }): ZeroDteStrategyRanking {
-  const { rec, spxRows, mapState, controlling } = args;
+  const { rec, spxRows, mapState } = args;
+  const controlling = mapState.opening;
   const reasons: string[] = [];
   const blockers: string[] = [];
   const credit = estimateIronFlyCredit(
@@ -308,7 +310,7 @@ function buildIronFlyRanking(args: {
   const flowAlignment = mapState.railBreached === "NONE" ? 72 : 22;
   const pinProbability = controlling.structure.pinProbability;
 
-  if (credit === null) blockers.push("The controlling iron fly cannot be priced from live mids.");
+  if (credit === null) blockers.push("The opening iron fly cannot be priced from live mids.");
   if (mapState.phase === "TRANSITION") {
     blockers.push("Iron fly is blocked while a replacement map is being confirmed.");
   }
@@ -334,7 +336,7 @@ function buildIronFlyRanking(args: {
   if (pinProbability >= 60) reasons.push("Pin probability supports center attraction.");
   if (dealerAlignment >= 65) reasons.push("Dealer pressure is sufficiently neutral.");
   reasons.push(
-    `Center distance ${centerDistance.toFixed(1)} points; controlling center ${controlling.center.toFixed(0)}.`,
+    `Center distance ${centerDistance.toFixed(1)} points; opening IF center ${controlling.center.toFixed(0)}.`,
   );
 
   return {

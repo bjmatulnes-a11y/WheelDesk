@@ -11,16 +11,19 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   ExecutionPremiumSample,
+  ExecutionPremiumTapePoint,
   ZeroDteExecutionRead,
 } from "../../lib/zeroDteExecutionIntelligence";
 
 export function PremiumHistoryPanel({
   history,
+  liveTape = [],
   read,
   availableReads = [],
   preferredSetupKey = null,
 }: {
   history: ExecutionPremiumSample[];
+  liveTape?: ExecutionPremiumTapePoint[];
   read: ZeroDteExecutionRead | null;
   availableReads?: ZeroDteExecutionRead[];
   preferredSetupKey?: string | null;
@@ -57,13 +60,25 @@ export function PremiumHistoryPanel({
       }
     }
 
+    for (const point of liveTape) {
+      const timestamp = Date.parse(point.timestamp) || 0;
+      const existing = options.get(point.setupKey);
+      if (!existing || timestamp > existing.lastTimestamp) {
+        options.set(point.setupKey, {
+          setupKey: point.setupKey,
+          label: setupLabel(null, point.setupKey),
+          lastTimestamp: timestamp,
+        });
+      }
+    }
+
     const preferred = preferredSetupKey ?? read?.setupKey ?? null;
     return [...options.values()].sort((left, right) => {
       if (left.setupKey === preferred) return -1;
       if (right.setupKey === preferred) return 1;
       return right.lastTimestamp - left.lastTimestamp;
     });
-  }, [availableReads, history, preferredSetupKey, read?.setupKey]);
+  }, [availableReads, history, liveTape, preferredSetupKey, read?.setupKey]);
 
   useEffect(() => {
     const preferred = preferredSetupKey ?? read?.setupKey ?? null;
@@ -86,18 +101,43 @@ export function PremiumHistoryPanel({
     [availableReads, read, selectedSetupKey],
   );
 
-  const selectedSamples = useMemo(
-    () =>
-      selectedSetupKey
-        ? history
-            .filter((sample) => sample.setupKey === selectedSetupKey)
-            .sort(
-              (left, right) =>
-                Date.parse(left.timestamp) - Date.parse(right.timestamp),
-            )
-        : [],
-    [history, selectedSetupKey],
-  );
+  const selectedSamples = useMemo(() => {
+    if (!selectedSetupKey) return [];
+    const windowStart =
+      selectedRead?.setupKey === selectedSetupKey
+        ? selectedRead.premiumTapeStartedAt
+        : null;
+    const windowStartMs = windowStart ? Date.parse(windowStart) : null;
+    const inWindow = (timestamp: string) =>
+      windowStartMs === null || !Number.isFinite(windowStartMs)
+        ? true
+        : Date.parse(timestamp) >= windowStartMs;
+
+    const byTimestamp = new Map<string, { timestamp: string; credit: number }>();
+    for (const sample of history) {
+      if (
+        sample.setupKey !== selectedSetupKey ||
+        !Number.isFinite(sample.credit) ||
+        !inWindow(sample.timestamp)
+      ) {
+        continue;
+      }
+      byTimestamp.set(sample.timestamp, { timestamp: sample.timestamp, credit: sample.credit });
+    }
+    for (const point of liveTape) {
+      if (
+        point.setupKey !== selectedSetupKey ||
+        !Number.isFinite(point.credit) ||
+        !inWindow(point.timestamp)
+      ) {
+        continue;
+      }
+      byTimestamp.set(point.timestamp, { timestamp: point.timestamp, credit: point.credit });
+    }
+    return [...byTimestamp.values()].sort(
+      (left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp),
+    );
+  }, [history, liveTape, selectedRead, selectedSetupKey]);
 
   const chartData = useMemo(() => {
     const bySecond = new Map<number, number>();
@@ -218,7 +258,7 @@ export function PremiumHistoryPanel({
             {selectedOption?.label ?? "Exact-Setup Premium"}
           </div>
           <div style={styles.subTitle}>
-            One exact strike set at a time. Strategy samples are never mixed.
+            Exact-leg live tape first; Supabase fills historical gaps. Strategy samples are never mixed.
           </div>
         </div>
         <div style={styles.controls}>
@@ -272,7 +312,7 @@ export function PremiumHistoryPanel({
           </div>
         ) : !chartData.length ? (
           <div style={styles.emptyState}>
-            This exact strike set does not have a persisted premium sample yet.
+            This exact strike set does not have a live or persisted premium sample yet.
           </div>
         ) : null}
       </div>

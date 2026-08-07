@@ -15,14 +15,14 @@ export type StableCandidateStatus = ExecutionCandidateTracking["status"];
 export type StableExecutionCandidateTrack = ExecutionCandidateTracking;
 
 type TrackStore = {
-  version: 2;
+  version: 3;
   tradeDate: string;
   tracks: Record<ExecutionStrategy, StableExecutionCandidateTrack>;
 };
 
 type CandleLike = { time: number };
 
-const PREFIX = "wheeldesk:execution-candidate-tracker:v2:";
+const PREFIX = "wheeldesk:execution-candidate-tracker:v3:";
 const STRATEGIES: ExecutionStrategy[] = [
   "iron-fly",
   "put-credit-spread",
@@ -98,6 +98,12 @@ export function useStableExecutionCandidates(args: {
             (candidate) => candidate.setupKey === track.candidate?.setupKey,
           );
           if (currentVersion) {
+            if (
+              track.lockedCredit === null &&
+              currentVersion.estimatedCredit !== null
+            ) {
+              track.lockedCredit = currentVersion.estimatedCredit;
+            }
             track.candidate = {
               ...currentVersion,
               mapPhase: mapState.phase,
@@ -134,15 +140,20 @@ export function useStableExecutionCandidates(args: {
         // Candidate identity is frozen outside the SPX cash session. This prevents
         // stale after-hours quotes or repeated refreshes from manufacturing a new setup.
         if (clock.sessionStatus !== "OPEN") {
-          track.status = track.candidate ? "LOCKED" : "NO_CANDIDATE";
+          track.status = track.candidate
+            ? track.candidate.eligible
+              ? "LOCKED"
+              : "WATCH_LOCKED"
+            : "NO_CANDIDATE";
           track.challengerSetupKey = null;
           track.challengerStartedCandleTime = null;
           continue;
         }
 
         if (!track.candidate) {
-          if (scanner?.eligible) {
+          if (scanner) {
             lockCandidate(track, scanner, generatedAt, latestCandle.time, null);
+            track.status = scanner.eligible ? "LOCKED" : "WATCH_LOCKED";
           } else {
             track.status = "NO_CANDIDATE";
           }
@@ -162,7 +173,7 @@ export function useStableExecutionCandidates(args: {
 
           if (
             strategy !== "iron-fly" &&
-            scanner?.eligible &&
+            scanner &&
             scanner.setupKey !== track.candidate.setupKey
           ) {
             lockCandidate(
@@ -179,10 +190,9 @@ export function useStableExecutionCandidates(args: {
         if (
           strategy === "iron-fly" ||
           !scanner ||
-          !scanner.eligible ||
           scanner.setupKey === track.candidate.setupKey
         ) {
-          track.status = "LOCKED";
+          track.status = track.candidate.eligible ? "LOCKED" : "WATCH_LOCKED";
           track.challengerSetupKey = null;
           track.challengerStartedCandleTime = null;
           continue;
@@ -272,9 +282,28 @@ function candidateBookForStrategy(
   singles: Partial<Record<ExecutionStrategy, ExecutionCandidate | null>>,
 ) {
   const book = books[strategy] ?? [];
-  if (book.length) return book.filter((candidate) => candidate.eligible);
+  if (book.length) {
+    return book.filter((candidate) => isWatchableCandidate(strategy, candidate));
+  }
   const single = singles[strategy] ?? null;
-  return single?.eligible ? [single] : [];
+  return single && isWatchableCandidate(strategy, single) ? [single] : [];
+}
+
+function isWatchableCandidate(
+  strategy: ExecutionStrategy,
+  candidate: ExecutionCandidate,
+) {
+  if (!candidate.legs.length) return false;
+  // The opening IF is always worth taping even when its execution score is poor.
+  // Its premium path is diagnostic evidence for whether/when the opening thesis revives.
+  if (strategy === "iron-fly") return true;
+  if (candidate.score < 25) return false;
+  if (candidate.estimatedCredit === null || candidate.estimatedCredit <= 0) {
+    return false;
+  }
+  return !candidate.blockers.some((blocker) =>
+    blocker.includes("short strike sits inside the controlling wall"),
+  );
 }
 
 function selectScannerCandidate(args: {
@@ -291,16 +320,15 @@ function selectScannerCandidate(args: {
     track.candidate && openSetupKeySet.has(track.candidate.setupKey),
   );
   if (trackedSetupIsOpen) {
-    return (
-      book.find(
-        (candidate) =>
-          candidate.setupKey !== track.candidate?.setupKey &&
-          !openSetupKeySet.has(candidate.setupKey),
-      ) ?? null
+    const distinct = book.filter(
+      (candidate) =>
+        candidate.setupKey !== track.candidate?.setupKey &&
+        !openSetupKeySet.has(candidate.setupKey),
     );
+    return distinct.find((candidate) => candidate.eligible) ?? distinct[0] ?? null;
   }
 
-  return book[0] ?? null;
+  return book.find((candidate) => candidate.eligible) ?? book[0] ?? null;
 }
 
 function structuralInvalidation(
@@ -344,6 +372,7 @@ function lockCandidate(
   track.candidate = candidate;
   track.lockedAt = generatedAt;
   track.lockedCandleTime = candleTime;
+  track.lockedCredit = candidate.estimatedCredit;
   track.ageCandles = 0;
   track.status = "LOCKED";
   track.challengerSetupKey = null;
@@ -373,6 +402,7 @@ function emptyTrack(strategy: ExecutionStrategy): StableExecutionCandidateTrack 
     scannerCandidate: null,
     lockedAt: null,
     lockedCandleTime: null,
+    lockedCredit: null,
     ageCandles: 0,
     status: "NO_CANDIDATE",
     challengerSetupKey: null,
@@ -383,7 +413,7 @@ function emptyTrack(strategy: ExecutionStrategy): StableExecutionCandidateTrack 
 
 function emptyStore(tradeDate: string): TrackStore {
   return {
-    version: 2,
+    version: 3,
     tradeDate,
     tracks: {
       "iron-fly": emptyTrack("iron-fly"),
@@ -414,12 +444,12 @@ function loadStore(tradeDate: string): TrackStore {
     const raw = window.localStorage.getItem(storageKey(tradeDate));
     if (!raw) return emptyStore(tradeDate);
     const parsed = JSON.parse(raw) as Partial<TrackStore>;
-    if (parsed.version !== 2 || parsed.tradeDate !== tradeDate || !parsed.tracks) {
+    if (parsed.version !== 3 || parsed.tradeDate !== tradeDate || !parsed.tracks) {
       return emptyStore(tradeDate);
     }
     const fallback = emptyStore(tradeDate);
     return {
-      version: 2,
+      version: 3,
       tradeDate,
       tracks: {
         "iron-fly": {
