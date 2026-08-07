@@ -2250,10 +2250,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     gap: 10,
-    maxHeight: 610,
-    overflowY: "auto",
-    overflowX: "hidden",
-    paddingRight: 3,
+    overflow: "visible",
   },
   signalCard: {
     borderRadius: 13,
