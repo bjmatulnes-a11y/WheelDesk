@@ -100,14 +100,14 @@ export function classifyZeroDteTimeRegime(args: {
       minutesFromOpen,
       entryAllowed: true,
       newRiskPreferred: true,
-      requiresPeakRollover: false,
+      requiresPeakRollover: true,
       minimumEntryScore: 78,
       minimumDistanceExpectedMovePct: 0.75,
       sizeMultiplier: 1,
       weights: [30, 25, 20, 15, 10],
       reasons: [
-        "8:30–10:30 CT is the primary probability window.",
-        "Short-strike distance and controlling structure receive the highest weight.",
+        "8:30–10:30 CT is the primary probability window, but entry still requires a confirmed local premium crest.",
+        "Short-strike distance and controlling structure receive the highest weight after the exhaustion trigger is proven.",
       ],
     });
   }
@@ -120,13 +120,13 @@ export function classifyZeroDteTimeRegime(args: {
       minutesFromOpen,
       entryAllowed: true,
       newRiskPreferred: !args.hasEnteredToday,
-      requiresPeakRollover: false,
+      requiresPeakRollover: true,
       minimumEntryScore: 82,
       minimumDistanceExpectedMovePct: 0.65,
       sizeMultiplier: args.hasEnteredToday ? 0.65 : 0.8,
       weights: [20, 25, 20, 20, 15],
       reasons: [
-        "10:30–12:00 CT requires stronger premium or pullback evidence.",
+        "10:30–12:00 CT requires a fresh premium expansion followed by closed-minute rollover confirmation.",
         args.hasEnteredToday
           ? "Existing positions reduce the preferred size of additional risk."
           : "No position has been entered, so one selective continuation setup remains available.",
@@ -233,35 +233,61 @@ export function buildZeroDtePriceActionContext(
 export function scorePriceExhaustion(args: {
   strategy: "iron-fly" | "put-credit-spread" | "call-credit-spread";
   priceAction: ZeroDtePriceActionContext | null;
-  peakDetected: boolean;
-  premiumVelocityPerMinute: number | null;
+  referenceCenter?: number | null;
 }): number {
-  const { strategy, priceAction, peakDetected, premiumVelocityPerMinute } = args;
-  if (!priceAction) return peakDetected ? 78 : 35;
+  const { strategy, priceAction } = args;
+  if (!priceAction) return 0;
 
   if (strategy === "iron-fly") {
-    const directionalPenalty = Math.min(70, Math.abs(priceAction.changeFromOpenPct) * 30);
-    return clamp(80 - directionalPenalty + (peakDetected ? 15 : 0));
+    const center =
+      args.referenceCenter !== null &&
+      args.referenceCenter !== undefined &&
+      Number.isFinite(args.referenceCenter)
+        ? Number(args.referenceCenter)
+        : priceAction.open;
+    const currentDistance = Math.abs(priceAction.last - center);
+    const previousDistance = Math.abs(priceAction.previous - center);
+    const movingTowardCenter = currentDistance < previousDistance;
+    const threeBarTowardCenter =
+      priceAction.last >= center
+        ? priceAction.lastThreeChange < 0
+        : priceAction.lastThreeChange > 0;
+    const relevantRetracement =
+      priceAction.last >= center
+        ? priceAction.distanceFromHigh
+        : priceAction.distanceFromLow;
+    const relevantExtremeAge =
+      priceAction.last >= center
+        ? priceAction.candlesSinceHigh
+        : priceAction.candlesSinceLow;
+
+    let score = 22;
+    if (movingTowardCenter) score += 30;
+    if (threeBarTowardCenter) score += 22;
+    if (relevantExtremeAge >= 1) score += 14;
+    score += Math.min(12, relevantRetracement * 2);
+    return clamp(score);
   }
 
-  const favorableTrend =
-    strategy === "put-credit-spread"
-      ? priceAction.changeFromOpen > 0
-      : priceAction.changeFromOpen < 0;
-  const retracement =
-    strategy === "put-credit-spread"
-      ? priceAction.distanceFromHigh
-      : priceAction.distanceFromLow;
-  const reversal =
-    strategy === "put-credit-spread"
-      ? priceAction.lastCandleChange > 0 || priceAction.lastThreeChange > 0
-      : priceAction.lastCandleChange < 0 || priceAction.lastThreeChange < 0;
+  const isPut = strategy === "put-credit-spread";
+  const oneBarReversal = isPut
+    ? priceAction.lastCandleChange > 0
+    : priceAction.lastCandleChange < 0;
+  const threeBarReversal = isPut
+    ? priceAction.lastThreeChange > 0
+    : priceAction.lastThreeChange < 0;
+  const distanceFromThreatExtreme = isPut
+    ? priceAction.distanceFromLow
+    : priceAction.distanceFromHigh;
+  const candlesSinceThreatExtreme = isPut
+    ? priceAction.candlesSinceLow
+    : priceAction.candlesSinceHigh;
 
-  let score = favorableTrend ? 45 : 18;
-  score += Math.min(20, retracement * 2.5);
-  if (reversal) score += 16;
-  if (peakDetected) score += 18;
-  if ((premiumVelocityPerMinute ?? 0) < 0) score += 8;
+  let score = 18;
+  if (oneBarReversal) score += 28;
+  if (threeBarReversal) score += 22;
+  if (candlesSinceThreatExtreme >= 1) score += 18;
+  score += Math.min(18, distanceFromThreatExtreme * 2.5);
   return clamp(score);
 }
 

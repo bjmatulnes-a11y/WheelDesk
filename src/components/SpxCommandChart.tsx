@@ -157,6 +157,7 @@ export default function SpxCommandChart() {
   const loadAbortRef = useRef<AbortController | null>(null);
 
   const [candles, setCandles] = useState<Candle[]>([]);
+  const [signalCandles, setSignalCandles] = useState<Candle[]>([]);
   const [harvest, setHarvest] = useState<HarvestResponse | null>(null);
   const [frequency, setFrequency] = useState<1 | 5>(1);
   const [overlays, setOverlays] = useState(DEFAULT_OVERLAYS);
@@ -179,6 +180,10 @@ export default function SpxCommandChart() {
   const spxRows = harvest?.spx?.rows ?? [];
   const lastCandle = candles.at(-1);
   const currentPrice = recommendation?.spxPrice ?? harvest?.spx?.price ?? lastCandle?.close ?? 0;
+  const officialSignalCandles = useMemo(() => {
+    const scoped = selectCashSessionCandles(signalCandles, harvest?.tradeDate);
+    return scoped.length ? scoped : signalCandles;
+  }, [harvest?.tradeDate, signalCandles]);
 
   const mapManager = useSessionMapManager({
     tradeDate: harvest?.tradeDate,
@@ -270,8 +275,8 @@ export default function SpxCommandChart() {
   const stableCandidateTracker = useStableExecutionCandidates({
     tradeDate: harvest?.tradeDate,
     generatedAt: harvest?.generatedAt,
-    frequencyMinutes: frequency,
-    candles,
+    frequencyMinutes: 1,
+    candles: officialSignalCandles,
     mapState: mapManager.state,
     scannerCandidates: scannerExecutionCandidates,
     scannerCandidateBooks: scannerExecutionCandidateBooks ?? undefined,
@@ -308,8 +313,8 @@ export default function SpxCommandChart() {
   });
 
   const priceAction = useMemo(
-    () => buildZeroDtePriceActionContext(candles),
-    [candles],
+    () => buildZeroDtePriceActionContext(officialSignalCandles),
+    [officialSignalCandles],
   );
 
   const recommendedExecutionCandidate = useMemo(() => {
@@ -411,19 +416,32 @@ export default function SpxCommandChart() {
     try {
       setError(null);
 
-      const [historyResponse, harvestResponse] = await Promise.all([
-        fetch(
-          `/api/brokers/schwab/price-history?symbol=${encodeURIComponent("$SPX")}&frequency=${frequency}`,
-          { cache: "no-store", signal: controller.signal },
-        ),
-        fetch("/api/zero-dte/harvest-schwab", {
-          cache: "no-store",
-          signal: controller.signal,
-        }),
-      ]);
+      const displayHistoryRequest = fetch(
+        `/api/brokers/schwab/price-history?symbol=${encodeURIComponent("$SPX")}&frequency=${frequency}`,
+        { cache: "no-store", signal: controller.signal },
+      );
+      const signalHistoryRequest =
+        frequency === 1
+          ? null
+          : fetch(
+              `/api/brokers/schwab/price-history?symbol=${encodeURIComponent("$SPX")}&frequency=1`,
+              { cache: "no-store", signal: controller.signal },
+            );
+      const [historyResponse, harvestResponse, signalHistoryResponse] =
+        await Promise.all([
+          displayHistoryRequest,
+          fetch("/api/zero-dte/harvest-schwab", {
+            cache: "no-store",
+            signal: controller.signal,
+          }),
+          signalHistoryRequest,
+        ]);
 
       const historyJson = (await historyResponse.json()) as PriceHistoryResponse;
       const harvestJson = (await harvestResponse.json()) as HarvestResponse;
+      const signalHistoryJson = signalHistoryResponse
+        ? ((await signalHistoryResponse.json()) as PriceHistoryResponse)
+        : historyJson;
 
       if (!historyResponse.ok || !historyJson.ok) {
         throw new Error(historyJson.error || "SPX price history failed.");
@@ -434,12 +452,25 @@ export default function SpxCommandChart() {
           harvestJson.errors?.join(" ") || "Schwab 0DTE harvest failed.",
         );
       }
+      if (
+        signalHistoryResponse &&
+        (!signalHistoryResponse.ok || !signalHistoryJson.ok)
+      ) {
+        throw new Error(
+          signalHistoryJson.error || "SPX one-minute signal history failed.",
+        );
+      }
 
       if (sequence !== loadSequenceRef.current || controller.signal.aborted) {
         return;
       }
 
-      setCandles(normalizeCandles(historyJson.candles ?? []));
+      const displayCandles = normalizeCandles(historyJson.candles ?? []);
+      const oneMinuteCandles = normalizeCandles(
+        signalHistoryJson.candles ?? [],
+      );
+      setCandles(displayCandles);
+      setSignalCandles(oneMinuteCandles);
       setHarvest(harvestJson);
       setLastRefresh(new Date().toISOString());
     } catch (loadError) {
@@ -924,8 +955,8 @@ export default function SpxCommandChart() {
 
   const signalPaint = useExecutionSignalPaint({
     tradeDate: harvest?.tradeDate,
-    frequencyMinutes: frequency,
-    candles,
+    frequencyMinutes: 1,
+    candles: officialSignalCandles,
     reads: executionReadsForPaint,
   });
 
@@ -943,7 +974,7 @@ export default function SpxCommandChart() {
 
     markerApi.setMarkers(
       visibleExecutionSignals.map((signal) => ({
-        time: signal.candleTime as UTCTimestamp,
+        time: alignToDisplayCandle(signal.candleTime, frequency) as UTCTimestamp,
         position: signal.kind === "SELL" ? "aboveBar" : "belowBar",
         color: signal.kind === "SELL" ? "#16c784" : "#ea3943",
         shape: signal.kind === "SELL" ? "arrowDown" : "arrowUp",
@@ -952,7 +983,7 @@ export default function SpxCommandChart() {
         )}`,
       })),
     );
-  }, [visibleExecutionSignals]);
+  }, [frequency, visibleExecutionSignals]);
 
   useEffect(() => {
     if (
@@ -1520,6 +1551,49 @@ function LegendItem({ color, text }: { color: string; text: string }) {
       {text}
     </span>
   );
+}
+
+function selectCashSessionCandles(
+  candles: Candle[],
+  tradeDate: string | null | undefined,
+) {
+  if (!tradeDate) return candles;
+  return candles.filter((candle) => {
+    const parts = centralDateTimeParts(candle.time);
+    if (!parts || parts.date !== tradeDate) return false;
+    return parts.minutes >= 8 * 60 + 30 && parts.minutes <= 15 * 60;
+  });
+}
+
+function centralDateTimeParts(time: number) {
+  const seconds = time > 10_000_000_000 ? Math.floor(time / 1000) : Math.floor(time);
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Chicago",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(new Date(seconds * 1000))
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  );
+  const hour = Number(parts.hour);
+  const minute = Number(parts.minute);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+  return {
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    minutes: hour * 60 + minute,
+  };
+}
+
+function alignToDisplayCandle(time: number, frequencyMinutes: 1 | 5) {
+  const intervalSeconds = frequencyMinutes * 60;
+  return Math.floor(time / intervalSeconds) * intervalSeconds;
 }
 
 function normalizeCandles(candles: Candle[]) {

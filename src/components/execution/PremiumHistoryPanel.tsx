@@ -4,6 +4,7 @@ import {
   AreaSeries,
   ColorType,
   createChart,
+  LineSeries,
   type IChartApi,
   type ISeriesApi,
   type UTCTimestamp,
@@ -14,6 +15,7 @@ import type {
   ExecutionPremiumTapePoint,
   ZeroDteExecutionRead,
 } from "../../lib/zeroDteExecutionIntelligence";
+import { buildCompletedPremiumMinuteBars } from "../../lib/zeroDtePremiumCrestEngine";
 
 export function PremiumHistoryPanel({
   history,
@@ -31,6 +33,7 @@ export function PremiumHistoryPanel({
   const hostRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Area"> | null>(null);
+  const officialSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const [selectedSetupKey, setSelectedSetupKey] = useState<string | null>(null);
 
   const setupOptions = useMemo(() => {
@@ -169,29 +172,38 @@ export function PremiumHistoryPanel({
       }));
   }, [selectedRead, selectedSamples]);
 
+  const officialBars = useMemo(() => {
+    if (!selectedSamples.length) return [];
+    const lastTimestamp = selectedSamples.at(-1)?.timestamp ?? null;
+    const generatedAt =
+      selectedRead?.generatedAt ??
+      (lastTimestamp
+        ? new Date(Date.parse(lastTimestamp) + 60_000).toISOString()
+        : new Date().toISOString());
+    return buildCompletedPremiumMinuteBars(selectedSamples, generatedAt);
+  }, [selectedRead?.generatedAt, selectedSamples]);
+
+  const officialData = useMemo(
+    () =>
+      officialBars.map((bar) => ({
+        time: Math.floor(bar.minuteKey / 1000) as UTCTimestamp,
+        value: bar.median,
+      })),
+    [officialBars],
+  );
+
   const metrics = useMemo(() => {
-    const values = chartData.map((point) => point.value);
-    const current =
-      selectedRead?.currentCredit ?? values.at(-1) ?? null;
-    const peak = values.length ? Math.max(...values) : null;
-    const previous = chartData.at(-2) ?? null;
-    const latest = chartData.at(-1) ?? null;
-    const elapsedMinutes =
-      previous && latest
-        ? Math.max((Number(latest.time) - Number(previous.time)) / 60, 1 / 60)
-        : null;
-    const calculatedVelocity =
-      previous && latest && elapsedMinutes
-        ? (latest.value - previous.value) / elapsedMinutes
-        : null;
-    const velocity =
-      selectedRead?.premiumVelocityPerMinute ?? calculatedVelocity;
-    const fromPeak =
-      current !== null && peak !== null && peak > 0
-        ? ((current - peak) / peak) * 100
-        : null;
-    return { current, peak, velocity, fromPeak };
-  }, [chartData, selectedRead]);
+    const rawCurrent = selectedRead?.currentCredit ?? chartData.at(-1)?.value ?? null;
+    const officialCurrent =
+      selectedRead?.premiumCrest.officialCredit ?? officialData.at(-1)?.value ?? null;
+    const localPeak =
+      selectedRead?.premiumCrest.localPeakCredit ??
+      (officialData.length ? Math.max(...officialData.map((point) => point.value)) : null);
+    const noise = selectedRead?.premiumCrest.quoteNoisePoints ?? null;
+    const slope3m = selectedRead?.premiumCrest.threeMinuteSlope ?? null;
+    const state = selectedRead?.premiumCrest.status.replaceAll("_", " ") ?? "BUILDING";
+    return { rawCurrent, officialCurrent, localPeak, noise, slope3m, state };
+  }, [chartData, officialData, selectedRead]);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -219,32 +231,42 @@ export function PremiumHistoryPanel({
 
     const series = chart.addSeries(AreaSeries, {
       lineColor: "#18b6ed",
-      topColor: "rgba(24,182,237,.32)",
-      bottomColor: "rgba(24,182,237,.02)",
-      lineWidth: 2,
+      topColor: "rgba(24,182,237,.22)",
+      bottomColor: "rgba(24,182,237,.01)",
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: true,
+    });
+    const officialSeries = chart.addSeries(LineSeries, {
+      color: "#fbbf24",
+      lineWidth: 3,
       priceLineVisible: true,
       lastValueVisible: true,
     });
 
     chartRef.current = chart;
     seriesRef.current = series;
+    officialSeriesRef.current = officialSeries;
 
     return () => {
       chart.remove();
       chartRef.current = null;
       seriesRef.current = null;
+      officialSeriesRef.current = null;
     };
   }, []);
 
   useEffect(() => {
     const series = seriesRef.current;
-    if (!series) return;
+    const officialSeries = officialSeriesRef.current;
+    if (!series || !officialSeries) return;
 
     series.setData(chartData);
-    if (chartData.length) {
+    officialSeries.setData(officialData);
+    if (chartData.length || officialData.length) {
       chartRef.current?.timeScale().fitContent();
     }
-  }, [chartData, selectedSetupKey]);
+  }, [chartData, officialData, selectedSetupKey]);
 
   const selectedOption = setupOptions.find(
     (item) => item.setupKey === selectedSetupKey,
@@ -258,7 +280,7 @@ export function PremiumHistoryPanel({
             {selectedOption?.label ?? "Exact-Setup Premium"}
           </div>
           <div style={styles.subTitle}>
-            Exact-leg live tape first; Supabase fills historical gaps. Strategy samples are never mixed.
+            Cyan is the raw exact-leg tape. Amber is the completed one-minute median used by the signal engine; raw quote oscillation cannot directly fire SELL READY.
           </div>
         </div>
         <div style={styles.controls}>
@@ -282,24 +304,19 @@ export function PremiumHistoryPanel({
             </select>
           </label>
           <div style={styles.metrics}>
-            <Metric label="Current" value={fmt(metrics.current)} />
-            <Metric label="Peak" value={fmt(metrics.peak)} />
+            <Metric label="Raw" value={fmt(metrics.rawCurrent)} />
+            <Metric label="Official 1m" value={fmt(metrics.officialCurrent)} />
+            <Metric label="Local Crest" value={fmt(metrics.localPeak)} />
+            <Metric label="Noise" value={fmt(metrics.noise)} />
             <Metric
-              label="Velocity"
+              label="3m Slope"
               value={
-                metrics.velocity == null
+                metrics.slope3m == null
                   ? "—"
-                  : `${metrics.velocity >= 0 ? "+" : ""}${metrics.velocity.toFixed(3)}/m`
+                  : `${metrics.slope3m >= 0 ? "+" : ""}${metrics.slope3m.toFixed(3)}/m`
               }
             />
-            <Metric
-              label="From Peak"
-              value={
-                metrics.fromPeak == null
-                  ? "—"
-                  : `${metrics.fromPeak.toFixed(1)}%`
-              }
-            />
+            <Metric label="Crest State" value={metrics.state} />
           </div>
         </div>
       </div>

@@ -16,6 +16,10 @@ import type {
   ZeroDteStrategyRanking,
   ZeroDteTradeSelection,
 } from "./zeroDteTradeSelector";
+import {
+  buildPremiumCrestRead,
+  type ZeroDtePremiumCrestRead,
+} from "./zeroDtePremiumCrestEngine";
 
 export type ExecutionLifecycle =
   | "WAIT"
@@ -178,6 +182,9 @@ export type ZeroDteExecutionRead = {
   centerDistance: number;
   edge: "upper" | "lower" | "center";
   peakDetected: boolean;
+  premiumCrest: ZeroDtePremiumCrestRead;
+  priceRejectionScore: number;
+  priceRejectionReady: boolean;
   premiumSampleCount: number;
   premiumTapeStartedAt: string | null;
   emergencyExit: boolean;
@@ -281,9 +288,14 @@ export function buildZeroDteExecutionRead(args: {
       )
     : [];
   const openingCredit = relevantSamples[0]?.credit ?? currentCredit;
-  const peakCredit = relevantSamples.length
+  const sessionPeakCredit = relevantSamples.length
     ? Math.max(...relevantSamples.map((sample) => sample.credit), currentCredit ?? 0)
     : currentCredit;
+  const premiumCrest = buildPremiumCrestRead({
+    samples: relevantSamples,
+    generatedAt,
+    currentCredit,
+  });
   const currentTimestamp = Date.parse(generatedAt);
   const previousSample =
     [...relevantSamples]
@@ -292,28 +304,25 @@ export function buildZeroDteExecutionRead(args: {
   const elapsedMinutes = previousSample
     ? (currentTimestamp - Date.parse(previousSample.timestamp)) / 60_000
     : null;
-  const premiumVelocityPerMinute =
+  const rawPremiumVelocityPerMinute =
     currentCredit !== null &&
     previousSample &&
     elapsedMinutes !== null &&
     elapsedMinutes > 0
       ? (currentCredit - previousSample.credit) / elapsedMinutes
       : null;
+  const premiumVelocityPerMinute =
+    premiumCrest.threeMinuteSlope ?? rawPremiumVelocityPerMinute;
   const premiumExpansionPct =
     currentCredit !== null && openingCredit && openingCredit > 0
       ? ((currentCredit - openingCredit) / openingCredit) * 100
       : null;
+  const peakCredit = premiumCrest.localPeakCredit ?? sessionPeakCredit;
   const premiumFromPeakPct =
     currentCredit !== null && peakCredit && peakCredit > 0
       ? ((currentCredit - peakCredit) / peakCredit) * 100
       : null;
-  const peakDetected = Boolean(
-    currentCredit !== null &&
-      peakCredit !== null &&
-      relevantSamples.length >= 2 &&
-      peakCredit - currentCredit >= Math.max(0.1, peakCredit * 0.04) &&
-      (premiumVelocityPerMinute ?? 0) < 0,
-  );
+  const peakDetected = premiumCrest.rolloverConfirmed;
 
   const shortDistance = candidateShortDistance(
     candidate,
@@ -336,8 +345,7 @@ export function buildZeroDteExecutionRead(args: {
     mapState,
     currentCredit,
     premiumExpansionPct,
-    premiumVelocityPerMinute,
-    peakDetected,
+    premiumCrest,
     strikeFlow,
     recommendation,
     timeRegime,
@@ -400,7 +408,17 @@ export function buildZeroDteExecutionRead(args: {
     action = `SELL READY — ${candidate?.label ?? "strategy"} has cleared the map, premium, and flow gates.`;
   } else if (entryRead.armed) {
     lifecycle = "ARMED";
-    action = `ARMED — ${candidate?.label ?? "strategy"} is valid, but the execution trigger is still building.`;
+    action = premiumCrest.rolloverConfirmed
+      ? entryRead.priceRejectionReady
+        ? `ARMED — ${candidate?.label ?? "strategy"} crest and price rejection are confirmed; conviction is ${entryRead.entryScore}/${timeRegime.minimumEntryScore}.`
+        : `ARMED — ${candidate?.label ?? "strategy"} crest is confirmed; strategy-specific price rejection is still building.`
+      : premiumCrest.rolloverStarted
+        ? `ARMED — ${candidate?.label ?? "strategy"} has begun a closed-minute premium rollover; waiting for confirmation.`
+        : `ARMED — ${candidate?.label ?? "strategy"} premium has expanded into the local crest zone; wait for confirmed rollover.`;
+  } else if (candidate && premiumCrest.missed) {
+    action = `WAIT — the ${candidate.label} crest was missed. Do not chase lower premium; wait for a fresh expansion cycle.`;
+  } else if (candidate && !entryRead.hardBlocked) {
+    action = `WAIT — ${candidate.label} is being tracked, but ${premiumCrest.status.replaceAll("_", " ").toLowerCase()} has not completed the execution trigger.`;
   }
 
   const entryCredit = position?.entryCredit ?? null;
@@ -459,6 +477,9 @@ export function buildZeroDteExecutionRead(args: {
     centerDistance,
     edge,
     peakDetected,
+    premiumCrest,
+    priceRejectionScore: entryRead.priceRejectionScore,
+    priceRejectionReady: entryRead.priceRejectionReady,
     premiumSampleCount: relevantSamples.length,
     premiumTapeStartedAt: relevantSamples[0]?.timestamp ?? null,
     emergencyExit: exitRead.emergencyExit,
@@ -824,8 +845,7 @@ function buildEntryRead(args: {
   mapState: SessionMapManagerState;
   currentCredit: number | null;
   premiumExpansionPct: number | null;
-  premiumVelocityPerMinute: number | null;
-  peakDetected: boolean;
+  premiumCrest: ZeroDtePremiumCrestRead;
   strikeFlow: ZeroDteStrikeFlowRead | null;
   recommendation: ZeroDteRecommendation;
   timeRegime: ZeroDteTimeRegimeRead;
@@ -839,8 +859,7 @@ function buildEntryRead(args: {
     mapState,
     currentCredit,
     premiumExpansionPct,
-    premiumVelocityPerMinute,
-    peakDetected,
+    premiumCrest,
     strikeFlow,
     recommendation,
     timeRegime,
@@ -947,21 +966,18 @@ function buildEntryRead(args: {
     recommendation,
     strikeFlow,
   );
-  const exhaustionScore = candidate
+  const priceRejectionScore = candidate
     ? scorePriceExhaustion({
         strategy: candidate.strategy,
         priceAction,
-        peakDetected,
-        premiumVelocityPerMinute,
+        referenceCenter:
+          candidate.strategy === "iron-fly" ? mapState.opening.center : undefined,
       })
     : 0;
-  const premiumScore = scorePremiumExhaustion({
-    premiumExpansionPct,
-    premiumVelocityPerMinute,
-    peakDetected,
-    exhaustionScore,
-    requiresPeakRollover: timeRegime.requiresPeakRollover,
-  });
+  const priceRejectionThreshold =
+    candidate?.strategy === "iron-fly" ? 52 : 58;
+  const priceRejectionReady = priceRejectionScore >= priceRejectionThreshold;
+  const premiumScore = candidate ? premiumCrest.score : 0;
   const portfolioScore = candidate
     ? portfolioContribution?.score ?? 72
     : 0;
@@ -990,8 +1006,11 @@ function buildEntryRead(args: {
   } else if (candidate) {
     reasons.push("Building the premium baseline for this locked strategy and strike set.");
   }
-  if (candidate && peakDetected) {
-    reasons.push("Premium rollover is confirmed after a tracked setup peak.");
+  if (candidate) {
+    reasons.push(...premiumCrest.reasons);
+    reasons.push(
+      `Price-rejection confirmation is ${priceRejectionScore.toFixed(0)}/${priceRejectionThreshold} for this strategy.`,
+    );
   }
   if (candidate && tracking?.lockedAt) {
     reasons.push(`Candidate has been locked for ${tracking.ageCandles} candle${tracking.ageCandles === 1 ? "" : "s"}.`);
@@ -1000,29 +1019,18 @@ function buildEntryRead(args: {
 
   const hardBlocked = unique(blockers).length > 0;
   const stableThroughClose = !tracking || tracking.ageCandles >= 1;
-  const regimeTriggerReady = (() => {
-    if (!stableThroughClose) return false;
-    if (timeRegime.requiresPeakRollover) {
-      return peakDetected && exhaustionScore >= 60;
-    }
-    if (timeRegime.regime === "OPENING_OPPORTUNITY") {
-      return true;
-    }
-    if (timeRegime.regime === "SELECTIVE_CONTINUATION") {
-      return (
-        peakDetected ||
-        (premiumExpansionPct ?? 0) >= 4 ||
-        ((candidate?.score ?? 0) >= 90 && (tracking?.ageCandles ?? 0) >= 2)
-      );
-    }
-    return false;
-  })();
+  const regimeTriggerReady = Boolean(
+    stableThroughClose &&
+      premiumCrest.signalEligible &&
+      priceRejectionReady,
+  );
 
   return {
     entryScore: Math.round(entryScore),
     armed: Boolean(
       candidate &&
         !hardBlocked &&
+        premiumCrest.armed &&
         entryScore >= timeRegime.minimumEntryScore - 12,
     ),
     sellReady: Boolean(
@@ -1033,6 +1041,8 @@ function buildEntryRead(args: {
     ),
     hardBlocked,
     regimeTriggerReady,
+    priceRejectionScore,
+    priceRejectionReady,
     reasons: unique(reasons),
     blockers: unique(blockers),
     components: [
@@ -1050,7 +1060,7 @@ function buildEntryRead(args: {
         label: "Map / structure",
         value: structureScore * (weights.structure / 100),
         max: weights.structure,
-        reason: `${mapState.phase} · rail ${mapState.railBreached}`,
+        reason: `${mapState.phase} · structural confidence ${getControllingMarketMap(mapState).structure.structuralConfidence}% · rail ${mapState.railBreached}`,
       },
       {
         key: "dealer-flow",
@@ -1061,12 +1071,10 @@ function buildEntryRead(args: {
       },
       {
         key: "premium-exhaustion",
-        label: "Premium / exhaustion",
+        label: "Premium crest",
         value: premiumScore * (weights.premiumExhaustion / 100),
         max: weights.premiumExhaustion,
-        reason: peakDetected
-          ? "Premium peak rollover detected"
-          : `${timeRegime.label} trigger is still building`,
+        reason: `${premiumCrest.status.replaceAll("_", " ")} · ${premiumCrest.completedMinuteCount} closed 1m bars`,
       },
       {
         key: "portfolio",
@@ -1296,11 +1304,33 @@ function scoreStructure(
   mapState: SessionMapManagerState,
 ) {
   if (!candidate) return 0;
-  let score = candidate.score * 0.55;
-  score += mapState.phase === "ACTIVE" ? 35 : mapState.phase === "OPENING" ? 25 : 15;
-  if (candidate.strategy === "put-credit-spread" && mapState.railBreached === "UPPER") score += 10;
-  if (candidate.strategy === "call-credit-spread" && mapState.railBreached === "LOWER") score += 10;
-  if (candidate.strategy === "iron-fly" && mapState.railBreached !== "NONE") score -= 35;
+  const controlling = getControllingMarketMap(mapState);
+  const structure = controlling.structure;
+  const phaseAdjustment =
+    mapState.phase === "ACTIVE" ? 5 : mapState.phase === "OPENING" ? 2 : -6;
+
+  if (candidate.strategy === "iron-fly") {
+    const twoSided =
+      structure.structuralConfidence * 0.55 +
+      structure.callWallStrength * 0.15 +
+      structure.putWallStrength * 0.15 +
+      structure.pinProbability * 0.15;
+    const railAdjustment = mapState.railBreached === "NONE" ? 4 : -30;
+    return clamp(twoSided + phaseAdjustment + railAdjustment);
+  }
+
+  const wallStrength =
+    candidate.strategy === "put-credit-spread"
+      ? structure.putWallStrength
+      : structure.callWallStrength;
+  let score =
+    structure.structuralConfidence * 0.75 + wallStrength * 0.25 + phaseAdjustment;
+  if (candidate.strategy === "put-credit-spread" && mapState.railBreached === "UPPER") {
+    score += 5;
+  }
+  if (candidate.strategy === "call-credit-spread" && mapState.railBreached === "LOWER") {
+    score += 5;
+  }
   return clamp(score);
 }
 
@@ -1323,24 +1353,6 @@ function scoreDealerFlow(
     return clamp(score);
   }
   return clamp(100 - Math.abs(recommendation.dealerPressure) * 1.7);
-}
-
-function scorePremiumExhaustion(args: {
-  premiumExpansionPct: number | null;
-  premiumVelocityPerMinute: number | null;
-  peakDetected: boolean;
-  exhaustionScore: number;
-  requiresPeakRollover: boolean;
-}) {
-  const expansion = args.premiumExpansionPct ?? 0;
-  let score = clamp(40 + expansion * 2.2);
-  if (args.peakDetected) score = Math.max(score, 90);
-  if ((args.premiumVelocityPerMinute ?? 0) < 0) score += 8;
-  if (args.requiresPeakRollover) {
-    score = score * 0.55 + args.exhaustionScore * 0.45;
-    if (!args.peakDetected) score = Math.min(score, 58);
-  }
-  return clamp(score);
 }
 
 function findRanking(

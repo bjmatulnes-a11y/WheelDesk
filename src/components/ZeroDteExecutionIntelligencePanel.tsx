@@ -44,10 +44,10 @@ export function ZeroDteExecutionIntelligencePanel({
     <section style={styles.panel}>
       <div style={styles.header}>
         <div>
-          <div style={styles.eyebrow}>Layer 6D · Time-Aware Execution Lifecycle</div>
+          <div style={styles.eyebrow}>Layer 6F · Signal Quality / Premium Crest Engine</div>
           <h2 style={styles.title}>Iron Fly + Credit Spread Execution</h2>
           <p style={styles.sub}>
-            Scanner discovery, stable candidate tracking, exact-strike premium history, portfolio acceptance, and buyback management.
+            Exact-leg tracking stays raw and live, while entries require a noise-adjusted local premium crest, closed-minute rollover confirmation, and strategy-specific price rejection.
           </p>
         </div>
         <div
@@ -93,9 +93,13 @@ export function ZeroDteExecutionIntelligencePanel({
         <Metric label="Tracking State" value={read.trackingStatus?.replaceAll("_", " ") ?? "NO TRACK"} />
         <Metric label="Candidate Age" value={hasTrackedSetup ? `${read.candidateAgeCandles} candle${read.candidateAgeCandles === 1 ? "" : "s"}` : "—"} />
         <Metric label="Scanner Score" value={read.scannerScore == null ? "—" : String(Math.round(read.scannerScore))} />
-        <Metric label="Premium Tape" value={`${read.premiumSampleCount} points`} />
+        <Metric label="Raw Premium Tape" value={`${read.premiumSampleCount} points`} />
+        <Metric label="Official 1m Bars" value={`${read.premiumCrest.completedMinuteCount} bars`} />
+        <Metric label="Crest State" value={read.premiumCrest.status.replaceAll("_", " ")} />
+        <Metric label="Price Rejection" value={`${Math.round(read.priceRejectionScore)} · ${read.priceRejectionReady ? "READY" : "BUILDING"}`} />
         <Metric label="Entry Gate" value={`${Math.round(read.entryScore)}/${Math.round(read.minimumEntryScore)}`} />
         <Metric label="Trigger" value={read.regimeTriggerReady ? "READY" : "BUILDING"} />
+        <Metric label="Confirm Bars" value={String(read.premiumCrest.confirmationBars)} />
         <Metric label="Hard Block" value={read.entryHardBlocked ? "YES" : "NO"} />
       </div>
 
@@ -110,25 +114,26 @@ export function ZeroDteExecutionIntelligencePanel({
       </div>
 
       <div style={styles.metricGrid}>
-        <Metric label="Current Credit / Debit" value={fmt(read.currentCredit)} />
+        <Metric label="Raw Live Credit / Debit" value={fmt(read.currentCredit)} />
+        <Metric label="Official 1m Premium" value={fmt(read.premiumCrest.officialCredit)} />
+        <Metric label="Local Cycle Trough" value={fmt(read.premiumCrest.localTroughCredit)} />
+        <Metric label="Local Crest" value={fmt(read.premiumCrest.localPeakCredit)} />
+        <Metric label="Cycle Expansion" value={pct(read.premiumCrest.cycleExpansionPct)} />
+        <Metric label="Rollover From Crest" value={read.premiumCrest.rolloverPct == null ? "—" : `${read.premiumCrest.rolloverPct.toFixed(1)}%`} />
+        <Metric label="Quote Noise" value={fmt(read.premiumCrest.quoteNoisePoints)} />
+        <Metric label="Rollover Threshold" value={fmt(read.premiumCrest.rolloverThresholdPoints)} />
+        <Metric label="1m Premium Slope" value={slope(read.premiumCrest.oneMinuteSlope)} />
+        <Metric label="3m Premium Slope" value={slope(read.premiumCrest.threeMinuteSlope)} />
+        <Metric label="Peak Age" value={read.premiumCrest.peakAgeMinutes == null ? "—" : `${read.premiumCrest.peakAgeMinutes.toFixed(1)} min`} />
+        <Metric label="Premium Crest Score" value={String(Math.round(read.premiumCrest.score))} />
         <Metric label="Setup Opening Credit" value={fmt(read.openingCredit)} />
-        <Metric label="Tracked Peak" value={fmt(read.peakCredit)} />
         <Metric label="Entry Fill" value={fmt(read.entryCredit)} />
-        <Metric label="Expansion vs Open" value={pct(read.premiumExpansionPct)} />
-        <Metric label="From Peak" value={pct(read.premiumFromPeakPct)} />
-        <Metric
-          label="Credit Velocity"
-          value={
-            read.premiumVelocityPerMinute == null
-              ? "—"
-              : `${signed(read.premiumVelocityPerMinute, 3)} pt/min`
-          }
-        />
         <Metric label="Captured Premium" value={pct(read.capturedPremiumPct)} />
         <Metric label="Live P/L" value={money(read.livePnlDollars)} tone={pnlTone(read.livePnlDollars)} />
         <Metric label="Max Risk / Contract" value={money(read.maxRiskDollars)} />
         <Metric label="Price Location" value={`${read.edge.toUpperCase()} EDGE`} />
-        <Metric label="Peak Detector" value={read.peakDetected ? "ROLLOVER" : "TRACKING"} />
+        <Metric label="Signal Crest" value={read.premiumCrest.signalEligible ? "CONFIRMED" : read.premiumCrest.armed ? "ARMED" : "WAIT"} />
+        <Metric label="Missed Crest" value={read.premiumCrest.missed ? "YES · RECYCLE" : "NO"} />
       </div>
 
       <div style={styles.breakdownGrid}>
@@ -321,6 +326,12 @@ function fmt(value: number | null | undefined) {
 
 function pct(value: number | null | undefined) {
   return value == null || !Number.isFinite(value) ? "—" : `${signed(value, 1)}%`;
+}
+
+function slope(value: number | null | undefined) {
+  return value == null || !Number.isFinite(value)
+    ? "—"
+    : `${signed(value, 3)} pt/min`;
 }
 
 function signed(value: number, digits: number) {
