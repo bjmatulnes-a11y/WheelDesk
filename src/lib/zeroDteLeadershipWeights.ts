@@ -49,7 +49,7 @@ export async function getDailyLeadershipWeightSnapshot(args: {
 }): Promise<ZeroDteLeadershipWeightSnapshot> {
   const minConstituents = clampInt(args.minConstituents ?? 10, 5, 25);
   const maxConstituents = clampInt(
-    args.maxConstituents ?? 25,
+    args.maxConstituents ?? 10,
     minConstituents,
     50,
   );
@@ -59,7 +59,7 @@ export async function getDailyLeadershipWeightSnapshot(args: {
     const cached = memory.get(args.tradeDate);
     if (cached) return cached;
     const saved = await loadSaved(args.tradeDate);
-    if (saved) {
+    if (saved && isValidLeadershipSnapshot(saved)) {
       memory.set(args.tradeDate, saved);
       return saved;
     }
@@ -84,6 +84,7 @@ export async function getDailyLeadershipWeightSnapshot(args: {
     if (rows.length < minConstituents) {
       throw new Error(`Only ${rows.length} usable equity holdings were parsed.`);
     }
+    validateParsedHoldings(rows);
     const selected = selectLeadershipRows(
       rows,
       minConstituents,
@@ -106,7 +107,7 @@ export async function getDailyLeadershipWeightSnapshot(args: {
   } catch (error) {
     const warning = error instanceof Error ? error.message : String(error);
     const prior = await loadLatestPrior(args.tradeDate);
-    if (prior) {
+    if (prior && isValidLeadershipSnapshot(prior)) {
       const snapshot: ZeroDteLeadershipWeightSnapshot = {
         ...prior,
         tradeDate: args.tradeDate,
@@ -417,7 +418,50 @@ function parsePercent(value: string | undefined) {
   if (!value) return 0;
   const numeric = Number(value.replace(/[%,$\s]/g, ""));
   if (!Number.isFinite(numeric)) return 0;
-  return numeric > 0 && numeric < 1 ? numeric * 100 : numeric;
+
+  /**
+   * State Street's SPY workbook stores the Weight column in percentage points.
+   * Examples:
+   *   7.71   means 7.71%
+   *   0.9828 means 0.9828%, not 98.28%
+   *
+   * Do not multiply values below 1 by 100. That previously promoted ordinary
+   * sub-1% holdings above the actual index leaders.
+   */
+  return numeric;
+}
+
+function validateParsedHoldings(rows: ParsedHolding[]) {
+  const totalWeight = rows.reduce((sum, row) => sum + row.weightPct, 0);
+  const largestWeight = Math.max(...rows.map((row) => row.weightPct));
+
+  if (largestWeight > 25) {
+    throw new Error(
+      `Parsed SPY holding weight ${largestWeight.toFixed(2)}% is not credible; refusing the workbook.`,
+    );
+  }
+
+  if (totalWeight < 85 || totalWeight > 115) {
+    throw new Error(
+      `Parsed SPY holdings total ${totalWeight.toFixed(2)}%; expected approximately 100%.`,
+    );
+  }
+}
+
+function isValidLeadershipSnapshot(
+  snapshot: ZeroDteLeadershipWeightSnapshot,
+) {
+  if (!Array.isArray(snapshot.constituents) || snapshot.constituents.length < 10) {
+    return false;
+  }
+
+  const weights = snapshot.constituents.map((item) => Number(item.weightPct));
+  if (weights.some((weight) => !Number.isFinite(weight) || weight <= 0 || weight > 25)) {
+    return false;
+  }
+
+  const selectedTotal = weights.reduce((sum, weight) => sum + weight, 0);
+  return selectedTotal >= 20 && selectedTotal <= 60;
 }
 
 function decodeXml(value: string) {
