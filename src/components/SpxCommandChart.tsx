@@ -528,13 +528,20 @@ export default function SpxCommandChart() {
       "put-credit-spread",
       "call-credit-spread",
     ] as ExecutionStrategy[]) {
-      const candidate = stableCandidateTracker.candidates[strategy] ?? null;
+      const candidate = manualChainResearch
+        ? scannerExecutionCandidates[strategy] ?? null
+        : stableCandidateTracker.candidates[strategy] ?? null;
       output[strategy] = candidate
         ? repriceExecutionCandidate(candidate, spxRows)
         : null;
     }
     return output;
-  }, [spxRows, stableCandidateTracker.candidates]);
+  }, [
+    manualChainResearch,
+    scannerExecutionCandidates,
+    spxRows,
+    stableCandidateTracker.candidates,
+  ]);
 
   const premiumTape = useExecutionPremiumTape({
     tradeDate: harvest?.tradeDate,
@@ -1077,10 +1084,18 @@ export default function SpxCommandChart() {
       .sort((a, b) => b.score - a.score)[0] ?? null,
   [executionCandidates]);
 
+  const executionReadMemory = useMemo(() => {
+    if (executionMemory) return executionMemory;
+    if (manualChainResearch && harvest?.tradeDate) {
+      return emptyExecutionMemory(harvest.tradeDate);
+    }
+    return null;
+  }, [executionMemory, harvest?.tradeDate, manualChainResearch]);
+
   const portfolioRead = useMemo(() => {
-    if (!executionMemory || !recommendation || !mapManager.state) return null;
+    if (!executionReadMemory || !recommendation || !mapManager.state) return null;
     return buildZeroDtePortfolioRead({
-      memory: executionMemory,
+      memory: executionReadMemory,
       rows: spxRows,
       recommendation,
       mapState: mapManager.state,
@@ -1091,7 +1106,7 @@ export default function SpxCommandChart() {
   }, [
     decisionLeastResistancePath,
     executionCandidates,
-    executionMemory,
+    executionReadMemory,
     harvest?.mood,
     mapManager.state,
     recommendation,
@@ -1101,13 +1116,12 @@ export default function SpxCommandChart() {
 
   const entryExecutionRead: ZeroDteExecutionRead | null = useMemo(() => {
     if (
-      manualChainResearch ||
       !recommendation ||
       !harvest?.tradeDate ||
       !harvest.generatedAt ||
       !mapAwareTradeSelection ||
       !mapManager.state ||
-      !executionMemory
+      !executionReadMemory
     ) {
       return null;
     }
@@ -1120,11 +1134,13 @@ export default function SpxCommandChart() {
       strikeFlow,
       tradeSelection: mapAwareTradeSelection,
       mapState: mapManager.state,
-      memory: executionMemory,
+      memory: executionReadMemory,
       candidateOverride:
         executionCandidates[selectedExecutionStrategy] ?? null,
       positionOverride: null,
-      tracking: stableCandidateTracker.tracks[selectedExecutionStrategy],
+      tracking: manualChainResearch
+        ? null
+        : stableCandidateTracker.tracks[selectedExecutionStrategy],
       portfolio: portfolioRead,
       priceAction,
       premiumTape: premiumTape.points,
@@ -1138,7 +1154,7 @@ export default function SpxCommandChart() {
     decisionLeastResistancePath,
     manualChainResearch,
     executionCandidates,
-    executionMemory,
+    executionReadMemory,
     harvest?.generatedAt,
     harvest?.tradeDate,
     mapAwareTradeSelection,
@@ -1864,33 +1880,31 @@ export default function SpxCommandChart() {
             ) : null}
           </div>
 
-          {manualChainResearch ? (
-            <div style={styles.researchDock}>
-              <div style={styles.eyebrow}>Portfolio Dock</div>
-              <strong>Research Mode</strong>
-              <span>Manual future-expiration chain selected. No position can be opened or shadow-entered from this chain.</span>
-            </div>
-          ) : (
           <ExecutionTradeDock
             read={entryExecutionRead}
             portfolio={portfolioRead}
-            positionReads={positionExecutionReads}
+            positionReads={manualChainResearch ? {} : positionExecutionReads}
             candidates={executionCandidates}
-            tracks={stableCandidateTracker.tracks}
+            tracks={manualChainResearch ? null : stableCandidateTracker.tracks}
             riskPolicy={riskPolicy}
             selectedStrategy={selectedExecutionStrategy}
             onStrategyChange={setSelectedExecutionStrategy}
+            readOnly={manualChainResearch}
+            readOnlyReason={
+              manualChainResearch
+                ? `Manual future-expiration chain ${harvest?.spx?.expirationDate ?? selectedExpiration}. Analytics and what-if evaluation remain active; live entry and Shadow entry are disabled.`
+                : null
+            }
             busy={executionBusy}
-            error={executionDbError}
+            error={manualChainResearch ? null : executionDbError}
             evaluateCandidate={(candidate) => {
               if (
-                manualChainResearch ||
                 !harvest?.tradeDate ||
                 !harvest.generatedAt ||
                 !recommendation ||
                 !mapAwareTradeSelection ||
                 !mapManager.state ||
-                !executionMemory
+                !executionReadMemory
               ) {
                 return null;
               }
@@ -1899,7 +1913,7 @@ export default function SpxCommandChart() {
                 [candidate.strategy]: candidate,
               };
               const evaluatedPortfolio = buildZeroDtePortfolioRead({
-                memory: executionMemory,
+                memory: executionReadMemory,
                 rows: spxRows,
                 recommendation,
                 mapState: mapManager.state,
@@ -1937,6 +1951,10 @@ export default function SpxCommandChart() {
               engineClearedAtEntry,
               overrideReason,
             }) => {
+              if (manualChainResearch) {
+                setExecutionDbError("Research chain is read-only. Live position entry is disabled.");
+                return;
+              }
               if (
                 !harvest?.tradeDate ||
                 !harvest.spx?.expirationDate ||
@@ -2077,7 +2095,6 @@ export default function SpxCommandChart() {
               }
             }}
           />
-          )}
 
           <div style={styles.railCard}>
             <div style={styles.collapsibleHeader}>

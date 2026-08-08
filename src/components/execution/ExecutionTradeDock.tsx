@@ -34,6 +34,8 @@ type Props = {
     overrideReason: string | null;
   }) => void | Promise<void>;
   onClose: (positionId: string, exitDebit: number) => void | Promise<void>;
+  readOnly?: boolean;
+  readOnlyReason?: string | null;
   busy?: boolean;
   error?: string | null;
 };
@@ -59,6 +61,8 @@ export function ExecutionTradeDock({
   evaluateCandidate,
   onOpen,
   onClose,
+  readOnly = false,
+  readOnlyReason = null,
   busy = false,
   error = null,
 }: Props) {
@@ -235,6 +239,7 @@ export function ExecutionTradeDock({
   const overrideValid =
     overrideEnabled && overrideReason.trim().length >= 4;
   const canOpen =
+    !readOnly &&
     !busy &&
     ticket.candidate !== null &&
     parsedEntryCredit !== null &&
@@ -247,7 +252,11 @@ export function ExecutionTradeDock({
         <div style={styles.headerTitleBlock}>
           <div style={styles.eyebrow}>Portfolio Dock</div>
           <div style={styles.title}>
-            {positions.length ? "Manage 0DTE Profile" : "Enter Actual Position"}
+            {readOnly
+              ? "Research Chain"
+              : positions.length
+                ? "Manage 0DTE Profile"
+                : "Enter Actual Position"}
           </div>
         </div>
         <div style={styles.headerActions}>
@@ -270,6 +279,13 @@ export function ExecutionTradeDock({
 
       {!collapsed ? (
         <>
+          {readOnly ? (
+            <div style={styles.readOnlyBanner}>
+              <strong>RESEARCH ONLY</strong>
+              <span>{readOnlyReason ?? "Live position entry is disabled for this chain."}</span>
+            </div>
+          ) : null}
+
           {portfolio ? <PortfolioSummary portfolio={portfolio} /> : null}
 
       {positions.length ? (
@@ -327,7 +343,7 @@ export function ExecutionTradeDock({
                   <span>{label}</span>
                   <strong>{option ? Math.round(option.score) : "—"}</strong>
                   <small>
-                    {track?.status.replaceAll("_", " ") ?? "NO TRACK"}
+                    {track?.status.replaceAll("_", " ") ?? (readOnly && option ? "SCANNER" : "NO TRACK")}
                     {scannerScore !== null && scannerScore !== option?.score
                       ? ` · scan ${Math.round(scannerScore)}`
                       : ""}
@@ -339,7 +355,13 @@ export function ExecutionTradeDock({
 
           <div style={styles.trackingStrip}>
             <div style={styles.trackingSetup}>
-              <span>{setupMode === "manual" ? "Manual Setup" : "Tracked"}</span>
+              <span>
+                {setupMode === "manual"
+                  ? "Manual Setup"
+                  : readOnly
+                    ? "Research Setup"
+                    : "Tracked"}
+              </span>
               <strong style={styles.trackingValue}>{formatLegs(ticket.candidate?.legs ?? candidate?.legs ?? [])}</strong>
             </div>
             <div style={styles.trackingCell}><span>Age</span><strong style={styles.trackingValue}>{activeRead.candidateAgeCandles} candles</strong></div>
@@ -519,14 +541,14 @@ export function ExecutionTradeDock({
             <div style={styles.error}>{contribution.blockers.join(" ")}</div>
           ) : null}
 
-          {!engineCleared ? (
+          {!readOnly && !engineCleared ? (
             <div style={styles.warning}>
               Engine approval requires SELL READY with no hard blocker. To record
               a broker fill anyway, explicitly enable a manual override below.
             </div>
           ) : null}
 
-          {!engineCleared ? (
+          {!readOnly && !engineCleared ? (
             <div style={styles.overrideBox}>
               <label style={styles.overrideCheck}>
                 <input
@@ -571,9 +593,11 @@ export function ExecutionTradeDock({
             }}
             style={{ ...styles.openButton, opacity: canOpen ? 1 : 0.45 }}
           >
-            {busy
-              ? "Saving…"
-              : `Add / Track ${strategyName(selectedStrategy)}`}
+            {readOnly
+              ? "Research Only · Entry Disabled"
+              : busy
+                ? "Saving…"
+                : `Add / Track ${strategyName(selectedStrategy)}`}
           </button>
         </>
       ) : null}
@@ -941,6 +965,17 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 8,
     fontWeight: 900,
     whiteSpace: "nowrap",
+  },
+  readOnlyBanner: {
+    display: "grid",
+    gap: 4,
+    border: "1px solid rgba(192,132,252,.38)",
+    borderRadius: 8,
+    padding: 8,
+    background: "rgba(76,29,149,.12)",
+    color: "#c4b5fd",
+    fontSize: 9,
+    lineHeight: 1.45,
   },
   portfolioSummary: {
     display: "grid",
