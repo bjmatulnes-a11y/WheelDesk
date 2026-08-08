@@ -6,6 +6,8 @@ export type ZeroDteRiskPolicy = {
   riskMode: CreditSpreadRiskMode;
   maxRiskPerTradeDollars: number | null;
   grossRiskBudgetDollars: number;
+  accountEquityDollars: number | null;
+  riskPerTradePct: number;
   dailyLossLimitDollars: number | null;
   minSellableCredit: number;
   minWidth: number;
@@ -32,6 +34,8 @@ export const DEFAULT_ZERO_DTE_RISK_POLICY: ZeroDteRiskPolicy = {
   riskMode: "balanced",
   maxRiskPerTradeDollars: 750,
   grossRiskBudgetDollars: 5000,
+  accountEquityDollars: null,
+  riskPerTradePct: 0.75,
   dailyLossLimitDollars: null,
   minSellableCredit: 0.25,
   minWidth: 5,
@@ -94,6 +98,12 @@ export function normalizeZeroDteRiskPolicy(
       DEFAULT_ZERO_DTE_RISK_POLICY.grossRiskBudgetDollars,
       500,
     ),
+    accountEquityDollars: nullablePositive(value?.accountEquityDollars, null),
+    riskPerTradePct: clamp(
+      finite(value?.riskPerTradePct) ?? DEFAULT_ZERO_DTE_RISK_POLICY.riskPerTradePct,
+      0.1,
+      5,
+    ),
     dailyLossLimitDollars: nullablePositive(value?.dailyLossLimitDollars, null),
     minSellableCredit: nonNegative(
       value?.minSellableCredit,
@@ -136,6 +146,11 @@ export function absoluteDistanceFloorPoints(
     policy.minimumAbsoluteDistancePoints,
     Math.max(0, spot) * policy.minimumAbsoluteDistanceSpotPct,
   );
+}
+
+export function accountRiskBudgetDollars(policy: ZeroDteRiskPolicy) {
+  if (policy.accountEquityDollars === null) return null;
+  return (policy.accountEquityDollars * policy.riskPerTradePct) / 100;
 }
 
 export function eventRiskScoreAdjustment(policy: ZeroDteRiskPolicy) {

@@ -74,6 +74,19 @@ export function ZeroDteRiskPolicyPanel({
           }
         />
         <NumberField
+          label="Account equity"
+          value={policy.accountEquityDollars}
+          step={1000}
+          placeholder="off"
+          onChange={(value) => patch({ accountEquityDollars: value })}
+        />
+        <NumberField
+          label="Risk % / trade"
+          value={policy.riskPerTradePct}
+          step={0.05}
+          onChange={(value) => patch({ riskPerTradePct: value ?? 0.75 })}
+        />
+        <NumberField
           label="Daily loss stop"
           value={policy.dailyLossLimitDollars}
           step={100}
@@ -116,6 +129,14 @@ export function ZeroDteRiskPolicyPanel({
       <div style={styles.readoutRow}>
         <span>Strict 0DTE <strong>LOCKED ON</strong></span>
         <span>Realized today <strong>{money(realizedPnlDollars)}</strong></span>
+        <span>
+          Account risk cap{" "}
+          <strong>
+            {policy.accountEquityDollars == null
+              ? "OFF"
+              : money((policy.accountEquityDollars * policy.riskPerTradePct) / 100)}
+          </strong>
+        </span>
         <span>
           Range / opening EM <strong>{percent(volContext?.rangeConsumptionPct)}</strong>
         </span>

@@ -1,5 +1,7 @@
 import type { ZeroDteChainRow, ZeroDteRecommendation } from "./zeroDteOiIntelligence";
 import type { ZeroDteStrikeFlowRead } from "./zeroDteStrikeFlow";
+import type { ZeroDteLeastResistancePath } from "./zeroDteLeastResistancePath";
+import { scoreLeastResistanceSide } from "./zeroDteLeastResistancePath";
 import type {
   ZeroDteCreditSpreadSelection,
 } from "./zeroDteCreditSpreadSelector";
@@ -20,6 +22,7 @@ export type BuildZeroDteStrategyOrchestrationInput = {
   spxRows: ZeroDteChainRow[];
   mapState: SessionMapManagerState | null | undefined;
   strikeFlow?: ZeroDteStrikeFlowRead | null;
+  leastResistancePath?: ZeroDteLeastResistancePath | null;
 };
 
 export function orchestrateZeroDteStrategySelection(
@@ -48,6 +51,7 @@ export function orchestrateZeroDteStrategySelection(
     mapState,
     controlling,
     strikeFlow: input.strikeFlow ?? null,
+    leastResistancePath: input.leastResistancePath ?? null,
   });
   const call = buildSpreadRanking({
     spread: baseSelection.creditSpreadBook.call,
@@ -56,8 +60,14 @@ export function orchestrateZeroDteStrategySelection(
     mapState,
     controlling,
     strikeFlow: input.strikeFlow ?? null,
+    leastResistancePath: input.leastResistancePath ?? null,
   });
-  const ironFly = buildIronFlyRanking({ rec, spxRows, mapState });
+  const ironFly = buildIronFlyRanking({
+    rec,
+    spxRows,
+    mapState,
+    leastResistancePath: input.leastResistancePath ?? null,
+  });
   const noTrade = buildNoTradeRanking({
     rec,
     mapState,
@@ -163,8 +173,9 @@ function buildSpreadRanking(args: {
   mapState: SessionMapManagerState;
   controlling: MarketMapSnapshot;
   strikeFlow: ZeroDteStrikeFlowRead | null;
+  leastResistancePath: ZeroDteLeastResistancePath | null;
 }): ZeroDteStrategyRanking {
-  const { spread, side, rec, mapState, controlling, strikeFlow } = args;
+  const { spread, side, rec, mapState, controlling, strikeFlow, leastResistancePath } = args;
   const reasons: string[] = [];
   const blockers: string[] = [];
   const executable =
@@ -181,6 +192,10 @@ function buildSpreadRanking(args: {
       : 50 - rec.dealerPressure * 0.8,
   );
   const flowAlignment = spreadFlowAlignment(side, strikeFlow);
+  const pathAlignment = scoreLeastResistanceSide({
+    path: leastResistancePath,
+    side,
+  });
   const wall = side === "put" ? controlling.putWall : controlling.callWall;
 
   if (mapState.phase === "TRANSITION") {
@@ -233,10 +248,11 @@ function buildSpreadRanking(args: {
     (side === "put" ? spread.shortStrike > wall : spread.shortStrike < wall);
 
   let score =
-    spread.confidence * 0.46 +
-    mapAlignment * 0.25 +
-    dealerAlignment * 0.17 +
-    flowAlignment * 0.12;
+    spread.confidence * 0.42 +
+    mapAlignment * 0.23 +
+    dealerAlignment * 0.15 +
+    flowAlignment * 0.10 +
+    pathAlignment * 0.10;
 
   if (mapState.phase === "TRANSITION") {
     const confirmationRatio =
@@ -260,8 +276,13 @@ function buildSpreadRanking(args: {
     score >= 35;
 
   reasons.push(
-    `Map ${Math.round(mapAlignment)} · dealer ${Math.round(dealerAlignment)} · flow ${Math.round(flowAlignment)}.`,
+    `Map ${Math.round(mapAlignment)} · dealer ${Math.round(dealerAlignment)} · flow ${Math.round(flowAlignment)} · path ${Math.round(pathAlignment)}.`,
   );
+  if (leastResistancePath) {
+    reasons.push(
+      `Least resistance is ${leastResistancePath.direction} at ${leastResistancePath.confidence}% confidence with terminal cone ${leastResistancePath.terminalTrough.toFixed(0)}–${leastResistancePath.terminalCrest.toFixed(0)}.`,
+    );
+  }
 
   return {
     rank: 0,
@@ -273,6 +294,7 @@ function buildSpreadRanking(args: {
     mapAlignment: clamp(mapAlignment),
     dealerAlignment: clamp(dealerAlignment),
     flowAlignment: clamp(flowAlignment),
+    pathAlignment: clamp(pathAlignment),
     strikes:
       spread.shortStrike !== null && spread.longStrike !== null
         ? `${spread.shortStrike.toFixed(0)} / ${spread.longStrike.toFixed(0)}`
@@ -289,8 +311,9 @@ function buildIronFlyRanking(args: {
   rec: ZeroDteRecommendation;
   spxRows: ZeroDteChainRow[];
   mapState: SessionMapManagerState;
+  leastResistancePath: ZeroDteLeastResistancePath | null;
 }): ZeroDteStrategyRanking {
-  const { rec, spxRows, mapState } = args;
+  const { rec, spxRows, mapState, leastResistancePath } = args;
   const controlling = mapState.opening;
   const reasons: string[] = [];
   const blockers: string[] = [];
@@ -309,6 +332,22 @@ function buildIronFlyRanking(args: {
   const dealerAlignment = clamp(100 - Math.abs(rec.dealerPressure) * 1.6);
   const flowAlignment = mapState.railBreached === "NONE" ? 72 : 22;
   const pinProbability = controlling.structure.pinProbability;
+  const pathNeutrality =
+    !leastResistancePath
+      ? 55
+      : leastResistancePath.direction === "NEUTRAL"
+        ? 95
+        : Math.max(10, 70 - leastResistancePath.confidence * 0.55);
+  const pathConeScore =
+    !leastResistancePath
+      ? 55
+      : clamp(
+          100 -
+            (leastResistancePath.terminalConeWidth /
+              Math.max(leastResistancePath.expectedMoveRemaining, 1)) *
+              70,
+        );
+  const pathAlignment = clamp(pathNeutrality * 0.65 + pathConeScore * 0.35);
 
   if (credit === null) blockers.push("The opening iron fly cannot be priced from live mids.");
   if (mapState.phase === "TRANSITION") {
@@ -320,14 +359,23 @@ function buildIronFlyRanking(args: {
   if (Math.abs(rec.dealerPressure) > 35) {
     blockers.push("Dealer pressure is too directional for a symmetric fly.");
   }
+  const pathHardDirectional = Boolean(
+    leastResistancePath &&
+      leastResistancePath.confidence >= 75 &&
+      leastResistancePath.direction !== "NEUTRAL",
+  );
+  if (pathHardDirectional) {
+    blockers.push("High-confidence least-resistance path is directional; symmetric fly entry is blocked.");
+  }
 
   let score =
-    rec.confidenceScore * 0.25 +
-    rec.spx.symmetryScore * 0.2 +
-    pinProbability * 0.18 +
-    mapAlignment * 0.2 +
-    dealerAlignment * 0.12 +
-    flowAlignment * 0.05;
+    rec.confidenceScore * 0.22 +
+    rec.spx.symmetryScore * 0.18 +
+    pinProbability * 0.16 +
+    mapAlignment * 0.18 +
+    dealerAlignment * 0.11 +
+    flowAlignment * 0.05 +
+    pathAlignment * 0.10;
   score -= blockers.length * 10;
 
   if (mapState.phase === "ACTIVE" && mapState.railBreached === "NONE") {
@@ -335,6 +383,11 @@ function buildIronFlyRanking(args: {
   }
   if (pinProbability >= 60) reasons.push("Pin probability supports center attraction.");
   if (dealerAlignment >= 65) reasons.push("Dealer pressure is sufficiently neutral.");
+  if (leastResistancePath) {
+    reasons.push(
+      `Least-resistance fly alignment ${Math.round(pathAlignment)}/100; path ${leastResistancePath.direction} ${leastResistancePath.confidence}% with ${leastResistancePath.terminalConeWidth.toFixed(1)}-point terminal cone.`,
+    );
+  }
   reasons.push(
     `Center distance ${centerDistance.toFixed(1)} points; opening IF center ${controlling.center.toFixed(0)}.`,
   );
@@ -349,10 +402,12 @@ function buildIronFlyRanking(args: {
       mapState.phase !== "TRANSITION" &&
       mapState.railBreached === "NONE" &&
       Math.abs(rec.dealerPressure) <= 35 &&
+      !pathHardDirectional &&
       score >= 40,
     mapAlignment,
     dealerAlignment,
     flowAlignment,
+    pathAlignment,
     strikes: `${controlling.lowerWing.toFixed(0)} / ${controlling.center.toFixed(0)} / ${controlling.upperWing.toFixed(0)}`,
     estimatedCredit: credit,
     maxRiskDollars:
@@ -500,7 +555,6 @@ function optionMid(
   if (Number.isFinite(row.bid) && Number.isFinite(row.ask)) {
     return (Number(row.bid) + Number(row.ask)) / 2;
   }
-  if (Number.isFinite(row.last)) return Number(row.last);
   return null;
 }
 

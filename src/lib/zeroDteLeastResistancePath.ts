@@ -1,5 +1,6 @@
 import type { SpxOiMapRow, ZeroDteRecommendation } from "./zeroDteOiIntelligence";
 import type { ZeroDteFlowStateRead } from "./zeroDteFlowState";
+import { buildZeroDteRemainingMove } from "./zeroDteRemainingMove";
 
 export type ZeroDtePathPoint = {
   time: number;
@@ -14,29 +15,53 @@ export type ZeroDteLeastResistancePath = {
   stepMinutes: number;
   direction: "UP" | "DOWN" | "NEUTRAL";
   confidence: number;
+  flowSource: "engine" | "fallback";
+  expectedMoveRemaining: number;
+  expectedMoveSource: "LIVE_STRADDLE" | "TIME_AWARE_FLOOR";
+  terminalCenter: number;
+  terminalCrest: number;
+  terminalTrough: number;
+  terminalConeWidth: number;
   explanation: string[];
 };
 
 export function buildZeroDteLeastResistancePath(args: {
   recommendation: ZeroDteRecommendation;
-  lastCandleTime: number;
+  generatedAt: string;
   candleFrequencyMinutes: number;
 }): ZeroDteLeastResistancePath | null {
   const { recommendation } = args;
   const spot = recommendation.spxPrice;
   const rows = recommendation.spxChainMap;
-  if (!Number.isFinite(spot) || !rows.length || !Number.isFinite(args.lastCandleTime)) {
+  const generatedMs = Date.parse(args.generatedAt);
+  if (!Number.isFinite(spot) || !rows.length || !Number.isFinite(generatedMs)) {
     return null;
   }
 
   const flow = recommendation.dealerPressureRead?.flowState ?? null;
+  const flowSource: ZeroDteLeastResistancePath["flowSource"] = flow ? "engine" : "fallback";
   const stepMinutes = args.candleFrequencyMinutes === 1 ? 5 : 10;
-  const horizonMinutes = args.candleFrequencyMinutes === 1 ? 75 : 120;
-  const steps = Math.max(6, Math.round(horizonMinutes / stepMinutes));
+  const baseHorizonMinutes = args.candleFrequencyMinutes === 1 ? 75 : 120;
   const strikeStep = inferStrikeStep(rows);
-  const expectedMove = Math.max(recommendation.expectedMove || 0, strikeStep * 8, 40);
-  const radius = Math.max(expectedMove * 1.25, 70);
+  const remaining = buildZeroDteRemainingMove({
+    generatedAt: args.generatedAt,
+    spot,
+    liveExpectedMove: recommendation.expectedMove,
+    strikeStep,
+  });
+
+  if (remaining.minutesRemaining <= stepMinutes) return null;
+  const horizonMinutes = Math.min(baseHorizonMinutes, remaining.minutesRemaining);
+  const steps = Math.floor(horizonMinutes / stepMinutes);
+  if (steps < 2) return null;
+
+  const expectedMove = remaining.expectedMoveRemaining;
+  const radius = Math.max(expectedMove * 1.25, strikeStep * 6);
   const prices = buildPriceGrid(spot - radius, spot + radius, strikeStep);
+  const maxScore = Math.max(
+    1,
+    rows.reduce((max, row) => Math.max(max, row.score || 0), 0),
+  );
 
   const field = prices.map((price) =>
     terrainCost({
@@ -47,6 +72,7 @@ export function buildZeroDteLeastResistancePath(args: {
       flow,
       expectedMove,
       strikeStep,
+      maxScore,
     }),
   );
 
@@ -57,7 +83,9 @@ export function buildZeroDteLeastResistancePath(args: {
   const transitionWeight = 0.45 + viscosity / 85;
   const directionPush = directionalPush(flow, recommendation.dealerPressure);
 
-  let previous = prices.map((_, index) => (index === startIndex ? 0 : Number.POSITIVE_INFINITY));
+  let previous = prices.map((_, index) =>
+    index === startIndex ? 0 : Number.POSITIVE_INFINITY,
+  );
   const parents: number[][] = [];
 
   for (let step = 1; step <= steps; step += 1) {
@@ -67,15 +95,18 @@ export function buildZeroDteLeastResistancePath(args: {
 
     for (let target = 0; target < prices.length; target += 1) {
       const targetPrice = prices[target];
-      const driftReward = ((targetPrice - spot) / expectedMove) * directionPush * progress * 8;
+      const driftReward =
+        ((targetPrice - spot) / expectedMove) * directionPush * progress * 8;
       const timeCost = field[target] - driftReward;
       const fromStart = Math.max(0, target - maxIndexJump);
       const fromEnd = Math.min(prices.length - 1, target + maxIndexJump);
 
       for (let source = fromStart; source <= fromEnd; source += 1) {
         if (!Number.isFinite(previous[source])) continue;
-        const movement = Math.abs(target - source);
-        const reversalPenalty = movement * movement * transitionWeight;
+        const movementPoints = Math.abs(target - source) * strikeStep;
+        const normalizedMovement = movementPoints / 5;
+        const reversalPenalty =
+          normalizedMovement * normalizedMovement * transitionWeight;
         const candidate = previous[source] + timeCost + reversalPenalty;
         if (candidate < next[target]) {
           next[target] = candidate;
@@ -88,18 +119,24 @@ export function buildZeroDteLeastResistancePath(args: {
     parents.push(stepParents);
   }
 
-  let endIndex = previous.reduce(
-    (best, value, index, all) => (value < all[best] ? index : best),
-    0,
-  );
+  const finiteTerminal = previous
+    .map((value, index) => ({ value, index }))
+    .filter((item) => Number.isFinite(item.value));
+  if (!finiteTerminal.length) return null;
+
+  let endIndex = finiteTerminal.reduce((best, item) =>
+    item.value < best.value ? item : best,
+  ).index;
   const pathIndexes = new Array<number>(steps + 1);
   pathIndexes[steps] = endIndex;
   for (let step = steps - 1; step >= 0; step -= 1) {
-    endIndex = parents[step][endIndex] >= 0 ? parents[step][endIndex] : endIndex;
+    endIndex =
+      parents[step][endIndex] >= 0 ? parents[step][endIndex] : endIndex;
     pathIndexes[step] = endIndex;
   }
   pathIndexes[0] = startIndex;
 
+  const anchorTime = Math.floor(generatedMs / 1000);
   const points = pathIndexes.map((priceIndex, step) => {
     const center = prices[priceIndex];
     const bounds = localPathBounds({
@@ -111,16 +148,22 @@ export function buildZeroDteLeastResistancePath(args: {
       progress: step / steps,
     });
     return {
-      time: args.lastCandleTime + step * stepMinutes * 60,
+      time: anchorTime + step * stepMinutes * 60,
       center: round(center),
       crest: round(bounds.crest),
       trough: round(bounds.trough),
     };
   });
 
-  const last = points.at(-1)?.center ?? spot;
-  const direction = last > spot + strikeStep ? "UP" : last < spot - strikeStep ? "DOWN" : "NEUTRAL";
-  const confidence = clamp(
+  const terminal = points.at(-1);
+  if (!terminal) return null;
+  const direction =
+    terminal.center > spot + strikeStep
+      ? "UP"
+      : terminal.center < spot - strikeStep
+        ? "DOWN"
+        : "NEUTRAL";
+  const rawConfidence = clamp(
     Math.round(
       recommendation.confidenceScore * 0.55 +
         (flow?.confidenceScore ?? 50) * 0.3 +
@@ -129,19 +172,87 @@ export function buildZeroDteLeastResistancePath(args: {
     0,
     100,
   );
+  const confidence =
+    flowSource === "fallback" ? Math.min(55, rawConfidence) : rawConfidence;
 
   return {
     points,
-    horizonMinutes,
+    horizonMinutes: steps * stepMinutes,
     stepMinutes,
     direction,
     confidence,
+    flowSource,
+    expectedMoveRemaining: expectedMove,
+    expectedMoveSource: remaining.source,
+    terminalCenter: terminal.center,
+    terminalCrest: terminal.crest,
+    terminalTrough: terminal.trough,
+    terminalConeWidth: round(Math.max(0, terminal.crest - terminal.trough)),
     explanation: [
-      `Path minimizes cumulative strike resistance over ${horizonMinutes} minutes.`,
-      `Transition speed is limited by options viscosity ${Math.round(viscosity)}.`,
-      `Directional hose pressure contributes ${directionPush > 0 ? "upward" : directionPush < 0 ? "downward" : "neutral"} drift.`,
+      `Path minimizes cumulative strike resistance over ${steps * stepMinutes} minutes and never projects past the 15:00 CT cash close.`,
+      flow
+        ? `Transition speed uses measured options viscosity ${Math.round(viscosity)}.`
+        : "Dealer-flow state is unavailable; fallback transition constants are in use and path confidence is capped at 55%.",
+      `Remaining-move scale is ${expectedMove.toFixed(1)} points from ${remaining.source === "LIVE_STRADDLE" ? "the live ATM straddle" : "the time-aware floor"}.`,
+      `Directional hose pressure contributes ${
+        directionPush > 0 ? "upward" : directionPush < 0 ? "downward" : "neutral"
+      } drift.`,
     ],
   };
+}
+
+export function scoreLeastResistanceStrike(args: {
+  path: ZeroDteLeastResistancePath | null | undefined;
+  side: "put" | "call";
+  shortStrike: number;
+}): number {
+  const path = args.path;
+  if (!path) return 50;
+  const halfWidth = Math.max(path.terminalConeWidth / 2, 5);
+  const insidePoints =
+    args.side === "put"
+      ? Math.max(0, args.shortStrike - path.terminalTrough)
+      : Math.max(0, path.terminalCrest - args.shortStrike);
+  const raw = insidePoints <= 0
+    ? 100
+    : clamp(100 - (insidePoints / halfWidth) * 100, 0, 100);
+  const confidenceWeight = path.confidence / 100;
+  return round(50 + (raw - 50) * confidenceWeight);
+}
+
+export function scoreLeastResistanceSide(args: {
+  path: ZeroDteLeastResistancePath | null | undefined;
+  side: "put" | "call";
+}) {
+  const path = args.path;
+  if (!path) return 50;
+  const raw =
+    path.direction === "NEUTRAL"
+      ? 55
+      : args.side === "put"
+        ? path.direction === "UP"
+          ? 100
+          : 0
+        : path.direction === "DOWN"
+          ? 100
+          : 0;
+  return round(50 + (raw - 50) * (path.confidence / 100));
+}
+
+export function leastResistanceThreatensShort(args: {
+  path: ZeroDteLeastResistancePath | null | undefined;
+  strategy: "put-credit-spread" | "call-credit-spread" | "iron-fly";
+  shortStrike: number | null;
+}) {
+  const path = args.path;
+  if (!path || args.shortStrike === null || path.confidence < 60) return false;
+  if (args.strategy === "put-credit-spread") {
+    return path.terminalTrough <= args.shortStrike;
+  }
+  if (args.strategy === "call-credit-spread") {
+    return path.terminalCrest >= args.shortStrike;
+  }
+  return false;
 }
 
 function terrainCost(args: {
@@ -152,15 +263,15 @@ function terrainCost(args: {
   flow: ZeroDteFlowStateRead | null;
   expectedMove: number;
   strikeStep: number;
+  maxScore: number;
 }) {
-  const maxScore = Math.max(1, ...args.rows.map((row) => row.score || 0));
   let resistance = 0;
   let attraction = 0;
 
   for (const row of args.rows) {
     const distance = Math.abs(args.price - row.strike);
     const decay = Math.exp(-distance / Math.max(args.strikeStep * 2.2, 9));
-    const strength = clamp((row.score || 0) / maxScore, 0, 1);
+    const strength = clamp((row.score || 0) / args.maxScore, 0, 1);
     const sideStrength = clamp((row.sideBiasPct || 0) / 100, 0, 1);
 
     if (row.sideBias === "call" && args.price <= row.strike) {
@@ -174,15 +285,42 @@ function terrainCost(args: {
     if (row.isPin) attraction += strength * decay * 28;
   }
 
-  const centerDistance = Math.abs(args.price - args.recommendation.suggestedCenter) / args.expectedMove;
-  const pin = args.recommendation.spx.strongestPin ?? args.recommendation.suggestedCenter;
+  const centerDistance =
+    Math.abs(args.price - args.recommendation.suggestedCenter) /
+    args.expectedMove;
+  const pin =
+    args.recommendation.spx.strongestPin ??
+    args.recommendation.suggestedCenter;
   const pinDistance = Math.abs(args.price - pin) / args.expectedMove;
   const wallPenalty =
-    barrierPenalty(args.price, args.spot, args.recommendation.spx.callWall, "up", args.expectedMove) +
-    barrierPenalty(args.price, args.spot, args.recommendation.spx.putWall, "down", args.expectedMove);
+    barrierPenalty(
+      args.price,
+      args.spot,
+      args.recommendation.spx.callWall,
+      "up",
+      args.expectedMove,
+    ) +
+    barrierPenalty(
+      args.price,
+      args.spot,
+      args.recommendation.spx.putWall,
+      "down",
+      args.expectedMove,
+    );
 
-  const absorption = args.flow?.state === "ABSORBING" ? 1.3 : args.flow?.state === "AMPLIFYING" ? 0.72 : 1;
-  return resistance * absorption + centerDistance * 8 + pinDistance * 5 + wallPenalty - attraction;
+  const absorption =
+    args.flow?.state === "ABSORBING"
+      ? 1.3
+      : args.flow?.state === "AMPLIFYING"
+        ? 0.72
+        : 1;
+  return (
+    resistance * absorption +
+    centerDistance * 8 +
+    pinDistance * 5 +
+    wallPenalty -
+    attraction
+  );
 }
 
 function barrierPenalty(
@@ -194,7 +332,10 @@ function barrierPenalty(
 ) {
   if (!Number.isFinite(wall)) return 0;
   const value = Number(wall);
-  const crossed = direction === "up" ? price > value && spot <= value : price < value && spot >= value;
+  const crossed =
+    direction === "up"
+      ? price > value && spot <= value
+      : price < value && spot >= value;
   if (!crossed) return 0;
   return 22 + (Math.abs(price - value) / expectedMove) * 10;
 }
@@ -216,7 +357,8 @@ function localPathBounds(args: {
         : args.flow?.state === "RELEASING"
           ? 1
           : 0.85;
-  const maxWidth = args.expectedMove * (0.22 + args.progress * 0.18) * stateWidth;
+  const maxWidth =
+    args.expectedMove * (0.22 + args.progress * 0.18) * stateWidth;
   const costAllowance = 14 + (args.flow?.releaseRiskScore ?? 50) * 0.12;
 
   let lower = args.centerIndex;
@@ -235,11 +377,31 @@ function localPathBounds(args: {
   return { trough: args.prices[lower], crest: args.prices[upper] };
 }
 
-function directionalPush(flow: ZeroDteFlowStateRead | null, signedPressure: number) {
-  const direction = flow?.direction ?? (signedPressure > 15 ? "UP" : signedPressure < -15 ? "DOWN" : "NEUTRAL");
+function directionalPush(
+  flow: ZeroDteFlowStateRead | null,
+  signedPressure: number,
+) {
+  const direction =
+    flow?.direction ??
+    (signedPressure > 15
+      ? "UP"
+      : signedPressure < -15
+        ? "DOWN"
+        : "NEUTRAL");
   const sign = direction === "UP" ? 1 : direction === "DOWN" ? -1 : 0;
-  const stateMultiplier = flow?.state === "AMPLIFYING" ? 1.25 : flow?.state === "ABSORBING" ? 0.35 : flow?.state === "RELEASING" ? 0.9 : 0.55;
-  return sign * clamp(Math.abs(signedPressure) / 55, 0, 1.5) * stateMultiplier;
+  const stateMultiplier =
+    flow?.state === "AMPLIFYING"
+      ? 1.25
+      : flow?.state === "ABSORBING"
+        ? 0.35
+        : flow?.state === "RELEASING"
+          ? 0.9
+          : 0.55;
+  return (
+    sign *
+    clamp(Math.abs(signedPressure) / 55, 0, 1.5) *
+    stateMultiplier
+  );
 }
 
 function travelLimit(flow: ZeroDteFlowStateRead | null, strikeStep: number) {
@@ -250,10 +412,18 @@ function travelLimit(flow: ZeroDteFlowStateRead | null, strikeStep: number) {
 }
 
 function inferStrikeStep(rows: SpxOiMapRow[]) {
-  const strikes = [...new Set(rows.map((row) => row.strike).filter(Number.isFinite))].sort((a, b) => a - b);
-  const gaps = strikes.slice(1).map((strike, index) => strike - strikes[index]).filter((gap) => gap > 0 && gap <= 25);
+  const strikes = [
+    ...new Set(rows.map((row) => row.strike).filter(Number.isFinite)),
+  ].sort((a, b) => a - b);
+  const gaps = strikes
+    .slice(1)
+    .map((strike, index) => strike - strikes[index])
+    .filter((gap) => gap > 0 && gap <= 25);
   if (!gaps.length) return 5;
-  return Math.max(5, Math.min(10, Math.round(Math.min(...gaps) / 5) * 5));
+  return Math.max(
+    5,
+    Math.min(10, Math.round(Math.min(...gaps) / 5) * 5),
+  );
 }
 
 function buildPriceGrid(low: number, high: number, step: number) {
@@ -266,7 +436,9 @@ function buildPriceGrid(low: number, high: number, step: number) {
 
 function nearestIndex(values: number[], target: number) {
   return values.reduce((best, value, index) =>
-    Math.abs(value - target) < Math.abs(values[best] - target) ? index : best,
+    Math.abs(value - target) < Math.abs(values[best] - target)
+      ? index
+      : best,
   0);
 }
 

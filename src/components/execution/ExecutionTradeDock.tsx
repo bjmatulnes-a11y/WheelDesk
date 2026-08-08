@@ -12,6 +12,8 @@ import {
 } from "../../lib/zeroDteExecutionIntelligence";
 import type { StableExecutionCandidateTrack } from "../../lib/execution/useStableExecutionCandidates";
 import type { ZeroDtePortfolioRead } from "../../lib/zeroDtePortfolioEngine";
+import type { ZeroDteRiskPolicy } from "../../lib/zeroDteRiskPolicy";
+import { accountRiskBudgetDollars } from "../../lib/zeroDteRiskPolicy";
 
 type Props = {
   read: ZeroDteExecutionRead | null;
@@ -19,6 +21,7 @@ type Props = {
   positionReads: Record<string, ZeroDteExecutionRead>;
   candidates: Partial<Record<ExecutionStrategy, ExecutionCandidate | null>>;
   tracks: Record<ExecutionStrategy, StableExecutionCandidateTrack> | null;
+  riskPolicy: ZeroDteRiskPolicy;
   selectedStrategy: ExecutionStrategy;
   onStrategyChange: (strategy: ExecutionStrategy) => void;
   evaluateCandidate?: (candidate: ExecutionCandidate) => ZeroDteExecutionRead | null;
@@ -50,6 +53,7 @@ export function ExecutionTradeDock({
   positionReads,
   candidates,
   tracks,
+  riskPolicy,
   selectedStrategy,
   onStrategyChange,
   evaluateCandidate,
@@ -195,14 +199,27 @@ export function ExecutionTradeDock({
     ? Math.max(0, portfolio.riskBudgetDollars - portfolio.grossRiskDollars)
     : null;
   const oneLotRisk = ticket.candidate?.maxRiskDollars ?? null;
+  const accountRiskBudget = accountRiskBudgetDollars(riskPolicy);
+  const regimeAdjustedAccountRiskBudget =
+    accountRiskBudget === null
+      ? null
+      : accountRiskBudget * activeRead.recommendedSizeMultiplier;
+  const regimeAdjustedPortfolioRoom =
+    remainingRiskBudget === null
+      ? null
+      : remainingRiskBudget * activeRead.recommendedSizeMultiplier;
+  const effectiveTicketRiskBudget =
+    regimeAdjustedAccountRiskBudget === null
+      ? regimeAdjustedPortfolioRoom
+      : regimeAdjustedPortfolioRoom === null
+        ? regimeAdjustedAccountRiskBudget
+        : Math.min(
+            regimeAdjustedAccountRiskBudget,
+            regimeAdjustedPortfolioRoom,
+          );
   const recommendedMaxQuantity =
-    remainingRiskBudget !== null && oneLotRisk !== null && oneLotRisk > 0
-      ? Math.max(
-          0,
-          Math.floor(
-            (remainingRiskBudget * activeRead.recommendedSizeMultiplier) / oneLotRisk,
-          ),
-        )
+    effectiveTicketRiskBudget !== null && oneLotRisk !== null && oneLotRisk > 0
+      ? Math.max(0, Math.floor(effectiveTicketRiskBudget / oneLotRisk))
       : null;
   const ticketSizeExceedsRecommendation = Boolean(
     recommendedMaxQuantity !== null && parsedQuantity > recommendedMaxQuantity,
@@ -456,6 +473,10 @@ export function ExecutionTradeDock({
             <DockMetric
               label="Engine Max Qty"
               value={recommendedMaxQuantity == null ? "—" : String(recommendedMaxQuantity)}
+            />
+            <DockMetric
+              label="Account Risk Cap"
+              value={accountRiskBudget == null ? "OFF" : dollars(accountRiskBudget)}
             />
             <DockMetric
               label="Short Distance"

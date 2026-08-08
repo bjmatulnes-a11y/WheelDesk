@@ -30,6 +30,9 @@ import {
   type ZeroDteVolContext,
 } from "./zeroDteRiskPolicy";
 import { isOpeningMapCaptureOnTime } from "./zeroDteOpeningMap";
+import type { ZeroDteLeastResistancePath } from "./zeroDteLeastResistancePath";
+import { leastResistanceThreatensShort } from "./zeroDteLeastResistancePath";
+import { buildZeroDteRemainingMove } from "./zeroDteRemainingMove";
 import { minimumDistanceExpectedMovePctForRiskMode } from "./zeroDteCreditSpreadSelector";
 
 export type ExecutionLifecycle =
@@ -200,6 +203,8 @@ export type ZeroDteExecutionRead = {
   currentBuybackDebit: number | null;
   shortDeltaAbs: number | null;
   touchRiskProxyPct: number | null;
+  remainingMovePoints: number;
+  leastResistancePath: ZeroDteLeastResistancePath | null;
   recommendedSizeMultiplier: number;
   volContext: ZeroDteVolContext | null;
   eventRisk: "NORMAL" | "HIGH";
@@ -281,6 +286,7 @@ export function buildZeroDteExecutionRead(args: {
   volContext?: ZeroDteVolContext | null;
   dailyLossBlocked?: boolean;
   leaderCandidate?: ExecutionCandidate | null;
+  leastResistancePath?: ZeroDteLeastResistancePath | null;
 }): ZeroDteExecutionRead {
   const {
     tradeDate,
@@ -321,6 +327,13 @@ export function buildZeroDteExecutionRead(args: {
       : null;
   const touchRiskProxyPct =
     shortDeltaAbs !== null ? Math.min(100, shortDeltaAbs * 200) : null;
+  const remainingMove = buildZeroDteRemainingMove({
+    generatedAt,
+    spot: recommendation.spxPrice,
+    liveExpectedMove: recommendation.expectedMove,
+    strikeStep: 5,
+  });
+  const leastResistancePath = args.leastResistancePath ?? null;
 
   const premiumWindowStart = position?.openedAt ?? args.tracking?.lockedAt ?? null;
   const premiumWindowStartMs = premiumWindowStart
@@ -376,7 +389,7 @@ export function buildZeroDteExecutionRead(args: {
   const shortDistance = candidateShortDistance(
     candidate,
     recommendation.spxPrice,
-    recommendation.expectedMove,
+    remainingMove.expectedMoveRemaining,
   );
   const portfolioContribution = candidate?.strategy
     ? args.portfolio?.candidateContribution[candidate.strategy] ?? null
@@ -407,6 +420,7 @@ export function buildZeroDteExecutionRead(args: {
     volContext: args.volContext ?? null,
     dailyLossBlocked: Boolean(args.dailyLossBlocked),
     shortDeltaAbs,
+    expectedMoveRemaining: remainingMove.expectedMoveRemaining,
   });
 
   const exitRead = buildExitRead({
@@ -423,6 +437,8 @@ export function buildZeroDteExecutionRead(args: {
     timeRegime,
     leaderCandidate: args.leaderCandidate ?? candidate,
     memory,
+    leastResistancePath,
+    expectedMoveRemaining: remainingMove.expectedMoveRemaining,
   });
 
   const cooldownActive = Boolean(
@@ -525,6 +541,8 @@ export function buildZeroDteExecutionRead(args: {
     currentBuybackDebit,
     shortDeltaAbs,
     touchRiskProxyPct,
+    remainingMovePoints: remainingMove.expectedMoveRemaining,
+    leastResistancePath,
     recommendedSizeMultiplier:
       timeRegime.sizeMultiplier *
       (args.riskPolicy ? eventRiskSizeMultiplier(args.riskPolicy) : 1) *
@@ -986,6 +1004,7 @@ function buildEntryRead(args: {
   volContext: ZeroDteVolContext | null;
   dailyLossBlocked: boolean;
   shortDeltaAbs: number | null;
+  expectedMoveRemaining: number;
 }) {
   const {
     candidate,
@@ -1005,6 +1024,7 @@ function buildEntryRead(args: {
     volContext,
     dailyLossBlocked,
     shortDeltaAbs,
+    expectedMoveRemaining,
   } = args;
   // Candidate discovery blockers are snapshots from the scanner. Once an exact
   // setup is locked, live execution gates below become authoritative so stale
@@ -1110,8 +1130,8 @@ function buildEntryRead(args: {
       timeRegime.minimumDistanceExpectedMovePct,
       riskModeExpectedMoveFloor,
     );
-    if (!(recommendation.expectedMove > 0) || shortDistance.expectedMovePct === null) {
-      blockers.push("ATM expected move is unavailable; short-strike safety cannot be verified.");
+    if (!(expectedMoveRemaining > 0) || shortDistance.expectedMovePct === null) {
+      blockers.push("Remaining expected move is unavailable; short-strike safety cannot be verified.");
     } else if (shortDistance.expectedMovePct < effectiveExpectedMoveFloor) {
       blockers.push(
         `Short-strike distance is below the ${Math.round(
@@ -1307,6 +1327,8 @@ function buildExitRead(args: {
   timeRegime: ZeroDteTimeRegimeRead;
   leaderCandidate: ExecutionCandidate | null;
   memory: ZeroDteExecutionMemory;
+  leastResistancePath: ZeroDteLeastResistancePath | null;
+  expectedMoveRemaining: number;
 }) {
   const {
     position,
@@ -1322,6 +1344,8 @@ function buildExitRead(args: {
     timeRegime,
     leaderCandidate,
     memory,
+    leastResistancePath,
+    expectedMoveRemaining,
   } = args;
 
   if (!position) {
@@ -1368,6 +1392,19 @@ function buildExitRead(args: {
       ((position.strategy === "put-credit-spread" && spot <= shortStrike) ||
         (position.strategy === "call-credit-spread" && spot >= shortStrike)),
   );
+  const pathThreat = leastResistanceThreatensShort({
+    path: leastResistancePath,
+    strategy: position.strategy,
+    shortStrike,
+  });
+  if (pathThreat && leastResistancePath) {
+    warnings.push(
+      `Least-resistance cone reaches the short strike before the ${leastResistancePath.horizonMinutes}-minute horizon; thesis is weakening early.`,
+    );
+    reasons.push(
+      `Forward path ${leastResistancePath.direction} ${leastResistancePath.confidence}% projects ${leastResistancePath.terminalTrough.toFixed(0)}–${leastResistancePath.terminalCrest.toFixed(0)} at horizon.`,
+    );
+  }
 
   if (position.strategy === "iron-fly") {
     mapFailure =
@@ -1388,7 +1425,7 @@ function buildExitRead(args: {
       shortItm ||
       (mapState.railBreached === "LOWER" &&
         shortDistancePoints !== null &&
-        shortDistancePoints <= Math.max(15, recommendation.expectedMove * 0.35));
+        shortDistancePoints <= Math.max(15, expectedMoveRemaining * 0.35));
     if (wallFailure) warnings.push("Put wall is breaking beneath the open put spread.");
     if (mapFailure) warnings.push("Bullish map alignment is weakening or reversed.");
   }
@@ -1403,7 +1440,7 @@ function buildExitRead(args: {
       shortItm ||
       (mapState.railBreached === "UPPER" &&
         shortDistancePoints !== null &&
-        shortDistancePoints <= Math.max(15, recommendation.expectedMove * 0.35));
+        shortDistancePoints <= Math.max(15, expectedMoveRemaining * 0.35));
     if (wallFailure) warnings.push("Call wall is being attacked above the open call spread.");
     if (mapFailure) warnings.push("Bearish map alignment is weakening or reversed.");
   }
@@ -1449,7 +1486,7 @@ function buildExitRead(args: {
   const terminalThreat = Boolean(
     timeRegime.regime === "FINAL_ENTRY" &&
       shortDistancePoints !== null &&
-      shortDistancePoints <= Math.max(15, recommendation.expectedMove * 0.35),
+      shortDistancePoints <= Math.max(15, expectedMoveRemaining * 0.35),
   );
   if (terminalThreat) warnings.push("Late-session gamma risk is elevated because spot is approaching the short strike.");
 
@@ -1460,7 +1497,15 @@ function buildExitRead(args: {
       : clamp(-premiumVelocityPerMinute * 35, 0, 14);
   const timeComponent = clamp((ageMinutes / 45) * 10, 0, 10);
   const rotationComponent = strategyRotated ? 10 : 0;
-  const invalidationComponent = hardThreat ? 25 : confirmedStructuralFailure ? 18 : mapFailure || wallFailure ? 8 : 0;
+  const invalidationComponent = hardThreat
+    ? 25
+    : confirmedStructuralFailure
+      ? 18
+      : mapFailure || wallFailure
+        ? 8
+        : pathThreat
+          ? 7
+          : 0;
   let exitScore = clamp(
     profitComponent +
       velocityComponent +
@@ -1529,7 +1574,15 @@ function buildExitRead(args: {
         label: "Map / wall invalidation",
         value: invalidationComponent,
         max: 25,
-        reason: hardThreat ? "Hard short-strike / rail threat" : confirmedStructuralFailure ? "Structural failure confirmed" : mapFailure || wallFailure ? "Thesis weakening; awaiting confirmation" : "Trade thesis remains intact",
+        reason: hardThreat
+          ? "Hard short-strike / rail threat"
+          : confirmedStructuralFailure
+            ? "Structural failure confirmed"
+            : mapFailure || wallFailure
+              ? "Thesis weakening; awaiting confirmation"
+              : pathThreat
+                ? "Least-resistance cone reaches the short strike"
+                : "Trade thesis remains intact",
       },
     ] satisfies ExecutionScoreComponent[],
   };

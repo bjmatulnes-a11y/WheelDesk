@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
+  ExecutionLeg,
   ExecutionStrategy,
   ZeroDteExecutionRead,
 } from "../zeroDteExecutionIntelligence";
@@ -20,6 +21,31 @@ export type ConfirmedExecutionSignal = {
   kind: ExecutionSignalKind;
   confidence: number;
   label: string;
+  setupKey: string | null;
+  legs: ExecutionLeg[];
+  markCredit: number | null;
+  sellableCredit: number | null;
+  maxRiskDollars: number | null;
+  shortDeltaAbs: number | null;
+  shortDistancePoints: number | null;
+  minimumEntryScore: number;
+  timeRegime: string;
+  eventRisk: "NORMAL" | "HIGH";
+  rangeConsumptionPct: number | null;
+  mapPhase: "OPENING" | "TRANSITION" | "ACTIVE";
+  mapCenter: number;
+  railBreached: "UPPER" | "LOWER" | "NONE";
+  peakCreditAtSignal: number | null;
+  premiumExpansionPct: number | null;
+  premiumRolloverPct: number | null;
+  premiumCrestStatus: string;
+  priceRejectionScore: number;
+  remainingMovePoints: number;
+  pathDirection: "UP" | "DOWN" | "NEUTRAL" | null;
+  pathConfidence: number | null;
+  pathFlowSource: "engine" | "fallback" | null;
+  pathTerminalTrough: number | null;
+  pathTerminalCrest: number | null;
 };
 
 type PendingExecutionSignal = {
@@ -28,6 +54,31 @@ type PendingExecutionSignal = {
   kind: ExecutionSignalKind;
   confidence: number;
   label: string;
+  setupKey: string | null;
+  legs: ExecutionLeg[];
+  markCredit: number | null;
+  sellableCredit: number | null;
+  maxRiskDollars: number | null;
+  shortDeltaAbs: number | null;
+  shortDistancePoints: number | null;
+  minimumEntryScore: number;
+  timeRegime: string;
+  eventRisk: "NORMAL" | "HIGH";
+  rangeConsumptionPct: number | null;
+  mapPhase: "OPENING" | "TRANSITION" | "ACTIVE";
+  mapCenter: number;
+  railBreached: "UPPER" | "LOWER" | "NONE";
+  peakCreditAtSignal: number | null;
+  premiumExpansionPct: number | null;
+  premiumRolloverPct: number | null;
+  premiumCrestStatus: string;
+  priceRejectionScore: number;
+  remainingMovePoints: number;
+  pathDirection: "UP" | "DOWN" | "NEUTRAL" | null;
+  pathConfidence: number | null;
+  pathFlowSource: "engine" | "fallback" | null;
+  pathTerminalTrough: number | null;
+  pathTerminalCrest: number | null;
   startedAt: string;
   lastSeenAt: string;
 };
@@ -147,8 +198,7 @@ export function useExecutionSignalPaint(args: {
           } else {
             next.pending[strategy] = {
               ...pending,
-              confidence: desired.confidence,
-              label: desired.label,
+              ...desired,
               lastSeenAt: new Date(nowMs).toISOString(),
             };
             changed = true;
@@ -162,10 +212,7 @@ export function useExecutionSignalPaint(args: {
         ) {
           next.pending[strategy] = {
             candleTime: latestCandleTime,
-            strategy,
-            kind: desired.kind,
-            confidence: desired.confidence,
-            label: desired.label,
+            ...desired,
             startedAt: new Date(nowMs).toISOString(),
             lastSeenAt: new Date(nowMs).toISOString(),
           };
@@ -213,6 +260,31 @@ function desiredSignals(reads: ZeroDteExecutionRead[]) {
       kind: ExecutionSignalKind;
       confidence: number;
       label: string;
+      setupKey: string | null;
+      legs: ExecutionLeg[];
+      markCredit: number | null;
+      sellableCredit: number | null;
+      maxRiskDollars: number | null;
+      shortDeltaAbs: number | null;
+      shortDistancePoints: number | null;
+      minimumEntryScore: number;
+      timeRegime: string;
+      eventRisk: "NORMAL" | "HIGH";
+      rangeConsumptionPct: number | null;
+      mapPhase: "OPENING" | "TRANSITION" | "ACTIVE";
+      mapCenter: number;
+      railBreached: "UPPER" | "LOWER" | "NONE";
+      peakCreditAtSignal: number | null;
+      premiumExpansionPct: number | null;
+      premiumRolloverPct: number | null;
+      premiumCrestStatus: string;
+      priceRejectionScore: number;
+      remainingMovePoints: number;
+      pathDirection: "UP" | "DOWN" | "NEUTRAL" | null;
+      pathConfidence: number | null;
+      pathFlowSource: "engine" | "fallback" | null;
+      pathTerminalTrough: number | null;
+      pathTerminalCrest: number | null;
     }
   >();
 
@@ -227,6 +299,31 @@ function desiredSignals(reads: ZeroDteExecutionRead[]) {
         kind: "SELL",
         confidence: read.entryScore,
         label: read.strategyLabel,
+        setupKey: read.setupKey,
+        legs: read.candidate?.legs ?? [],
+        markCredit: read.currentCredit,
+        sellableCredit: read.currentSellableCredit,
+        maxRiskDollars: read.maxRiskDollars,
+        shortDeltaAbs: read.shortDeltaAbs,
+        shortDistancePoints: read.shortDistancePoints,
+        minimumEntryScore: read.minimumEntryScore,
+        timeRegime: read.timeRegime.regime,
+        eventRisk: read.eventRisk,
+        rangeConsumptionPct: read.volContext?.rangeConsumptionPct ?? null,
+        mapPhase: read.mapPhase,
+        mapCenter: read.mapCenter,
+        railBreached: read.railBreached,
+        peakCreditAtSignal: read.peakCredit,
+        premiumExpansionPct: read.premiumExpansionPct,
+        premiumRolloverPct: read.premiumCrest.rolloverPct,
+        premiumCrestStatus: read.premiumCrest.status,
+        priceRejectionScore: read.priceRejectionScore,
+        remainingMovePoints: read.remainingMovePoints,
+        pathDirection: read.leastResistancePath?.direction ?? null,
+        pathConfidence: read.leastResistancePath?.confidence ?? null,
+        pathFlowSource: read.leastResistancePath?.flowSource ?? null,
+        pathTerminalTrough: read.leastResistancePath?.terminalTrough ?? null,
+        pathTerminalCrest: read.leastResistancePath?.terminalCrest ?? null,
       });
       continue;
     }
@@ -240,6 +337,31 @@ function desiredSignals(reads: ZeroDteExecutionRead[]) {
         kind: "BUY",
         confidence: read.exitScore,
         label: read.strategyLabel,
+        setupKey: read.setupKey,
+        legs: read.position?.legs ?? [],
+        markCredit: read.currentCredit,
+        sellableCredit: read.currentSellableCredit,
+        maxRiskDollars: read.maxRiskDollars,
+        shortDeltaAbs: read.shortDeltaAbs,
+        shortDistancePoints: read.shortDistancePoints,
+        minimumEntryScore: read.minimumEntryScore,
+        timeRegime: read.timeRegime.regime,
+        eventRisk: read.eventRisk,
+        rangeConsumptionPct: read.volContext?.rangeConsumptionPct ?? null,
+        mapPhase: read.mapPhase,
+        mapCenter: read.mapCenter,
+        railBreached: read.railBreached,
+        peakCreditAtSignal: read.peakCredit,
+        premiumExpansionPct: read.premiumExpansionPct,
+        premiumRolloverPct: read.premiumCrest.rolloverPct,
+        premiumCrestStatus: read.premiumCrest.status,
+        priceRejectionScore: read.priceRejectionScore,
+        remainingMovePoints: read.remainingMovePoints,
+        pathDirection: read.leastResistancePath?.direction ?? null,
+        pathConfidence: read.leastResistancePath?.confidence ?? null,
+        pathFlowSource: read.leastResistancePath?.flowSource ?? null,
+        pathTerminalTrough: read.leastResistancePath?.terminalTrough ?? null,
+        pathTerminalCrest: read.leastResistancePath?.terminalCrest ?? null,
       });
     }
   }
@@ -259,6 +381,31 @@ function confirmSignal(
     kind: pending.kind,
     confidence: pending.confidence,
     label: pending.label,
+    setupKey: pending.setupKey,
+    legs: pending.legs,
+    markCredit: pending.markCredit,
+    sellableCredit: pending.sellableCredit,
+    maxRiskDollars: pending.maxRiskDollars,
+    shortDeltaAbs: pending.shortDeltaAbs,
+    shortDistancePoints: pending.shortDistancePoints,
+    minimumEntryScore: pending.minimumEntryScore,
+    timeRegime: pending.timeRegime,
+    eventRisk: pending.eventRisk,
+    rangeConsumptionPct: pending.rangeConsumptionPct,
+    mapPhase: pending.mapPhase,
+    mapCenter: pending.mapCenter,
+    railBreached: pending.railBreached,
+    peakCreditAtSignal: pending.peakCreditAtSignal,
+    premiumExpansionPct: pending.premiumExpansionPct,
+    premiumRolloverPct: pending.premiumRolloverPct,
+    premiumCrestStatus: pending.premiumCrestStatus,
+    priceRejectionScore: pending.priceRejectionScore,
+    remainingMovePoints: pending.remainingMovePoints,
+    pathDirection: pending.pathDirection,
+    pathConfidence: pending.pathConfidence,
+    pathFlowSource: pending.pathFlowSource,
+    pathTerminalTrough: pending.pathTerminalTrough,
+    pathTerminalCrest: pending.pathTerminalCrest,
   };
 }
 

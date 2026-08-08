@@ -1,6 +1,7 @@
 import type { ZeroDteChainRow, ZeroDteRecommendation } from "./zeroDteOiIntelligence";
 import type { ZeroDteMoodRead, ZeroDteMoodTradeBias } from "./zeroDteMoodEngine";
 import type { ZeroDteStrikeFlowRead } from "./zeroDteStrikeFlow";
+import type { ZeroDteLeastResistancePath } from "./zeroDteLeastResistancePath";
 import {
   buildZeroDteCreditSpreadBook,
   type CreditSpreadRiskMode,
@@ -31,6 +32,7 @@ export type ZeroDteStrategyRanking = {
   mapAlignment: number;
   dealerAlignment: number;
   flowAlignment: number;
+  pathAlignment?: number;
   strikes: string;
   estimatedCredit: number | null;
   maxRiskDollars: number | null;
@@ -86,6 +88,8 @@ export type BuildZeroDteTradeSelectionInput = {
   riskMode?: CreditSpreadRiskMode;
   shortDeltaMax?: number | null;
   minAbsoluteDistancePoints?: number | null;
+  generatedAt?: string | null;
+  leastResistancePath?: ZeroDteLeastResistancePath | null;
   strikeFlow?: ZeroDteStrikeFlowRead | null;
 };
 
@@ -107,6 +111,8 @@ export function buildZeroDteTradeSelection(input: BuildZeroDteTradeSelectionInpu
     riskMode: input.riskMode ?? "balanced",
     shortDeltaMax: input.shortDeltaMax,
     minAbsoluteDistancePoints: input.minAbsoluteDistancePoints,
+    generatedAt: input.generatedAt,
+    leastResistancePath: input.leastResistancePath,
   });
 
   reasons.push("Credit-spread strikes are selected from live SPX quote packages (mark plus conservative bid/ask execution references) plus the SPX OI chain map.");

@@ -71,6 +71,17 @@ import {
   type ZeroDteRiskPolicy,
 } from "../lib/zeroDteRiskPolicy";
 import { ZeroDteRiskPolicyPanel } from "./ZeroDteRiskPolicyPanel";
+import { ZeroDteShadowTradePanel } from "./ZeroDteShadowTradePanel";
+import {
+  closeZeroDteShadowTrade,
+  loadZeroDteShadowTrades,
+  openZeroDteShadowTrade,
+  sampleZeroDteShadowTrades,
+} from "../lib/zeroDteShadowRepository";
+import {
+  shadowTradeToExecutionPosition,
+  type ZeroDteShadowTrade,
+} from "../lib/zeroDteShadowTrade";
 
 type Candle = {
   time: number;
@@ -212,10 +223,43 @@ export default function SpxCommandChart() {
   const [riskPolicy, setRiskPolicy] = useState<ZeroDteRiskPolicy>(() =>
     loadZeroDteRiskPolicy(),
   );
+  const [shadowTrades, setShadowTrades] = useState<ZeroDteShadowTrade[]>([]);
+  const [shadowError, setShadowError] = useState<string | null>(null);
+  const shadowOpeningSignalIdsRef = useRef<Set<string>>(new Set());
+  const shadowSampleKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     saveZeroDteRiskPolicy(riskPolicy);
   }, [riskPolicy]);
+
+  useEffect(() => {
+    if (!harvest?.tradeDate) {
+      setShadowTrades([]);
+      return;
+    }
+    shadowOpeningSignalIdsRef.current = new Set();
+    shadowSampleKeyRef.current = null;
+    let cancelled = false;
+    loadZeroDteShadowTrades(harvest.tradeDate)
+      .then((trades) => {
+        if (!cancelled) {
+          setShadowTrades(trades);
+          setShadowError(null);
+        }
+      })
+      .catch((shadowLoadError) => {
+        if (!cancelled) {
+          setShadowError(
+            shadowLoadError instanceof Error
+              ? shadowLoadError.message
+              : "Shadow-trade history load failed.",
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [harvest?.tradeDate]);
 
   const recommendation = harvest?.recommendation;
   const spxRows = harvest?.spx?.rows ?? [];
@@ -246,6 +290,15 @@ export default function SpxCommandChart() {
   const controllingMap = mapManager.state
     ? getControllingMarketMap(mapManager.state)
     : null;
+
+  const decisionLeastResistancePath = useMemo(() => {
+    if (!recommendation || !harvest?.generatedAt) return null;
+    return buildZeroDteLeastResistancePath({
+      recommendation,
+      generatedAt: harvest.generatedAt,
+      candleFrequencyMinutes: 1,
+    });
+  }, [harvest?.generatedAt, recommendation]);
 
   useEffect(() => {
     if (
@@ -320,6 +373,8 @@ export default function SpxCommandChart() {
         riskPolicy,
         recommendation.spxPrice,
       ),
+      generatedAt: harvest?.generatedAt ?? null,
+      leastResistancePath: decisionLeastResistancePath,
       strikeFlow,
     });
     scannerSelectionCacheRef.current = {
@@ -330,6 +385,7 @@ export default function SpxCommandChart() {
     };
     return selection;
   }, [
+    decisionLeastResistancePath,
     harvest?.generatedAt,
     harvest?.mood,
     harvest?.tradeDate,
@@ -348,8 +404,16 @@ export default function SpxCommandChart() {
       spxRows,
       mapState: mapManager.state,
       strikeFlow,
+      leastResistancePath: decisionLeastResistancePath,
     });
-  }, [baseTradeSelection, mapManager.state, recommendation, spxRows, strikeFlow]);
+  }, [
+    baseTradeSelection,
+    decisionLeastResistancePath,
+    mapManager.state,
+    recommendation,
+    spxRows,
+    strikeFlow,
+  ]);
 
   const scannerExecutionCandidateBooks = useMemo(() => {
     if (!mapAwareTradeSelection || !mapManager.state) return null;
@@ -465,13 +529,13 @@ export default function SpxCommandChart() {
   }, [recommendation]);
 
   const leastResistancePath = useMemo(() => {
-    if (!recommendation || !lastCandle) return null;
+    if (!recommendation || !harvest?.generatedAt) return null;
     return buildZeroDteLeastResistancePath({
       recommendation,
-      lastCandleTime: lastCandle.time,
+      generatedAt: harvest.generatedAt,
       candleFrequencyMinutes: frequency,
     });
-  }, [frequency, lastCandle, recommendation]);
+  }, [frequency, harvest?.generatedAt, recommendation]);
 
   const commandRead = useMemo(() => {
     if (!recommendation) return null;
@@ -944,6 +1008,7 @@ export default function SpxCommandChart() {
       riskBudgetDollars: riskPolicy.grossRiskBudgetDollars,
     });
   }, [
+    decisionLeastResistancePath,
     executionCandidates,
     executionMemory,
     harvest?.mood,
@@ -985,8 +1050,10 @@ export default function SpxCommandChart() {
       volContext,
       dailyLossBlocked,
       leaderCandidate,
+      leastResistancePath: decisionLeastResistancePath,
     });
   }, [
+    decisionLeastResistancePath,
     executionCandidates,
     executionMemory,
     harvest?.generatedAt,
@@ -1044,10 +1111,12 @@ export default function SpxCommandChart() {
           volContext,
           dailyLossBlocked,
           leaderCandidate,
+          leastResistancePath: decisionLeastResistancePath,
         }),
       ]),
     );
   }, [
+    decisionLeastResistancePath,
     executionCandidates,
     executionMemory,
     harvest?.generatedAt,
@@ -1118,6 +1187,7 @@ export default function SpxCommandChart() {
           volContext,
           dailyLossBlocked,
           leaderCandidate,
+          leastResistancePath: decisionLeastResistancePath,
         }),
       ];
     });
@@ -1131,6 +1201,7 @@ export default function SpxCommandChart() {
     }
     return [...readsBySetup.values()];
   }, [
+    decisionLeastResistancePath,
     executionCandidates,
     executionMemory,
     harvest?.generatedAt,
@@ -1157,6 +1228,201 @@ export default function SpxCommandChart() {
     candles: officialSignalCandles,
     reads: executionReadsForPaint,
   });
+
+  const shadowExecutionReads = useMemo(() => {
+    const tradeDate = harvest?.tradeDate;
+    const generatedAt = harvest?.generatedAt;
+    const mapState = mapManager.state;
+    if (
+      !tradeDate ||
+      !generatedAt ||
+      !recommendation ||
+      !mapAwareTradeSelection ||
+      !mapState ||
+      !executionMemory
+    ) {
+      return {} as Record<string, ZeroDteExecutionRead>;
+    }
+
+    const output: Record<string, ZeroDteExecutionRead> = {};
+    for (const shadow of shadowTrades) {
+      if (shadow.state !== "open") continue;
+      const position = shadowTradeToExecutionPosition(shadow);
+      output[shadow.id] = buildZeroDteExecutionRead({
+        tradeDate,
+        generatedAt,
+        recommendation,
+        spxRows,
+        strikeFlow,
+        tradeSelection: mapAwareTradeSelection,
+        mapState,
+        memory: executionMemory,
+        candidateOverride: null,
+        positionOverride: position,
+        tracking: null,
+        portfolio: portfolioRead,
+        priceAction,
+        premiumTape: premiumTape.points,
+        riskPolicy,
+        volContext,
+        dailyLossBlocked,
+        leaderCandidate,
+        leastResistancePath: decisionLeastResistancePath,
+      });
+    }
+    return output;
+  }, [
+    dailyLossBlocked,
+    decisionLeastResistancePath,
+    executionMemory,
+    harvest?.generatedAt,
+    harvest?.tradeDate,
+    leaderCandidate,
+    mapAwareTradeSelection,
+    mapManager.state,
+    portfolioRead,
+    premiumTape.points,
+    priceAction,
+    recommendation,
+    riskPolicy,
+    shadowTrades,
+    spxRows,
+    strikeFlow,
+    volContext,
+  ]);
+
+  useEffect(() => {
+    const sellSignals = signalPaint.signals.filter(
+      (signal) => signal.kind === "SELL",
+    );
+    if (!sellSignals.length) return;
+
+    const existingSignalIds = new Set(shadowTrades.map((trade) => trade.signalId));
+    const pending = sellSignals.filter(
+      (signal) =>
+        !existingSignalIds.has(signal.id) &&
+        !shadowOpeningSignalIdsRef.current.has(signal.id),
+    );
+    if (!pending.length) return;
+
+    for (const signal of pending) {
+      shadowOpeningSignalIdsRef.current.add(signal.id);
+    }
+
+    Promise.all(
+      pending.map((signal) =>
+        openZeroDteShadowTrade({
+          signal,
+        }),
+      ),
+    )
+      .then((opened) => {
+        const valid = opened.filter(
+          (trade): trade is ZeroDteShadowTrade => Boolean(trade),
+        );
+        if (valid.length) {
+          setShadowTrades((current) => {
+            const byId = new Map(current.map((trade) => [trade.id, trade]));
+            for (const trade of valid) byId.set(trade.id, trade);
+            return [...byId.values()];
+          });
+        }
+        setShadowError(null);
+      })
+      .catch((shadowOpenError) => {
+        setShadowError(
+          shadowOpenError instanceof Error
+            ? shadowOpenError.message
+            : "Shadow trade creation failed.",
+        );
+      });
+  }, [shadowTrades, signalPaint.signals]);
+
+  useEffect(() => {
+    if (
+      !harvest?.tradeDate ||
+      !harvest.generatedAt ||
+      !recommendation ||
+      !shadowTrades.some((trade) => trade.state === "open")
+    ) {
+      return;
+    }
+
+    const sampleKey = `${harvest.tradeDate}:${harvest.generatedAt}`;
+    if (shadowSampleKeyRef.current === sampleKey) return;
+    shadowSampleKeyRef.current = sampleKey;
+
+    const openItems = shadowTrades.flatMap((trade) => {
+      if (trade.state !== "open") return [];
+      const read = shadowExecutionReads[trade.id];
+      return read ? [{ tradeId: trade.id, read }] : [];
+    });
+    if (!openItems.length) return;
+
+    sampleZeroDteShadowTrades({
+      tradeDate: harvest.tradeDate,
+      generatedAt: harvest.generatedAt,
+      spot: recommendation.spxPrice,
+      items: openItems,
+    })
+      .then(async (updated) => {
+        if (updated.length) {
+          setShadowTrades((current) => {
+            const byId = new Map(current.map((trade) => [trade.id, trade]));
+            for (const trade of updated) byId.set(trade.id, trade);
+            return [...byId.values()];
+          });
+        }
+
+        const exits = openItems.filter(({ read }) =>
+          read.lifecycle === "BUYBACK_READY" ||
+          read.emergencyExit ||
+          read.timeRegime.regime === "CLOSED"
+        );
+        if (!exits.length) return;
+
+        const closed = await Promise.all(
+          exits.map(({ tradeId, read }) =>
+            closeZeroDteShadowTrade({
+              tradeId,
+              tradeDate: harvest.tradeDate,
+              generatedAt: harvest.generatedAt,
+              read,
+              reason:
+                read.timeRegime.regime === "CLOSED"
+                  ? "SESSION_CLOSE"
+                  : read.emergencyExit
+                    ? "EMERGENCY_EXIT"
+                    : "EXIT_ENGINE",
+            }),
+          ),
+        );
+        const validClosed = closed.filter(
+          (trade): trade is ZeroDteShadowTrade => Boolean(trade),
+        );
+        if (validClosed.length) {
+          setShadowTrades((current) => {
+            const byId = new Map(current.map((trade) => [trade.id, trade]));
+            for (const trade of validClosed) byId.set(trade.id, trade);
+            return [...byId.values()];
+          });
+        }
+        setShadowError(null);
+      })
+      .catch((shadowSampleError) => {
+        setShadowError(
+          shadowSampleError instanceof Error
+            ? shadowSampleError.message
+            : "Shadow trade sampling failed.",
+        );
+      });
+  }, [
+    harvest?.generatedAt,
+    harvest?.tradeDate,
+    recommendation,
+    shadowExecutionReads,
+    shadowTrades,
+  ]);
 
   const visibleExecutionSignals = useMemo(() => {
     if (signalPaintFilter === "off") return [];
@@ -1481,6 +1747,7 @@ export default function SpxCommandChart() {
             positionReads={positionExecutionReads}
             candidates={executionCandidates}
             tracks={stableCandidateTracker.tracks}
+            riskPolicy={riskPolicy}
             selectedStrategy={selectedExecutionStrategy}
             onStrategyChange={setSelectedExecutionStrategy}
             busy={executionBusy}
@@ -1528,6 +1795,7 @@ export default function SpxCommandChart() {
                 volContext,
                 dailyLossBlocked,
                 leaderCandidate,
+                leastResistancePath: decisionLeastResistancePath,
               });
             }}
             onOpen={async ({
@@ -1591,6 +1859,7 @@ export default function SpxCommandChart() {
                   volContext,
                   dailyLossBlocked,
                   leaderCandidate,
+                  leastResistancePath: decisionLeastResistancePath,
                 });
 
                 if (!executionMemory.tradeDayId) {
@@ -1737,6 +2006,8 @@ export default function SpxCommandChart() {
         dailyLossBlocked={dailyLossBlocked}
         volContext={volContext}
       />
+
+      <ZeroDteShadowTradePanel trades={shadowTrades} error={shadowError} />
 
       {mapManager.state ? (
         <MapEnginePanel

@@ -1,5 +1,8 @@
 import type { SpxOiMapRow, ZeroDteChainRow, ZeroDteRecommendation } from "./zeroDteOiIntelligence";
 import type { ZeroDteMoodRead } from "./zeroDteMoodEngine";
+import type { ZeroDteLeastResistancePath } from "./zeroDteLeastResistancePath";
+import { scoreLeastResistanceStrike } from "./zeroDteLeastResistancePath";
+import { buildZeroDteRemainingMove } from "./zeroDteRemainingMove";
 
 export type CreditSpreadSide = "put" | "call";
 export type CreditSpreadRiskMode = "conservative" | "balanced" | "aggressive";
@@ -119,6 +122,7 @@ export type CreditSpreadCandidate = {
   liquidityScore: number;
   riskScore: number;
   widthScore: number;
+  pathScore: number;
   reasons: string[];
   warnings: string[];
 };
@@ -140,6 +144,8 @@ export type SelectCreditSpreadInput = {
   maxDistancePctOfExpectedMove?: number;
   shortDeltaMax?: number | null;
   minAbsoluteDistancePoints?: number | null;
+  generatedAt?: string | null;
+  leastResistancePath?: ZeroDteLeastResistancePath | null;
 };
 
 export type BuildCreditSpreadBookInput = {
@@ -156,6 +162,8 @@ export type BuildCreditSpreadBookInput = {
   riskMode?: CreditSpreadRiskMode;
   shortDeltaMax?: number | null;
   minAbsoluteDistancePoints?: number | null;
+  generatedAt?: string | null;
+  leastResistancePath?: ZeroDteLeastResistancePath | null;
 };
 
 export function buildZeroDteCreditSpreadBook(input: BuildCreditSpreadBookInput): ZeroDteCreditSpreadBook {
@@ -188,8 +196,21 @@ export function selectZeroDteCreditSpread(input: SelectCreditSpreadInput): ZeroD
   const riskMode = input.riskMode ?? "balanced";
   const maxAllowedWidth = normalizeWidth(input.maxWidth ?? input.width ?? maxWidthForRiskMode(riskMode));
   const minAllowedWidth = normalizeWidth(input.minWidth ?? minWidthForRiskMode(riskMode));
-  const expectedMoveRemaining = Number.isFinite(rec.expectedMove) && rec.expectedMove > 0 ? rec.expectedMove : 0;
   const spot = rec.spxPrice;
+  const generatedAt =
+    typeof input.generatedAt === "string" && Number.isFinite(Date.parse(input.generatedAt))
+      ? input.generatedAt
+      : null;
+  const liveExpectedMove =
+    Number.isFinite(rec.expectedMove) && rec.expectedMove > 0 ? rec.expectedMove : 0;
+  const expectedMoveRemaining = generatedAt
+    ? buildZeroDteRemainingMove({
+        generatedAt,
+        spot,
+        liveExpectedMove,
+        strikeStep: inferChainStep(rec.spxChainMap),
+      }).expectedMoveRemaining
+    : liveExpectedMove;
   const wall = side === "put" ? rec.spx.putWall : rec.spx.callWall;
   const dealerPressure = rec.dealerPressure;
   const minPct = input.minDistancePctOfExpectedMove ?? minimumDistanceExpectedMovePctForRiskMode(riskMode);
@@ -254,6 +275,7 @@ export function selectZeroDteCreditSpread(input: SelectCreditSpreadInput): ZeroD
             minAbsoluteDistancePoints,
             oiMagnitude,
             rejectionDiagnostics,
+            leastResistancePath: input.leastResistancePath ?? null,
           })
         )
         .filter((candidate): candidate is CreditSpreadCandidate => candidate !== null)
@@ -347,6 +369,7 @@ function scoreCandidate(args: {
   minAbsoluteDistancePoints: number;
   oiMagnitude: number;
   rejectionDiagnostics: CreditSpreadRejectionDiagnostics;
+  leastResistancePath: ZeroDteLeastResistancePath | null;
 }): CreditSpreadCandidate | null {
   const {
     row,
@@ -369,6 +392,7 @@ function scoreCandidate(args: {
     minAbsoluteDistancePoints,
     oiMagnitude,
     rejectionDiagnostics,
+    leastResistancePath,
   } = args;
   rejectionDiagnostics.tested += 1;
   const spot = rec.spxPrice;
@@ -454,20 +478,29 @@ function scoreCandidate(args: {
   const skewScore = scoreSideBias(side, row);
   const riskScore = scoreRisk({ maxLossDollars, maxRiskDollars, actualWidth, riskMode });
   const widthScore = scoreWidth(actualWidth, riskMode);
+  const pathScore = scoreLeastResistanceStrike({
+    path: leastResistancePath,
+    side,
+    shortStrike: row.strike,
+  });
 
+  // LRP is forward-looking evidence, but it is deliberately capped at 10%
+  // of candidate discrimination so it can bias placement without becoming
+  // another directional dictator.
   let score =
-    oiScore * 0.13 +
-    wallScore * 0.15 +
-    distanceScore * 0.15 +
-    premiumScore * 0.16 +
-    dealerScore * 0.09 +
-    moodScore * 0.08 +
+    oiScore * 0.12 +
+    wallScore * 0.14 +
+    distanceScore * 0.14 +
+    premiumScore * 0.15 +
+    dealerScore * 0.08 +
+    moodScore * 0.07 +
     deltaScore * 0.06 +
-    spyScore * 0.04 +
+    spyScore * 0.02 +
     liquidityScore * 0.04 +
     riskScore * 0.04 +
     widthScore * 0.01 +
-    skewScore * 0.05;
+    skewScore * 0.03 +
+    pathScore * 0.10;
 
   const warnings: string[] = [];
   if (distanceAsExpectedMovePct > maxPct) warnings.push(`${row.strike} is far outside the target distance band; safer, but credit may be inefficient.`);
@@ -492,6 +525,11 @@ function scoreCandidate(args: {
   if (side === "call" && dealerPressure < -20) reasons.push("Dealer pressure supports bearish/neutral call-spread placement.");
   if (mood?.moodPercent != null) reasons.push(`SPX Mood contributes ${Math.round(moodScore)}/100 for the ${side} side (${mood.moodPercent.toFixed(1)}%, ${mood.coverage.status}).`);
   if (sideOi > 0) reasons.push(`Side-specific OI at strike is ${Math.round(sideOi).toLocaleString()}.`);
+  if (leastResistancePath) {
+    reasons.push(
+      `Least-resistance placement contributes ${Math.round(pathScore)}/100; terminal cone ${leastResistancePath.terminalTrough.toFixed(0)}–${leastResistancePath.terminalCrest.toFixed(0)} (${leastResistancePath.direction} ${leastResistancePath.confidence}%).`,
+    );
+  }
 
   rejectionDiagnostics.accepted += 1;
   return {
@@ -529,6 +567,7 @@ function scoreCandidate(args: {
     liquidityScore: Math.round(liquidityScore),
     riskScore: Math.round(riskScore),
     widthScore: Math.round(widthScore),
+    pathScore: Math.round(pathScore),
     reasons,
     warnings,
   };
@@ -759,6 +798,17 @@ function describeWallRelationship(side: CreditSpreadSide, strike: number, wall: 
   if (strike > wall) return `Short call is above the SPX call wall (${wall}), using OI resistance as cushion.`;
   if (strike === wall) return `Short call is directly at the SPX call wall (${wall}); higher premium but wall-touch risk.`;
   return `Short call is below the SPX call wall (${wall}); aggressive because it sells inside resistance.`;
+}
+
+function inferChainStep(rows: SpxOiMapRow[]) {
+  const strikes = [...new Set(rows.map((row) => row.strike).filter(Number.isFinite))].sort(
+    (a, b) => a - b,
+  );
+  const gaps = strikes
+    .slice(1)
+    .map((strike, index) => strike - strikes[index])
+    .filter((gap) => gap > 0 && gap <= 25);
+  return gaps.length ? Math.max(5, Math.min(10, Math.min(...gaps))) : 5;
 }
 
 function createRejectionDiagnostics(args: {

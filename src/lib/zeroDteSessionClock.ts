@@ -4,7 +4,9 @@ export type ZeroDteSessionClock = {
   chicagoDate: string;
   hour: number;
   minute: number;
+  second: number;
   minuteOfDay: number;
+  minuteOfDayExact: number;
   weekday: number;
   isTradingWeekday: boolean;
   minuteIndex: number;
@@ -28,6 +30,7 @@ export function getZeroDteSessionClock(
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
+    second: "2-digit",
     weekday: "short",
     hourCycle: "h23",
   }).formatToParts(date);
@@ -37,7 +40,9 @@ export function getZeroDteSessionClock(
   const day = part(parts, "day") ?? String(date.getUTCDate()).padStart(2, "0");
   const hour = Number(part(parts, "hour") ?? 0);
   const minute = Number(part(parts, "minute") ?? 0);
+  const second = Number(part(parts, "second") ?? 0);
   const minuteOfDay = hour * 60 + minute;
+  const minuteOfDayExact = minuteOfDay + second / 60;
   const weekdayLabel = part(parts, "weekday") ?? "";
   const weekday = weekdayNumber(weekdayLabel);
   const isTradingWeekday = weekday >= 1 && weekday <= 5;
@@ -55,7 +60,9 @@ export function getZeroDteSessionClock(
     chicagoDate: `${year}-${month}-${day}`,
     hour,
     minute,
+    second,
     minuteOfDay,
+    minuteOfDayExact,
     weekday,
     isTradingWeekday,
     minuteIndex: minuteOfDay - OPEN_MINUTE,

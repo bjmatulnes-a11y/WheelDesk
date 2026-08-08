@@ -347,6 +347,16 @@ function scoreCandidateContribution(
   if (afterDistance < beforeDistance) reasons.push("The addition moves net delta toward the story-conditioned target band.");
   if (afterDistance > beforeDistance) reasons.push("The addition increases directional imbalance versus the target band.");
 
+  const directionalTolerance = 10;
+  const projectedOutsideDirectionalLimit =
+    projectedNetDelta < context.targetDeltaMin - directionalTolerance ||
+    projectedNetDelta > context.targetDeltaMax + directionalTolerance;
+  if (projectedOutsideDirectionalLimit && afterDistance > beforeDistance) {
+    blockers.push(
+      `Additional same-side risk would push net delta ${signed(projectedNetDelta)} beyond the target band plus ${directionalTolerance} delta points.`,
+    );
+  }
+
   const storyScore = storyAlignment(candidate.strategy, context.story);
   const riskScore = clamp(
     100 - (projectedGrossRiskDollars / context.riskBudgetDollars) * 70,
@@ -546,7 +556,6 @@ function optionMid(row: ZeroDteChainRow) {
   ) {
     return (Number(row.bid) + Number(row.ask)) / 2;
   }
-  if (Number.isFinite(row.last) && Number(row.last) >= 0) return Number(row.last);
   return null;
 }
 
