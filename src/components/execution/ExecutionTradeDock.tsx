@@ -906,10 +906,13 @@ function signed(value: number) {
 
 const styles: Record<string, React.CSSProperties> = {
   card: {
+    flex: "0 0 auto",
     minWidth: 0,
+    minHeight: "max-content",
     maxWidth: "100%",
     boxSizing: "border-box",
-    overflow: "hidden",
+    overflowX: "hidden",
+    overflowY: "visible",
     background: "#0a141d",
     border: "1px solid #1d3b53",
     borderRadius: 13,

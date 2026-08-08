@@ -2737,6 +2737,7 @@ const styles: Record<string, React.CSSProperties> = {
     minWidth: 0,
     display: "flex",
     flexDirection: "column",
+    alignItems: "stretch",
     gap: 10,
     maxHeight: 610,
     overflowY: "auto",
@@ -2818,6 +2819,8 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 5,
   },
   railCard: {
+    flex: "0 0 auto",
+    minHeight: "max-content",
     background: "#0a141d",
     border: "1px solid #16283a",
     borderRadius: 13,
@@ -2915,6 +2918,8 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 10,
   },
   executionCard: {
+    flex: "0 0 auto",
+    minHeight: "max-content",
     borderRadius: 13,
     padding: 16,
     textAlign: "center",
