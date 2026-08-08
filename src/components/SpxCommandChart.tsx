@@ -1929,7 +1929,7 @@ export default function SpxCommandChart() {
                 strikeFlow,
                 tradeSelection: mapAwareTradeSelection,
                 mapState: mapManager.state,
-                memory: executionMemory,
+                memory: executionReadMemory,
                 candidateOverride: candidate,
                 positionOverride: null,
                 tracking: null,
