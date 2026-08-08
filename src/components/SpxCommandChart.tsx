@@ -117,9 +117,21 @@ type HarvestQualityCheck = {
   message: string;
 };
 
+type ExpirationListResponse = {
+  ok: boolean;
+  tradeDate: string;
+  expirations: Array<{
+    date: string;
+    daysFromTradeDate: number;
+  }>;
+  error?: string;
+};
+
 type HarvestResponse = {
   tradeDate: string;
   generatedAt: string;
+  manualExpiration?: string | null;
+  researchMode?: boolean;
   status: "ok" | "partial" | "error";
   spx?: HarvestSymbol;
   spy?: HarvestSymbol;
@@ -190,6 +202,11 @@ export default function SpxCommandChart() {
   const [signalCandles, setSignalCandles] = useState<Candle[]>([]);
   const [harvest, setHarvest] = useState<HarvestResponse | null>(null);
   const [frequency, setFrequency] = useState<1 | 5>(1);
+  const [selectedExpiration, setSelectedExpiration] = useState("auto");
+  const [expirationOptions, setExpirationOptions] = useState<
+    ExpirationListResponse["expirations"]
+  >([]);
+  const [expirationError, setExpirationError] = useState<string | null>(null);
   const [overlays, setOverlays] = useState(DEFAULT_OVERLAYS);
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -233,6 +250,34 @@ export default function SpxCommandChart() {
   }, [riskPolicy]);
 
   useEffect(() => {
+    let cancelled = false;
+    fetch("/api/zero-dte/expirations?days=14", { cache: "no-store" })
+      .then(async (response) => {
+        const json = (await response.json()) as ExpirationListResponse;
+        if (!response.ok || !json.ok) {
+          throw new Error(json.error || "SPX expiration list failed.");
+        }
+        if (!cancelled) {
+          setExpirationOptions(json.expirations ?? []);
+          setExpirationError(null);
+        }
+      })
+      .catch((loadError) => {
+        if (!cancelled) {
+          setExpirationOptions([]);
+          setExpirationError(
+            loadError instanceof Error
+              ? loadError.message
+              : "SPX expiration list failed.",
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!harvest?.tradeDate) {
       setShadowTrades([]);
       return;
@@ -263,6 +308,7 @@ export default function SpxCommandChart() {
 
   const recommendation = harvest?.recommendation;
   const spxRows = harvest?.spx?.rows ?? [];
+  const manualChainResearch = harvest?.researchMode === true;
   const lastCandle = candles.at(-1);
   const currentPrice = recommendation?.spxPrice ?? harvest?.spx?.price ?? lastCandle?.close ?? 0;
   const displaySessionCandles = useMemo(() => {
@@ -310,6 +356,23 @@ export default function SpxCommandChart() {
       return;
     }
 
+    if (harvest.researchMode) {
+      // A manually selected future expiration is research-only. Do not let a
+      // weekend / future-chain inspection overwrite the real session Opening Map.
+      setOpeningMap(null);
+      setStrikeFlow(
+        updateZeroDteStrikeFlow({
+          tradeDate: harvest.tradeDate,
+          generatedAt: harvest.generatedAt,
+          expiration: harvest.spx.expirationDate,
+          spxPrice: harvest.spx.price,
+          rows: harvest.spx.rows,
+          recommendation,
+        }),
+      );
+      return;
+    }
+
     const locked = lockOpeningMap(
       harvest.tradeDate,
       harvest.generatedAt,
@@ -327,7 +390,13 @@ export default function SpxCommandChart() {
         recommendation,
       }),
     );
-  }, [harvest?.generatedAt, harvest?.spx, harvest?.tradeDate, recommendation]);
+  }, [
+    harvest?.generatedAt,
+    harvest?.researchMode,
+    harvest?.spx,
+    harvest?.tradeDate,
+    recommendation,
+  ]);
 
   const baseTradeSelection = useMemo(() => {
     if (!recommendation || !spxRows.length) return harvest?.tradeSelection ?? null;
@@ -437,7 +506,7 @@ export default function SpxCommandChart() {
   }, [scannerExecutionCandidateBooks]);
 
   const stableCandidateTracker = useStableExecutionCandidates({
-    tradeDate: harvest?.tradeDate,
+    tradeDate: manualChainResearch ? undefined : harvest?.tradeDate,
     generatedAt: harvest?.generatedAt,
     frequencyMinutes: 1,
     candles: officialSignalCandles,
@@ -606,6 +675,9 @@ export default function SpxCommandChart() {
       if (riskPolicy.maxRiskPerTradeDollars !== null) {
         harvestParams.set("maxRisk", String(riskPolicy.maxRiskPerTradeDollars));
       }
+      if (selectedExpiration !== "auto") {
+        harvestParams.set("expiration", selectedExpiration);
+      }
 
       const [historyResponse, harvestResponse, signalHistoryResponse] =
         await Promise.all([
@@ -632,7 +704,16 @@ export default function SpxCommandChart() {
           harvestJson.errors?.join(" ") || "Schwab 0DTE harvest failed.",
         );
       }
-      if (
+      if (harvestJson.researchMode) {
+        if (
+          !harvestJson.manualExpiration ||
+          harvestJson.spx?.expirationDate !== harvestJson.manualExpiration
+        ) {
+          throw new Error(
+            `Manual SPX chain ${harvestJson.manualExpiration ?? "unknown"} was not returned by Schwab.`,
+          );
+        }
+      } else if (
         !harvestJson.spx?.isZeroDte ||
         harvestJson.spx.expirationDate !== harvestJson.tradeDate
       ) {
@@ -673,7 +754,7 @@ export default function SpxCommandChart() {
     } finally {
       if (sequence === loadSequenceRef.current) setLoading(false);
     }
-  }, [frequency, riskPolicy]);
+  }, [frequency, riskPolicy, selectedExpiration]);
 
   useEffect(() => {
     load();
@@ -1020,6 +1101,7 @@ export default function SpxCommandChart() {
 
   const entryExecutionRead: ZeroDteExecutionRead | null = useMemo(() => {
     if (
+      manualChainResearch ||
       !recommendation ||
       !harvest?.tradeDate ||
       !harvest.generatedAt ||
@@ -1054,6 +1136,7 @@ export default function SpxCommandChart() {
     });
   }, [
     decisionLeastResistancePath,
+    manualChainResearch,
     executionCandidates,
     executionMemory,
     harvest?.generatedAt,
@@ -1079,6 +1162,7 @@ export default function SpxCommandChart() {
     const generatedAt = harvest?.generatedAt;
     const mapState = mapManager.state;
     if (
+      manualChainResearch ||
       !recommendation ||
       !tradeDate ||
       !generatedAt ||
@@ -1117,6 +1201,7 @@ export default function SpxCommandChart() {
     );
   }, [
     decisionLeastResistancePath,
+    manualChainResearch,
     executionCandidates,
     executionMemory,
     harvest?.generatedAt,
@@ -1150,6 +1235,7 @@ export default function SpxCommandChart() {
     const generatedAt = harvest?.generatedAt;
     const mapState = mapManager.state;
     if (
+      manualChainResearch ||
       !recommendation ||
       !tradeDate ||
       !generatedAt ||
@@ -1202,6 +1288,7 @@ export default function SpxCommandChart() {
     return [...readsBySetup.values()];
   }, [
     decisionLeastResistancePath,
+    manualChainResearch,
     executionCandidates,
     executionMemory,
     harvest?.generatedAt,
@@ -1234,6 +1321,7 @@ export default function SpxCommandChart() {
     const generatedAt = harvest?.generatedAt;
     const mapState = mapManager.state;
     if (
+      manualChainResearch ||
       !tradeDate ||
       !generatedAt ||
       !recommendation ||
@@ -1274,6 +1362,7 @@ export default function SpxCommandChart() {
   }, [
     dailyLossBlocked,
     decisionLeastResistancePath,
+    manualChainResearch,
     executionMemory,
     harvest?.generatedAt,
     harvest?.tradeDate,
@@ -1527,6 +1616,11 @@ export default function SpxCommandChart() {
               <span style={styles.liveDot} />
               REST LIVE · 5s
             </span>
+            {manualChainResearch ? (
+              <span style={styles.researchPill}>
+                MANUAL CHAIN · {formatExpirationShort(harvest?.spx?.expirationDate)}
+              </span>
+            ) : null}
           </div>
           <div style={styles.subTitle}>
             Broker-authorized SPX candles with WheelDesk structure overlays.
@@ -1534,6 +1628,20 @@ export default function SpxCommandChart() {
         </div>
 
         <div style={styles.actions}>
+          <select
+            value={selectedExpiration}
+            onChange={(event) => setSelectedExpiration(event.target.value)}
+            style={styles.select}
+            title="SPX expiration chain"
+          >
+            <option value="auto">AUTO · 0DTE</option>
+            {expirationOptions.map((expiration) => (
+              <option key={expiration.date} value={expiration.date}>
+                {formatExpirationChoice(expiration.date, expiration.daysFromTradeDate)}
+              </option>
+            ))}
+          </select>
+
           <select
             value={frequency}
             onChange={(event) => setFrequency(Number(event.target.value) as 1 | 5)}
@@ -1656,6 +1764,17 @@ export default function SpxCommandChart() {
       </div>
 
       {error ? <div style={styles.error}>{error}</div> : null}
+      {expirationError ? (
+        <div style={styles.qualityWarning}>
+          Expiration list: {expirationError}
+        </div>
+      ) : null}
+      {manualChainResearch ? (
+        <div style={styles.researchBanner}>
+          Manual SPX chain {harvest?.spx?.expirationDate ?? selectedExpiration} · research only.
+          Scanner, OI, dealer, and structure analytics remain active; execution, signal paint, and Shadow Lab entries are disabled.
+        </div>
+      ) : null}
       {(harvest?.qualityChecks ?? []).some((check) => check.status === "fail") ? (
         <div style={styles.error}>
           {(harvest?.qualityChecks ?? [])
@@ -1714,7 +1833,9 @@ export default function SpxCommandChart() {
 
             <div style={styles.executionSummaryRow}>
               <div style={styles.executionAction}>
-                {liveExecutionRead?.lifecycle.replaceAll("_", " ") ?? "WAIT"}
+                {manualChainResearch
+                  ? "RESEARCH"
+                  : liveExecutionRead?.lifecycle.replaceAll("_", " ") ?? "WAIT"}
               </div>
               {!railExpanded.execution ? (
                 <strong style={styles.collapsedScore}>{liveExecutionRead?.confidence ?? 0}</strong>
@@ -1728,7 +1849,9 @@ export default function SpxCommandChart() {
                   {liveExecutionRead?.position ? "Exit Readiness" : "Entry Readiness"}
                 </div>
                 <div style={styles.reasonList}>
-                  {(liveExecutionRead?.reasons ?? ["Building live execution context"])
+                  {(manualChainResearch
+                    ? ["Manual future-expiration chain selected. Live execution and shadow-entry generation are disabled."]
+                    : liveExecutionRead?.reasons ?? ["Building live execution context"])
                     .slice(0, 4)
                     .map((reason) => (
                       <div key={reason} style={styles.reasonItem}>
@@ -1741,6 +1864,13 @@ export default function SpxCommandChart() {
             ) : null}
           </div>
 
+          {manualChainResearch ? (
+            <div style={styles.researchDock}>
+              <div style={styles.eyebrow}>Portfolio Dock</div>
+              <strong>Research Mode</strong>
+              <span>Manual future-expiration chain selected. No position can be opened or shadow-entered from this chain.</span>
+            </div>
+          ) : (
           <ExecutionTradeDock
             read={entryExecutionRead}
             portfolio={portfolioRead}
@@ -1754,6 +1884,7 @@ export default function SpxCommandChart() {
             error={executionDbError}
             evaluateCandidate={(candidate) => {
               if (
+                manualChainResearch ||
                 !harvest?.tradeDate ||
                 !harvest.generatedAt ||
                 !recommendation ||
@@ -1946,6 +2077,7 @@ export default function SpxCommandChart() {
               }
             }}
           />
+          )}
 
           <div style={styles.railCard}>
             <div style={styles.collapsibleHeader}>
@@ -2294,6 +2426,18 @@ function formatCompact(value: number) {
   }).format(value);
 }
 
+function formatExpirationChoice(date: string, daysFromTradeDate: number) {
+  const short = formatExpirationShort(date);
+  if (daysFromTradeDate <= 0) return `${short} · 0DTE`;
+  return `${short} · +${daysFromTradeDate}d`;
+}
+
+function formatExpirationShort(date: string | null | undefined) {
+  if (!date) return "—";
+  const match = date.match(/^\d{4}-(\d{2})-(\d{2})$/);
+  return match ? `${match[1]}/${match[2]}` : date;
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
@@ -2343,6 +2487,17 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 10,
     fontWeight: 800,
   },
+  researchPill: {
+    display: "inline-flex",
+    alignItems: "center",
+    border: "1px solid #8b5cf6",
+    background: "rgba(139,92,246,.12)",
+    color: "#c4b5fd",
+    borderRadius: 999,
+    padding: "5px 9px",
+    fontSize: 10,
+    fontWeight: 850,
+  },
   liveDot: {
     width: 7,
     height: 7,
@@ -2391,6 +2546,27 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "10px 14px",
     fontWeight: 800,
     cursor: "pointer",
+  },
+  researchBanner: {
+    marginTop: 10,
+    border: "1px solid rgba(139,92,246,.45)",
+    background: "rgba(76,29,149,.16)",
+    color: "#d8ccff",
+    borderRadius: 9,
+    padding: "9px 11px",
+    fontSize: 11,
+    lineHeight: 1.45,
+  },
+  researchDock: {
+    display: "grid",
+    gap: 6,
+    border: "1px solid rgba(139,92,246,.38)",
+    background: "rgba(76,29,149,.12)",
+    color: "#c4b5fd",
+    borderRadius: 11,
+    padding: 12,
+    fontSize: 11,
+    lineHeight: 1.45,
   },
   metricGrid: {
     display: "grid",

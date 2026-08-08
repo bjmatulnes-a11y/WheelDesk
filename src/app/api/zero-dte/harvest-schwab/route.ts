@@ -48,6 +48,10 @@ export async function GET(request: NextRequest) {
   // This route powers the SPX 0DTE engine. Strict same-day expiration is the
   // safe default; callers must never silently fall forward to 1–7 DTE.
   const strictZeroDte = request.nextUrl.searchParams.get("strict") !== "0";
+  const manualExpiration = dateParam(request, "expiration");
+  const researchMode = Boolean(
+    manualExpiration && manualExpiration !== tradeDate,
+  );
   const riskMode = riskModeParam(request);
   const includeTradeSelection = request.nextUrl.searchParams.get("selection") !== "0";
   const errors: string[] = [];
@@ -62,6 +66,7 @@ export async function GET(request: NextRequest) {
       tradeDate,
       rangePct,
       strictZeroDte,
+      expirationDate: manualExpiration,
     });
   } catch (error) {
     errors.push(`SPX harvest failed: ${message(error)}`);
@@ -74,6 +79,7 @@ export async function GET(request: NextRequest) {
       tradeDate,
       rangePct,
       strictZeroDte,
+      expirationDate: manualExpiration,
     });
   } catch (error) {
     errors.push(`SPY harvest failed: ${message(error)}`);
@@ -146,7 +152,12 @@ export async function GET(request: NextRequest) {
         })
       : undefined;
 
-  const qualityChecks = buildQualityChecks(tradeDate, spx, spy);
+  const qualityChecks = buildQualityChecks(
+    tradeDate,
+    spx,
+    spy,
+    manualExpiration,
+  );
   if (leadership) {
     qualityChecks.push({
       label: "Leadership",
@@ -185,6 +196,8 @@ export async function GET(request: NextRequest) {
     {
       tradeDate,
       generatedAt,
+      manualExpiration,
+      researchMode,
       status,
       spx,
       spy,
@@ -207,16 +220,26 @@ async function harvestSchwabSymbol(args: {
   tradeDate: string;
   rangePct: number;
   strictZeroDte: boolean;
+  expirationDate: string | null;
 }): Promise<SchwabHarvestSymbol> {
-  const toDate = addDays(args.tradeDate, args.strictZeroDte ? 0 : 7);
+  const requestedDate = args.expirationDate ?? args.tradeDate;
+  const toDate = args.expirationDate
+    ? requestedDate
+    : addDays(args.tradeDate, args.strictZeroDte ? 0 : 7);
   const chain = await fetchSchwabOptionChain({
     symbol: args.providerSymbol,
-    fromDate: args.tradeDate,
+    fromDate: requestedDate,
     toDate,
     strikeCount: 160,
   });
 
-  const expiration = chooseExpiration(chain, args.tradeDate, args.strictZeroDte);
+  // Manual expiration is an exact research-chain request. Auto mode retains
+  // the strict 0DTE behavior used by the live execution engine.
+  const expiration = chooseExpiration(
+    chain,
+    requestedDate,
+    args.expirationDate ? true : args.strictZeroDte,
+  );
   const price = finite(chain.underlyingPrice);
   if (!price || price <= 0) {
     throw new Error(`Schwab returned no usable underlying price for ${args.providerSymbol}.`);
@@ -335,6 +358,7 @@ function buildQualityChecks(
   tradeDate: string,
   spx?: SchwabHarvestSymbol,
   spy?: SchwabHarvestSymbol,
+  manualExpiration?: string | null,
 ): QualityCheck[] {
   const checks: QualityCheck[] = [];
 
@@ -344,20 +368,31 @@ function buildQualityChecks(
     message: "Schwab Trader API market data is active.",
   });
 
+  const expectedExpiration = manualExpiration ?? tradeDate;
+  const expirationMatches =
+    spx?.expirationDate === expectedExpiration &&
+    spy?.expirationDate === expectedExpiration;
+
   checks.push(
-    spx?.isZeroDte && spy?.isZeroDte
-      ? {
-          label: "Expiration",
-          status: "ok",
-          message: `Both chains match ${tradeDate}.`,
-        }
+    expirationMatches
+      ? manualExpiration && manualExpiration !== tradeDate
+        ? {
+            label: "Expiration",
+            status: "warn",
+            message: `Manual research chain ${manualExpiration} selected. Scanner/structure analytics are active; live 0DTE execution remains disabled.`,
+          }
+        : {
+            label: "Expiration",
+            status: "ok",
+            message: `Both chains match ${tradeDate}.`,
+          }
       : spx || spy
         ? {
             label: "Expiration",
             status: "fail",
             message: `SPX=${spx?.expirationDate ?? "none"}, SPY=${
               spy?.expirationDate ?? "none"
-            }, trade date=${tradeDate}. Non-0DTE data is blocked.`,
+            }, requested=${expectedExpiration}.`,
           }
         : {
             label: "Expiration",
@@ -383,6 +418,11 @@ function buildQualityChecks(
 
 function finite(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function dateParam(request: NextRequest, key: string) {
+  const raw = request.nextUrl.searchParams.get(key)?.trim() ?? "";
+  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null;
 }
 
 function optionalNumberParam(request: NextRequest, key: string) {
