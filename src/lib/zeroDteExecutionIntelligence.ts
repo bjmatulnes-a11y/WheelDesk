@@ -1032,6 +1032,26 @@ function buildEntryRead(args: {
   const blockers: string[] = [];
   const reasons = [...(candidate?.reasons ?? []), ...timeRegime.reasons];
 
+  const controllingForEntry = getControllingMarketMap(mapState);
+  const openingHalfWidth = Math.max(
+    1,
+    Math.abs(mapState.opening.upperWing - mapState.opening.center),
+  );
+  const centerDisplacement =
+    recommendation.spxPrice - mapState.opening.center;
+  const centerStretchRatio =
+    Math.abs(centerDisplacement) / openingHalfWidth;
+  const ironFlyFadeCandidate =
+    candidate?.strategy === "iron-fly" && centerStretchRatio >= 0.45;
+  const putFadeCandidate =
+    candidate?.strategy === "put-credit-spread" &&
+    recommendation.spxPrice < controllingForEntry.center;
+  const callFadeCandidate =
+    candidate?.strategy === "call-credit-spread" &&
+    recommendation.spxPrice > controllingForEntry.center;
+  const exhaustionFadeCandidate =
+    ironFlyFadeCandidate || putFadeCandidate || callFadeCandidate;
+
   if (!candidate) blockers.push("No tracked strategy candidate is available.");
   if (candidate && currentCredit === null) blockers.push("Live bid/ask markets cannot price every strategy leg.");
   if (candidate && riskPolicy) {
@@ -1066,13 +1086,21 @@ function buildEntryRead(args: {
   }
 
   if (candidate?.strategy === "iron-fly") {
-    if (mapState.phase === "TRANSITION") blockers.push("Iron Fly entry is blocked during map transition.");
-    if (mapState.railBreached !== "NONE") blockers.push("Iron Fly entry is blocked outside the controlling rails.");
-    if (!isOpeningMapCaptureOnTime(mapState.opening.capturedAt)) {
-      blockers.push("Iron Fly is disabled because the opening map was captured after the valid opening window.");
+    if (mapState.phase === "TRANSITION") {
+      blockers.push("Iron Fly fade is blocked during map transition because the old center is being replaced.");
     }
-    if (timeRegime.regime !== "OPENING_OPPORTUNITY") {
-      blockers.push("New Iron Fly entries are restricted to the opening-opportunity window.");
+    if (!isOpeningMapCaptureOnTime(mapState.opening.capturedAt)) {
+      blockers.push("Iron Fly is disabled because the Opening Map was captured after the valid opening window.");
+    }
+    if (!ironFlyFadeCandidate && timeRegime.regime !== "OPENING_OPPORTUNITY") {
+      blockers.push(
+        "A near-center Iron Fly remains opening-only; later IF entries require a true displacement/exhaustion setup.",
+      );
+    }
+    if (ironFlyFadeCandidate && mapState.railBreached !== "NONE") {
+      reasons.push(
+        "Rail breach is extension evidence for this IF fade; it is not an entry waiver—premium rollover and price rejection remain mandatory.",
+      );
     }
   }
 
@@ -1083,8 +1111,12 @@ function buildEntryRead(args: {
     if (strikeFlow?.putWall.state === "breaking") {
       blockers.push("Put wall is breaking; bullish premium selling is blocked.");
     }
-    if (recommendation.dealerPressure <= -35) {
-      blockers.push("Dealer pressure is too bearish for a put credit spread.");
+    if (recommendation.dealerPressure <= -35 && !putFadeCandidate) {
+      blockers.push("Dealer pressure is too bearish for a trend-aligned put credit spread.");
+    } else if (recommendation.dealerPressure <= -35 && putFadeCandidate) {
+      reasons.push(
+        "Bearish dealer pressure is treated as downside premium inflation for this put-fade candidate; crest confirmation must prove exhaustion.",
+      );
     }
   }
 
@@ -1095,8 +1127,12 @@ function buildEntryRead(args: {
     if (strikeFlow?.callWall.state === "attacked") {
       blockers.push("Call wall is being attacked; bearish premium selling is blocked.");
     }
-    if (recommendation.dealerPressure >= 35) {
-      blockers.push("Dealer pressure is too bullish for a call credit spread.");
+    if (recommendation.dealerPressure >= 35 && !callFadeCandidate) {
+      blockers.push("Dealer pressure is too bullish for a trend-aligned call credit spread.");
+    } else if (recommendation.dealerPressure >= 35 && callFadeCandidate) {
+      reasons.push(
+        "Bullish dealer pressure is treated as upside premium inflation for this call-fade candidate; crest confirmation must prove exhaustion.",
+      );
     }
   }
 
@@ -1130,27 +1166,46 @@ function buildEntryRead(args: {
       timeRegime.minimumDistanceExpectedMovePct,
       riskModeExpectedMoveFloor,
     );
-    if (!(expectedMoveRemaining > 0) || shortDistance.expectedMovePct === null) {
-      blockers.push("Remaining expected move is unavailable; short-strike safety cannot be verified.");
-    } else if (shortDistance.expectedMovePct < effectiveExpectedMoveFloor) {
-      blockers.push(
-        `Short-strike distance is below the ${Math.round(
-          effectiveExpectedMoveFloor * 100,
-        )}% expected-move floor required by the time regime / risk policy.`,
-      );
-    }
-
+    const deltaLimit = riskPolicy?.shortDeltaMax ?? 0.20;
     const absoluteFloor = riskPolicy
       ? absoluteDistanceFloorPoints(riskPolicy, recommendation.spxPrice)
       : Math.max(15, recommendation.spxPrice * 0.0022);
-    if (shortDistance.points === null || shortDistance.points < absoluteFloor) {
-      blockers.push(`Short strike is inside the absolute ${absoluteFloor.toFixed(1)}-point safety floor.`);
+
+    if (!(expectedMoveRemaining > 0) || shortDistance.expectedMovePct === null) {
+      blockers.push("Remaining expected move is unavailable; short-strike geometry cannot be verified.");
+    } else if (
+      shortDistance.expectedMovePct < effectiveExpectedMoveFloor &&
+      !exhaustionFadeCandidate
+    ) {
+      blockers.push(
+        `Short-strike distance is below the ${Math.round(
+          effectiveExpectedMoveFloor * 100,
+        )}% expected-move floor required by the trend-aligned mode.`,
+      );
     }
-    const deltaLimit = riskPolicy?.shortDeltaMax ?? 0.20;
+
+    if (
+      (shortDistance.points === null || shortDistance.points < absoluteFloor) &&
+      !exhaustionFadeCandidate
+    ) {
+      blockers.push(`Short strike is inside the absolute ${absoluteFloor.toFixed(1)}-point trend-mode safety floor.`);
+    }
+
     if (shortDeltaAbs === null) {
-      blockers.push("Short-option delta is unavailable; 0DTE probability safety cannot be verified.");
-    } else if (shortDeltaAbs > deltaLimit) {
-      blockers.push(`Short delta ${shortDeltaAbs.toFixed(2)} exceeds the ${deltaLimit.toFixed(2)} risk-policy limit.`);
+      blockers.push("Short-option delta is unavailable; quote/Greek integrity cannot be verified.");
+    } else if (shortDeltaAbs > deltaLimit && !exhaustionFadeCandidate) {
+      blockers.push(`Short delta ${shortDeltaAbs.toFixed(2)} exceeds the ${deltaLimit.toFixed(2)} trend-mode limit.`);
+    }
+
+    if (
+      exhaustionFadeCandidate &&
+      ((shortDistance.expectedMovePct ?? 999) < effectiveExpectedMoveFloor ||
+        (shortDistance.points ?? 999) < absoluteFloor ||
+        (shortDeltaAbs ?? 0) > deltaLimit)
+    ) {
+      reasons.push(
+        "Fade mode is intentionally inside a conventional distance/delta preference; defined risk, premium crest, and completed price rejection—not 2Δ-as-POP—control entry.",
+      );
     }
   }
   if (candidate && tracking && tracking.ageCandles < 1) {
@@ -1171,11 +1226,17 @@ function buildEntryRead(args: {
         )
       : timeRegime.minimumDistanceExpectedMovePct,
   );
-  const structureScore = scoreStructure(candidate, mapState);
+  const structureScore = scoreStructure(
+    candidate,
+    mapState,
+    exhaustionFadeCandidate,
+    centerStretchRatio,
+  );
   const dealerFlowScore = scoreDealerFlow(
     candidate?.strategy ?? null,
     recommendation,
     strikeFlow,
+    exhaustionFadeCandidate,
   );
   const priceRejectionScore = candidate
     ? scorePriceExhaustion({
@@ -1227,6 +1288,11 @@ function buildEntryRead(args: {
     reasons.push(`Candidate has been locked for ${tracking.ageCandles} candle${tracking.ageCandles === 1 ? "" : "s"}.`);
   }
   if (portfolioContribution) reasons.push(...portfolioContribution.reasons);
+  if (exhaustionFadeCandidate) {
+    reasons.push(
+      `EXHAUSTION FADE thesis active: center displacement ${Math.abs(centerDisplacement).toFixed(1)} points (${Math.round(centerStretchRatio * 100)}% of Opening Map half-width). SELL_READY still requires completed premium rollover + completed 1m price rejection.`,
+    );
+  }
 
   const minimumEntryScore = Math.min(100,
     timeRegime.minimumEntryScore +
@@ -1409,10 +1475,19 @@ function buildExitRead(args: {
   if (position.strategy === "iron-fly") {
     mapFailure =
       mapState.phase === "TRANSITION" ||
-      mapState.railBreached !== "NONE" ||
       Math.abs(currentMap.center - position.entryMapCenter) >= 15;
-    hardThreat = mapState.railBreached !== "NONE" && timeRegime.regime === "FINAL_ENTRY";
-    if (mapFailure) warnings.push("The symmetric Iron Fly map is weakening or no longer controlling price.");
+    hardThreat =
+      mapState.phase === "TRANSITION" &&
+      Math.abs(currentMap.center - position.entryMapCenter) >= 15;
+    if (mapFailure) {
+      warnings.push(
+        "The Iron Fly reversion center is being replaced or has migrated materially.",
+      );
+    } else if (mapState.railBreached !== "NONE") {
+      warnings.push(
+        "Price remains outside a rail, but rail displacement alone does not invalidate an exhaustion-fade Iron Fly.",
+      );
+    }
   }
 
   if (position.strategy === "put-credit-spread") {
@@ -1464,8 +1539,7 @@ function buildExitRead(args: {
             priorSample.mapCenter >= position.entryMapCenter + structuralCenterThreshold ||
             (priorSample.dealerPressure ?? 0) >= 35 ||
             priorSample.strikeFlowState === "attacked"
-          : priorSample.railBreached !== "NONE" ||
-            Math.abs(priorSample.mapCenter - position.entryMapCenter) >= 15),
+          : Math.abs(priorSample.mapCenter - position.entryMapCenter) >= 15),
   );
   const confirmedStructuralFailure = Boolean(
     (mapFailure || wallFailure) && priorStructuralFailure,
@@ -1482,7 +1556,9 @@ function buildExitRead(args: {
   if (peakDetected) reasons.push("Live debit is rolling down from its tracked peak.");
   if ((premiumVelocityPerMinute ?? 0) < -0.05) reasons.push("Close debit is contracting with favorable velocity.");
   if (ageMinutes >= 30) reasons.push(`Position has been open ${Math.round(ageMinutes)} minutes.`);
-  if (shortItm) warnings.push("The short strike is at or through spot; terminal 0DTE risk is active.");
+  if (shortItm && position.strategy !== "iron-fly") {
+    warnings.push("The credit-spread short strike is at or through spot; terminal 0DTE risk is active.");
+  }
   const terminalThreat = Boolean(
     timeRegime.regime === "FINAL_ENTRY" &&
       shortDistancePoints !== null &&
@@ -1518,17 +1594,26 @@ function buildExitRead(args: {
 
   // Keep capture scoring continuous; avoid 35%/50% one-cent cliffs.
   if (capturedPct >= 50) reasons.push("At least half of the entry premium has been harvested.");
-  if (terminalThreat) exitScore = Math.max(exitScore, 88);
+  if (terminalThreat && position.strategy !== "iron-fly") {
+    exitScore = Math.max(exitScore, 88);
+  }
+
+  // A stretched IF is intentionally opened with one sold option possibly ITM.
+  // A fixed +35% debit can also occur during the normal path before reversion.
+  // For IF, emergency invalidation is therefore structural migration / near-max
+  // defined loss, not the fact that its center strike is ITM.
+  const nearMaxDefinedLoss =
+    position.maxRiskDollars !== null &&
+    managementDebit !== null &&
+    (managementDebit - position.entryCredit) * 100 >=
+      position.maxRiskDollars * 0.80;
 
   const emergencyExit = Boolean(
-    shortItm ||
+    (position.strategy !== "iron-fly" && shortItm) ||
       hardThreat ||
       (confirmedStructuralFailure && terminalThreat) ||
-      adversePct >= 35 ||
-      (position.maxRiskDollars !== null &&
-        managementDebit !== null &&
-        (managementDebit - position.entryCredit) * 100 >=
-          position.maxRiskDollars * 0.35),
+      (position.strategy !== "iron-fly" && adversePct >= 35) ||
+      nearMaxDefinedLoss,
   );
   if (emergencyExit) {
     exitScore = 100;
@@ -1616,7 +1701,9 @@ function scoreShortDistance(
 ) {
   if (!candidate) return 0;
   if (candidate.strategy === "iron-fly") {
-    return candidate.railBreached === "NONE" ? 70 : 10;
+    // For an IF fade, center displacement is the opportunity.  Rail breach is
+    // not scored as safety by itself; center validity is handled separately.
+    return candidate.railBreached === "NONE" ? 62 : 78;
   }
   if (distanceExpectedMovePct === null) return 35;
   return clamp((distanceExpectedMovePct / Math.max(minimumPct, 0.1)) * 82);
@@ -1625,6 +1712,8 @@ function scoreShortDistance(
 function scoreStructure(
   candidate: ExecutionCandidate | null,
   mapState: SessionMapManagerState,
+  exhaustionFadeCandidate = false,
+  centerStretchRatio = 0,
 ) {
   if (!candidate) return 0;
   const controlling = getControllingMarketMap(mapState);
@@ -1638,8 +1727,17 @@ function scoreStructure(
       structure.callWallStrength * 0.15 +
       structure.putWallStrength * 0.15 +
       structure.pinProbability * 0.15;
-    const railAdjustment = mapState.railBreached === "NONE" ? 4 : -30;
-    return clamp(twoSided + phaseAdjustment + railAdjustment);
+    const railAdjustment =
+      mapState.phase === "TRANSITION"
+        ? -35
+        : exhaustionFadeCandidate && mapState.railBreached !== "NONE"
+          ? 8
+          : mapState.railBreached === "NONE"
+            ? 4
+            : -8;
+    const stretchAdjustment =
+      exhaustionFadeCandidate ? clamp(centerStretchRatio * 18, 0, 18) : 0;
+    return clamp(twoSided + phaseAdjustment + railAdjustment + stretchAdjustment);
   }
 
   const wallStrength =
@@ -1661,21 +1759,28 @@ function scoreDealerFlow(
   strategy: ExecutionStrategy | null,
   recommendation: ZeroDteRecommendation,
   strikeFlow: ZeroDteStrikeFlowRead | null,
+  exhaustionFadeCandidate = false,
 ) {
   if (!strategy) return 0;
   if (strategy === "put-credit-spread") {
-    let score = clamp(50 + recommendation.dealerPressure * 0.9);
+    let score = exhaustionFadeCandidate
+      ? clamp(50 - recommendation.dealerPressure * 0.9)
+      : clamp(50 + recommendation.dealerPressure * 0.9);
     if (strikeFlow?.putWall.state === "absorbed") score += 20;
     if (strikeFlow?.putWall.state === "breaking") score -= 45;
     return clamp(score);
   }
   if (strategy === "call-credit-spread") {
-    let score = clamp(50 - recommendation.dealerPressure * 0.9);
+    let score = exhaustionFadeCandidate
+      ? clamp(50 + recommendation.dealerPressure * 0.9)
+      : clamp(50 - recommendation.dealerPressure * 0.9);
     if (strikeFlow?.callWall.state === "defended") score += 20;
     if (strikeFlow?.callWall.state === "attacked") score -= 45;
     return clamp(score);
   }
-  return clamp(100 - Math.abs(recommendation.dealerPressure) * 1.7);
+  return exhaustionFadeCandidate
+    ? clamp(52 + Math.min(42, Math.abs(recommendation.dealerPressure) * 0.75))
+    : clamp(100 - Math.abs(recommendation.dealerPressure) * 1.7);
 }
 
 function findRanking(

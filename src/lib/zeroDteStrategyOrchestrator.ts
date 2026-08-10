@@ -186,29 +186,46 @@ function buildSpreadRanking(args: {
   if (!executable) blockers.push("No executable live spread candidate is available.");
 
   const mapAlignment = spreadMapAlignment(side, mapState, controlling);
+  const fadeSide =
+    (side === "put" && rec.spxPrice < controlling.center) ||
+    (side === "call" && rec.spxPrice > controlling.center);
   const dealerAlignment = clamp(
-    side === "put"
-      ? 50 + rec.dealerPressure * 0.8
-      : 50 - rec.dealerPressure * 0.8,
+    fadeSide
+      ? side === "put"
+        ? 50 - rec.dealerPressure * 0.8
+        : 50 + rec.dealerPressure * 0.8
+      : side === "put"
+        ? 50 + rec.dealerPressure * 0.8
+        : 50 - rec.dealerPressure * 0.8,
   );
   const flowAlignment = spreadFlowAlignment(side, strikeFlow);
-  const pathAlignment = scoreLeastResistanceSide({
-    path: leastResistancePath,
-    side,
-  });
+  const desiredPathDirection =
+    fadeSide
+      ? side === "put"
+        ? "UP"
+        : "DOWN"
+      : null;
+  const pathAlignment =
+    fadeSide && leastResistancePath
+      ? leastResistancePath.direction === "NEUTRAL"
+        ? 72
+        : leastResistancePath.direction === desiredPathDirection
+          ? clamp(58 + leastResistancePath.confidence * 0.42)
+          : clamp(58 - leastResistancePath.confidence * 0.52)
+      : scoreLeastResistanceSide({
+          path: leastResistancePath,
+          side,
+        });
   const wall = side === "put" ? controlling.putWall : controlling.callWall;
 
   if (mapState.phase === "TRANSITION") {
-    const aligned =
-      (side === "put" && mapState.railBreached === "UPPER") ||
-      (side === "call" && mapState.railBreached === "LOWER");
-    if (aligned) {
-      reasons.push(
-        `${side === "put" ? "Upper" : "Lower"} migration promotes the ${side}-credit-spread side.`,
-      );
-    } else if (mapState.railBreached !== "NONE") {
-      blockers.push("This spread sells premium against the active map migration.");
-    }
+    blockers.push(
+      "Credit-spread fade is blocked while a replacement structural center is being confirmed.",
+    );
+  } else if (fadeSide && mapState.railBreached !== "NONE") {
+    reasons.push(
+      "Controlling-rail breach is treated as extension evidence; completed premium rollover must prove the fade before execution.",
+    );
   }
 
   const flowState =
@@ -264,9 +281,7 @@ function buildSpreadRanking(args: {
   const hardFlowBlock =
     (side === "put" && flowState === "breaking") ||
     (side === "call" && flowState === "attacked");
-  const againstMigration = blockers.some((item) =>
-    item.includes("against the active map migration"),
-  );
+  const againstMigration = mapState.phase === "TRANSITION";
   const eligible =
     executable &&
     !hardFlowBlock &&
@@ -275,6 +290,11 @@ function buildSpreadRanking(args: {
     !shortInsideWall &&
     score >= 35;
 
+  if (fadeSide) {
+    reasons.push(
+      `${side === "put" ? "Downside" : "Upside"} displacement puts this spread in EXHAUSTION FADE review; dealer/mood direction is interpreted as premium inflation until the crest engine confirms rollover.`,
+    );
+  }
   reasons.push(
     `Map ${Math.round(mapAlignment)} · dealer ${Math.round(dealerAlignment)} · flow ${Math.round(flowAlignment)} · path ${Math.round(pathAlignment)}.`,
   );
@@ -314,6 +334,10 @@ function buildIronFlyRanking(args: {
   leastResistancePath: ZeroDteLeastResistancePath | null;
 }): ZeroDteStrategyRanking {
   const { rec, spxRows, mapState, leastResistancePath } = args;
+
+  // The IF thesis is anchored to the true Opening Map.  The opportunity is
+  // NOT "spot is near center"; it is "spot is displaced from a still-valid
+  // center and the exact-leg premium can later prove exhaustion."
   const controlling = mapState.opening;
   const reasons: string[] = [];
   const blockers: string[] = [];
@@ -323,101 +347,144 @@ function buildIronFlyRanking(args: {
     controlling.lowerWing,
     controlling.upperWing,
   );
+
   const centerDistance = Math.abs(rec.spxPrice - controlling.center);
   const halfWidth = Math.max(
     1,
     Math.abs(controlling.upperWing - controlling.center),
   );
-  const mapAlignment = clamp(100 - (centerDistance / halfWidth) * 100);
-  const dealerAlignment = clamp(100 - Math.abs(rec.dealerPressure) * 1.6);
-  const flowAlignment = mapState.railBreached === "NONE" ? 72 : 22;
-  const pinProbability = controlling.structure.pinProbability;
-  const pathNeutrality =
+  const stretchRatio = centerDistance / halfWidth;
+  const creditToWidthPct = credit === null ? null : credit / halfWidth;
+  const residualRiskPoints =
+    credit === null ? null : Math.max(0, halfWidth - credit);
+  const rewardToResidualRisk =
+    credit === null || residualRiskPoints === null || residualRiskPoints <= 0
+      ? null
+      : credit / residualRiskPoints;
+
+  // Candidate ranking is deliberately pre-trigger.  It needs to KEEP the
+  // stretched setup alive long enough for the premium crest engine to observe
+  // expansion -> rollover.  ROLLOVER_CONFIRMED remains an execution gate.
+  const stretchOpportunity = clamp(stretchRatio * 105);
+  const premiumLoading =
+    creditToWidthPct === null ? 0 : clamp(creditToWidthPct * 115);
+  const centerValidity = clamp(
+    controlling.structure.structuralConfidence * 0.58 +
+      controlling.structure.pinProbability * 0.22 +
+      controlling.structure.callWallStrength * 0.10 +
+      controlling.structure.putWallStrength * 0.10,
+  );
+
+  // A directional LRP is no longer automatically hostile to a fly.
+  // If spot is above center, DOWN/NEUTRAL is reversion-friendly.
+  // If spot is below center, UP/NEUTRAL is reversion-friendly.
+  const desiredPathDirection =
+    rec.spxPrice > controlling.center
+      ? "DOWN"
+      : rec.spxPrice < controlling.center
+        ? "UP"
+        : "NEUTRAL";
+  const pathAlignment =
     !leastResistancePath
       ? 55
       : leastResistancePath.direction === "NEUTRAL"
-        ? 95
-        : Math.max(10, 70 - leastResistancePath.confidence * 0.55);
-  const pathConeScore =
-    !leastResistancePath
-      ? 55
-      : clamp(
-          100 -
-            (leastResistancePath.terminalConeWidth /
-              Math.max(leastResistancePath.expectedMoveRemaining, 1)) *
-              70,
-        );
-  const pathAlignment = clamp(pathNeutrality * 0.65 + pathConeScore * 0.35);
+        ? 72
+        : leastResistancePath.direction === desiredPathDirection
+          ? clamp(58 + leastResistancePath.confidence * 0.42)
+          : clamp(58 - leastResistancePath.confidence * 0.52);
 
-  if (credit === null) blockers.push("The opening iron fly cannot be priced from live mids.");
-  if (mapState.phase === "TRANSITION") {
-    blockers.push("Iron fly is blocked while a replacement map is being confirmed.");
-  }
-  if (mapState.railBreached !== "NONE") {
-    blockers.push("Price is outside a controlling rail; symmetric premium is not stable.");
-  }
-  if (Math.abs(rec.dealerPressure) > 35) {
-    blockers.push("Dealer pressure is too directional for a symmetric fly.");
-  }
-  const pathHardDirectional = Boolean(
-    leastResistancePath &&
-      leastResistancePath.confidence >= 75 &&
-      leastResistancePath.direction !== "NEUTRAL",
+  // Strong directional dealer pressure is the fuel that can inflate premium.
+  // Its LEVEL is therefore context, not a hard blocker.  The live execution
+  // engine still requires completed premium rollover + price rejection.
+  const dealerContext = clamp(
+    48 + Math.min(45, Math.abs(rec.dealerPressure)) * 0.75,
   );
-  if (pathHardDirectional) {
-    blockers.push("High-confidence least-resistance path is directional; symmetric fly entry is blocked.");
+  const railContext =
+    mapState.railBreached === "NONE"
+      ? 62
+      : stretchRatio >= 0.55
+        ? 78
+        : 48;
+
+  if (credit === null) {
+    blockers.push("The opening-centered iron fly cannot be priced from the live chain.");
+  }
+  if (mapState.phase === "TRANSITION") {
+    blockers.push(
+      "Opening-center fade is blocked while a replacement map is being confirmed.",
+    );
   }
 
   let score =
-    rec.confidenceScore * 0.22 +
-    rec.spx.symmetryScore * 0.18 +
-    pinProbability * 0.16 +
-    mapAlignment * 0.18 +
-    dealerAlignment * 0.11 +
-    flowAlignment * 0.05 +
-    pathAlignment * 0.10;
-  score -= blockers.length * 10;
+    centerValidity * 0.20 +
+    stretchOpportunity * 0.24 +
+    premiumLoading * 0.20 +
+    pathAlignment * 0.12 +
+    dealerContext * 0.08 +
+    railContext * 0.06 +
+    rec.confidenceScore * 0.10;
+  score -= blockers.length * 12;
 
-  if (mapState.phase === "ACTIVE" && mapState.railBreached === "NONE") {
-    reasons.push("Confirmed active map is holding inside its rails.");
+  if (stretchRatio >= 0.55) {
+    reasons.push(
+      `Exhaustion candidate: SPX is ${centerDistance.toFixed(1)} points from the Opening Map center (${Math.round(stretchRatio * 100)}% of half-width).`,
+    );
+  } else {
+    reasons.push(
+      `Opening-centered IF is tracking a ${centerDistance.toFixed(1)}-point displacement (${Math.round(stretchRatio * 100)}% of half-width).`,
+    );
   }
-  if (pinProbability >= 60) reasons.push("Pin probability supports center attraction.");
-  if (dealerAlignment >= 65) reasons.push("Dealer pressure is sufficiently neutral.");
+  if (creditToWidthPct !== null) {
+    reasons.push(
+      `IF premium is loaded to ${Math.round(creditToWidthPct * 100)}% of wing width; residual defined risk is ${residualRiskPoints!.toFixed(2)} points.`,
+    );
+  }
+  if (rewardToResidualRisk !== null) {
+    reasons.push(
+      `Credit / residual-risk geometry is ${rewardToResidualRisk.toFixed(2)}× before any reversion assumption.`,
+    );
+  }
+  if (mapState.railBreached !== "NONE") {
+    reasons.push(
+      `${mapState.railBreached.toLowerCase()} rail breach is treated as displacement evidence, not automatic failure; execution still requires exhaustion confirmation.`,
+    );
+  }
+  if (Math.abs(rec.dealerPressure) > 35) {
+    reasons.push(
+      `Directional dealer pressure (${rec.dealerPressure.toFixed(0)}) is treated as expansion fuel; the premium crest must prove it has stopped paying higher.`,
+    );
+  }
   if (leastResistancePath) {
     reasons.push(
-      `Least-resistance fly alignment ${Math.round(pathAlignment)}/100; path ${leastResistancePath.direction} ${leastResistancePath.confidence}% with ${leastResistancePath.terminalConeWidth.toFixed(1)}-point terminal cone.`,
+      `Least-resistance fade alignment ${Math.round(pathAlignment)}/100; desired path ${desiredPathDirection}, actual ${leastResistancePath.direction} ${leastResistancePath.confidence}%.`,
     );
   }
   reasons.push(
-    `Center distance ${centerDistance.toFixed(1)} points; opening IF center ${controlling.center.toFixed(0)}.`,
+    `Opening center validity scores ${Math.round(centerValidity)}/100 from structural confidence, pin probability, and both walls.`,
   );
 
   return {
     rank: 0,
     tradeType: "iron-fly",
-    label: "Iron Fly",
+    label: stretchRatio >= 0.55 ? "Iron Fly · Exhaustion Fade" : "Iron Fly · Opening Center",
     score: clamp(score),
     eligible:
       credit !== null &&
       mapState.phase !== "TRANSITION" &&
-      mapState.railBreached === "NONE" &&
-      Math.abs(rec.dealerPressure) <= 35 &&
-      !pathHardDirectional &&
-      score >= 40,
-    mapAlignment,
-    dealerAlignment,
-    flowAlignment,
+      centerValidity >= 30 &&
+      score >= 35,
+    // Keep the legacy field names for UI compatibility, but point them at the
+    // corrected thesis components.
+    mapAlignment: stretchOpportunity,
+    dealerAlignment: dealerContext,
+    flowAlignment: railContext,
     pathAlignment,
     strikes: `${controlling.lowerWing.toFixed(0)} / ${controlling.center.toFixed(0)} / ${controlling.upperWing.toFixed(0)}`,
     estimatedCredit: credit,
     maxRiskDollars:
-      credit === null
-        ? null
-        : Math.max(0, halfWidth - credit) * 100,
+      residualRiskPoints === null ? null : residualRiskPoints * 100,
     creditToRiskPct:
-      credit === null || halfWidth - credit <= 0
-        ? null
-        : credit / (halfWidth - credit),
+      rewardToResidualRisk === null ? null : rewardToResidualRisk,
     reasons,
     blockers,
   };

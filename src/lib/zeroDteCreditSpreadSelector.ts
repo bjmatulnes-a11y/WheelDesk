@@ -452,16 +452,44 @@ function scoreCandidate(args: {
   if (maxRiskDollars !== null && maxLossDollars > maxRiskDollars) return rejectCandidate(rejectionDiagnostics, "above_max_risk");
 
   const distanceFromSpot = Math.abs(spot - row.strike);
-  if (distanceFromSpot < minAbsoluteDistancePoints) return rejectCandidate(rejectionDiagnostics, "inside_absolute_distance");
   const distanceAsExpectedMovePct = distanceFromSpot / expectedMoveRemaining;
-  // Risk-mode distance is a true eligibility floor. It can no longer be
-  // overcome by rich premium or another weighted score component.
-  if (distanceAsExpectedMovePct < minPct) return rejectCandidate(rejectionDiagnostics, "inside_expected_move_distance");
   const breakeven = side === "put" ? row.strike - sellableCredit : row.strike + sellableCredit;
   const shortDeltaAbs = cleanAbs(shortRow.delta);
-  // Delta is a hard 0DTE safety input. Missing delta is not scored as neutral.
+
+  // 6J: directional pressure on the same side as the excursion is treated as
+  // potential PREMIUM INFLATION, not automatic disqualification.  These are
+  // only candidate-discovery relaxations: SELL_READY still requires the
+  // completed 1-minute premium crest + price rejection and all defined-risk
+  // economics above remain hard.
+  const fadeCandidateMode =
+    (side === "put" && dealerPressure <= -20) ||
+    (side === "call" && dealerPressure >= 20);
+  const richFadeGeometry =
+    creditToWidthPct >= 0.20 || creditToRiskPct >= 0.35;
+
+  if (
+    distanceFromSpot < minAbsoluteDistancePoints &&
+    !(fadeCandidateMode && richFadeGeometry)
+  ) {
+    return rejectCandidate(rejectionDiagnostics, "inside_absolute_distance");
+  }
+  if (
+    distanceAsExpectedMovePct < minPct &&
+    !(fadeCandidateMode && richFadeGeometry)
+  ) {
+    return rejectCandidate(rejectionDiagnostics, "inside_expected_move_distance");
+  }
+
+  // Missing delta remains a hard data-quality failure.  A high delta is
+  // allowed into the TRACKING population only for a rich exhaustion candidate;
+  // it is not treated as POP and no entry can occur without crest confirmation.
   if (shortDeltaAbs === null) return rejectCandidate(rejectionDiagnostics, "missing_delta");
-  if (shortDeltaAbs > shortDeltaMax) return rejectCandidate(rejectionDiagnostics, "above_delta_limit");
+  if (
+    shortDeltaAbs > shortDeltaMax &&
+    !(fadeCandidateMode && richFadeGeometry)
+  ) {
+    return rejectCandidate(rejectionDiagnostics, "above_delta_limit");
+  }
 
   const sideOi = side === "put" ? row.putOi : row.callOi;
   const totalOi = row.totalOi;
@@ -469,11 +497,17 @@ function scoreCandidate(args: {
   const oiScore = clamp((sideOi / oiMagnitude) * 55 + (totalOi / oiMagnitude) * 20, 0, 100);
   const distanceScore = scoreDistance(distanceAsExpectedMovePct, minPct, maxPct, riskMode);
   const wallScore = scoreWall(side, row.strike, wall, expectedMoveRemaining);
-  const dealerScore = scoreDealer(side, dealerPressure);
-  const moodScore = scoreMood(side, mood);
+  const dealerScore = scoreDealer(side, dealerPressure, fadeCandidateMode);
+  const moodScore = scoreMood(side, mood, fadeCandidateMode);
   const spyScore = row.spyAlignment === "aligned" ? 100 : row.spyAlignment === "near" ? 70 : 40;
   const premiumScore = scorePremium({ creditToRiskPct, creditToWidthPct, riskMode });
-  const deltaScore = scoreDelta(shortDeltaAbs, riskMode);
+  const deltaScore = fadeCandidateMode && richFadeGeometry
+      ? clamp(
+      55 + Math.min(35, Math.max(0, shortDeltaAbs - shortDeltaMax) * 120),
+      0,
+      100
+    )
+    : scoreDelta(shortDeltaAbs, riskMode);
   const liquidityScore = scoreLiquidity(shortRow, longRow);
   const skewScore = scoreSideBias(side, row);
   const riskScore = scoreRisk({ maxLossDollars, maxRiskDollars, actualWidth, riskMode });
@@ -519,6 +553,20 @@ function scoreCandidate(args: {
   reasons.push(`Credit/risk is ${(creditToRiskPct * 100).toFixed(1)}%; credit/width is ${(creditToWidthPct * 100).toFixed(1)}%.`);
   reasons.push(`${row.strike} is ${distanceFromSpot.toFixed(1)} points from spot (${Math.round(distanceAsExpectedMovePct * 100)}% of expected move).`);
   if (shortDeltaAbs !== null) reasons.push(`Short strike delta estimate: ${shortDeltaAbs.toFixed(2)}.`);
+  if (fadeCandidateMode && richFadeGeometry) {
+    reasons.push(
+      `EXHAUSTION FADE candidate: directional pressure and rich package geometry keep this strike in tracking so the premium crest can decide the entry.`,
+    );
+    if (
+      distanceFromSpot < minAbsoluteDistancePoints ||
+      distanceAsExpectedMovePct < minPct ||
+      shortDeltaAbs > shortDeltaMax
+    ) {
+      warnings.push(
+        "Fade candidate is inside a conventional distance/delta preference; this is a tracking exception, not an entry waiver.",
+      );
+    }
+  }
   if (wall) reasons.push(describeWallRelationship(side, row.strike, wall));
   if (row.spyAlignment !== "none") reasons.push(`SPY confirmation is ${row.spyAlignment} near this SPX strike.`);
   if (side === "put" && dealerPressure > 20) reasons.push("Dealer pressure supports bullish/neutral put-spread placement.");
@@ -725,7 +773,15 @@ function scoreWall(side: CreditSpreadSide, strike: number, wall: number | null, 
   return clamp(38 - Math.min(35, ((wall - strike) / expectedMove) * 80), 0, 100);
 }
 
-function scoreDealer(side: CreditSpreadSide, pressure: number) {
+function scoreDealer(
+  side: CreditSpreadSide,
+  pressure: number,
+  fadeMode = false,
+) {
+  if (fadeMode) {
+    if (side === "put") return clamp(56 - pressure * 0.55, 0, 100);
+    return clamp(56 + pressure * 0.55, 0, 100);
+  }
   if (side === "put") return clamp(56 + pressure * 0.55, 0, 100);
   return clamp(56 - pressure * 0.55, 0, 100);
 }
@@ -899,14 +955,19 @@ function minWidthForRiskMode(mode: CreditSpreadRiskMode) {
 function scoreMood(
   side: CreditSpreadSide,
   mood: ZeroDteMoodRead | null,
+  fadeMode = false,
 ) {
   if (mood?.moodPercent == null || mood.coverage.status === "UNAVAILABLE") return 50;
   const directionalBase =
     mood.directionalBias === "neutral"
       ? 55
-      : side === "put"
-        ? mood.directionalBias === "bullish" ? 100 : 5
-        : mood.directionalBias === "bearish" ? 100 : 5;
+      : fadeMode
+        ? side === "put"
+          ? mood.directionalBias === "bearish" ? 100 : 5
+          : mood.directionalBias === "bullish" ? 100 : 5
+        : side === "put"
+          ? mood.directionalBias === "bullish" ? 100 : 5
+          : mood.directionalBias === "bearish" ? 100 : 5;
   const coverageMultiplier =
     mood.coverage.status === "FULL" || mood.coverage.status === "MANUAL"
       ? 1
