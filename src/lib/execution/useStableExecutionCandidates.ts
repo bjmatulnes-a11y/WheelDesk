@@ -28,6 +28,10 @@ const STRATEGIES: ExecutionStrategy[] = [
   "put-credit-spread",
   "call-credit-spread",
 ];
+// Premium exhaustion needs three completed minute bars before its baseline is
+// trusted. Do not routinely rotate an unfilled spread before that diagnostic
+// window has had time to exist. Structural invalidation still replaces at once.
+const MIN_ROUTINE_SIGNAL_DEVELOPMENT_CANDLES = 3;
 
 export function useStableExecutionCandidates(args: {
   tradeDate: string | null | undefined;
@@ -246,8 +250,11 @@ export function useStableExecutionCandidates(args: {
             (trackedSetupIsOpen &&
               challengerAgeSeconds === 0 &&
               candleIsClosed));
+        const signalDevelopmentReady =
+          trackedSetupIsOpen ||
+          track.ageCandles >= MIN_ROUTINE_SIGNAL_DEVELOPMENT_CANDLES;
 
-        if (survivedClosedCandle) {
+        if (survivedClosedCandle && signalDevelopmentReady) {
           lockCandidate(
             track,
             scanner,
@@ -260,6 +267,10 @@ export function useStableExecutionCandidates(args: {
           track.status = "REPLACED";
         } else {
           track.status = "CHALLENGER_BUILDING";
+          if (!signalDevelopmentReady) {
+            track.lastReplacementReason =
+              `The locked setup is being given ${MIN_ROUTINE_SIGNAL_DEVELOPMENT_CANDLES} completed candles to establish its premium-exhaustion tape before routine scanner rotation.`;
+          }
         }
       }
 

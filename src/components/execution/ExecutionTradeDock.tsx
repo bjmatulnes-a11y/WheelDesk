@@ -532,8 +532,12 @@ export function ExecutionTradeDock({
               }
             />
             <DockMetric
-              label="Entry Readiness"
+              label="Signal Gate"
               value={`${Math.round(activeRead.entryScore)} / ${activeRead.minimumEntryScore}`}
+            />
+            <DockMetric
+              label="Signal Grade"
+              value={`${activeRead.signalGrade} · A+ ${activeRead.aPlusEntryScore}`}
             />
           </div>
 

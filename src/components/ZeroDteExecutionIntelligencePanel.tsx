@@ -97,7 +97,9 @@ export function ZeroDteExecutionIntelligencePanel({
         <Metric label="Official 1m Bars" value={`${read.premiumCrest.completedMinuteCount} bars`} />
         <Metric label="Crest State" value={read.premiumCrest.status.replaceAll("_", " ")} />
         <Metric label="Price Rejection" value={`${Math.round(read.priceRejectionScore)} · ${read.priceRejectionReady ? "READY" : "BUILDING"}`} />
-        <Metric label="Entry Gate" value={`${Math.round(read.entryScore)}/${Math.round(read.minimumEntryScore)}`} />
+        <Metric label="Signal Gate" value={`${Math.round(read.entryScore)}/${Math.round(read.minimumEntryScore)}`} />
+        <Metric label="Signal Grade" value={read.signalGrade} />
+        <Metric label="A+ Gate" value={`${Math.round(read.entryScore)}/${Math.round(read.aPlusEntryScore)}`} />
         <Metric label="Trigger" value={read.regimeTriggerReady ? "READY" : "BUILDING"} />
         <Metric label="Confirm Bars" value={String(read.premiumCrest.confirmationBars)} />
         <Metric label="Hard Block" value={read.entryHardBlocked ? "YES" : "NO"} />
@@ -124,6 +126,11 @@ export function ZeroDteExecutionIntelligencePanel({
         <Metric label="Rollover Threshold" value={fmt(read.premiumCrest.rolloverThresholdPoints)} />
         <Metric label="1m Premium Slope" value={slope(read.premiumCrest.oneMinuteSlope)} />
         <Metric label="3m Premium Slope" value={slope(read.premiumCrest.threeMinuteSlope)} />
+        <Metric label="Live Rollover" value={read.premiumCrest.liveRolloverConfirmed ? "CONFIRMED" : "BUILDING"} />
+        <Metric label="Live Tape Obs" value={String(read.premiumCrest.liveObservationCount)} />
+        <Metric label="Live Tape Span" value={read.premiumCrest.liveWindowSeconds == null ? "—" : `${read.premiumCrest.liveWindowSeconds.toFixed(0)} sec`} />
+        <Metric label="Live Tape Slope" value={slope(read.premiumCrest.liveSlopePerMinute)} />
+        <Metric label="Rollover Source" value={read.premiumCrest.rolloverConfirmationSource?.replaceAll("_", " ") ?? "—"} />
         <Metric label="Peak Age" value={read.premiumCrest.peakAgeMinutes == null ? "—" : `${read.premiumCrest.peakAgeMinutes.toFixed(1)} min`} />
         <Metric label="Premium Crest Score" value={String(Math.round(read.premiumCrest.score))} />
         <Metric label="Setup Opening Credit" value={fmt(read.openingCredit)} />

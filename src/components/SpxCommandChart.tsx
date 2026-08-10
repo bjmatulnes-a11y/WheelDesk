@@ -1905,7 +1905,7 @@ export default function SpxCommandChart() {
           <span style={{ color: "#16c784" }}>GREEN = SELL</span>
           <span style={{ color: "#ea3943" }}>RED = BUY</span>
           <span>
-            {visibleExecutionSignals.length} confirmed · {signalPaint.pendingCount} pending
+            {visibleExecutionSignals.length} confirmed · immediate after qualified trigger
           </span>
         </div>
         <button

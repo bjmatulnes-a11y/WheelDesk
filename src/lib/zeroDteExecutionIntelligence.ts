@@ -251,7 +251,11 @@ export type ZeroDteExecutionRead = {
   scannerScore: number | null;
   trackingStatus: ExecutionCandidateTracking["status"] | null;
   portfolioContributionScore: number;
+  /** Qualified-signal conviction floor after the exhaustion trigger is proven. */
   minimumEntryScore: number;
+  /** Higher conviction tier; useful for distinguishing A+ signals without suppressing qualified B/A signals. */
+  aPlusEntryScore: number;
+  signalGrade: "A+" | "A" | "B" | "WATCH";
   entryScoreGap: number;
   regimeTriggerReady: boolean;
   entryHardBlocked: boolean;
@@ -483,12 +487,12 @@ export function buildZeroDteExecutionRead(args: {
     action = "COOLDOWN — require a fresh structure and premium setup before another entry.";
   } else if (entryRead.sellReady) {
     lifecycle = "SELL_READY";
-    action = `SELL READY — ${candidate?.label ?? "strategy"} has cleared the map, premium, and flow gates.`;
+    action = `SELL READY [${entryRead.signalGrade}] — ${candidate?.label ?? "strategy"} has cleared hard safety, premium exhaustion, completed price rejection, and the qualified-signal conviction floor.`;
   } else if (entryRead.armed) {
     lifecycle = "ARMED";
     action = premiumCrest.rolloverConfirmed
       ? entryRead.priceRejectionReady
-        ? `ARMED — ${candidate?.label ?? "strategy"} crest and price rejection are confirmed; conviction is ${entryRead.entryScore}/${entryRead.minimumEntryScore}.`
+        ? `ARMED — ${candidate?.label ?? "strategy"} crest and price rejection are confirmed; conviction is ${entryRead.entryScore}/${entryRead.minimumEntryScore} signal floor (${entryRead.aPlusEntryScore} A+).`
         : `ARMED — ${candidate?.label ?? "strategy"} crest is confirmed; strategy-specific price rejection is still building.`
       : premiumCrest.rolloverStarted
         ? `ARMED — ${candidate?.label ?? "strategy"} has begun a closed-minute premium rollover; waiting for confirmation.`
@@ -595,6 +599,8 @@ export function buildZeroDteExecutionRead(args: {
     trackingStatus: args.tracking?.status ?? null,
     portfolioContributionScore: portfolioContribution?.score ?? 70,
     minimumEntryScore: entryRead.minimumEntryScore,
+    aPlusEntryScore: entryRead.aPlusEntryScore,
+    signalGrade: entryRead.signalGrade,
     entryScoreGap: Math.max(0, Math.round(entryRead.minimumEntryScore - entryRead.entryScore)),
     regimeTriggerReady: entryRead.regimeTriggerReady,
     entryHardBlocked: entryRead.hardBlocked,
@@ -1319,20 +1325,40 @@ function buildEntryRead(args: {
   if (portfolioContribution) reasons.push(...portfolioContribution.reasons);
   if (exhaustionFadeCandidate) {
     reasons.push(
-      `EXHAUSTION FADE thesis active: center displacement ${Math.abs(centerDisplacement).toFixed(1)} points (${Math.round(centerStretchRatio * 100)}% of Opening Map half-width). SELL_READY still requires completed premium rollover + completed 1m price rejection.`,
+      `EXHAUSTION FADE thesis active: center displacement ${Math.abs(centerDisplacement).toFixed(1)} points (${Math.round(centerStretchRatio * 100)}% of Opening Map half-width). SELL_READY still requires confirmed premium rollover + completed 1m price rejection.`,
     );
   }
 
-  const minimumEntryScore = Math.min(100,
-    timeRegime.minimumEntryScore +
-      (riskPolicy ? eventRiskScoreAdjustment(riskPolicy) : 0) +
-      volContextScoreAdjustment(volContext),
+  const convictionAdjustment =
+    (riskPolicy ? eventRiskScoreAdjustment(riskPolicy) : 0) +
+    volContextScoreAdjustment(volContext);
+  const minimumEntryScore = Math.min(
+    100,
+    timeRegime.signalEntryScore + convictionAdjustment,
+  );
+  const aPlusEntryScore = Math.min(
+    100,
+    Math.max(
+      minimumEntryScore,
+      timeRegime.minimumEntryScore + convictionAdjustment,
+    ),
+  );
+  const roundedEntryScore = Math.round(entryScore);
+  const signalGrade = gradeQualifiedSignal(
+    roundedEntryScore,
+    minimumEntryScore,
+    aPlusEntryScore,
   );
   if (riskPolicy?.eventRisk === "HIGH") {
-    reasons.push("High event-risk mode raises required conviction by 6 points and halves preferred size.");
+    reasons.push("High event-risk mode raises both the qualified-signal and A+ conviction floors by 6 points and halves preferred size.");
   }
   if (volContext?.regime === "HOT" || volContext?.regime === "EXTREME") {
-    reasons.push(`Session range has consumed ${Math.round(volContext.rangeConsumptionPct ?? 0)}% of opening implied move; conviction and size are tightened.`);
+    reasons.push(`Session range has consumed ${Math.round(volContext.rangeConsumptionPct ?? 0)}% of opening implied move; both conviction tiers and size are tightened.`);
+  }
+  if (candidate) {
+    reasons.push(
+      `Conviction tiers: qualified signal ${minimumEntryScore}, A+ ${aPlusEntryScore}; current ${roundedEntryScore} (${signalGrade}).`,
+    );
   }
 
   const hardBlocked = unique(blockers).length > 0;
@@ -1344,12 +1370,12 @@ function buildEntryRead(args: {
   );
 
   return {
-    entryScore: Math.round(entryScore),
+    entryScore: roundedEntryScore,
     armed: Boolean(
       candidate &&
         !hardBlocked &&
         premiumCrest.armed &&
-        entryScore >= minimumEntryScore - 12,
+        entryScore >= minimumEntryScore - 8,
     ),
     sellReady: Boolean(
       candidate &&
@@ -1362,6 +1388,8 @@ function buildEntryRead(args: {
     priceRejectionScore,
     priceRejectionReady,
     minimumEntryScore,
+    aPlusEntryScore,
+    signalGrade,
     reasons: unique(reasons),
     blockers: unique(blockers),
     components: [
@@ -1891,6 +1919,17 @@ function classifyEdge(
   if (spot >= center + upperDistance * 0.55) return "upper";
   if (spot <= center - lowerDistance * 0.55) return "lower";
   return "center";
+}
+
+function gradeQualifiedSignal(
+  score: number,
+  signalFloor: number,
+  aPlusFloor: number,
+): "A+" | "A" | "B" | "WATCH" {
+  if (score < signalFloor) return "WATCH";
+  if (score >= aPlusFloor) return "A+";
+  const span = Math.max(1, aPlusFloor - signalFloor);
+  return score >= signalFloor + Math.max(2, Math.ceil(span * 0.5)) ? "A" : "B";
 }
 
 function clamp(value: number, min = 0, max = 100) {

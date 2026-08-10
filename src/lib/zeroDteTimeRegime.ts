@@ -15,6 +15,9 @@ export type ZeroDteTimeRegimeRead = {
   entryAllowed: boolean;
   newRiskPreferred: boolean;
   requiresPeakRollover: boolean;
+  /** Minimum conviction after a proven exhaustion trigger to publish a qualified signal. */
+  signalEntryScore: number;
+  /** Higher conviction tier used to distinguish A+ setups from ordinary qualified signals. */
   minimumEntryScore: number;
   minimumDistanceExpectedMovePct: number;
   sizeMultiplier: number;
@@ -86,6 +89,7 @@ export function classifyZeroDteTimeRegime(args: {
       entryAllowed: false,
       newRiskPreferred: false,
       requiresPeakRollover: false,
+      signalEntryScore: 100,
       minimumEntryScore: 100,
       minimumDistanceExpectedMovePct: 1,
       sizeMultiplier: 0,
@@ -103,6 +107,7 @@ export function classifyZeroDteTimeRegime(args: {
       entryAllowed: false,
       newRiskPreferred: false,
       requiresPeakRollover: false,
+      signalEntryScore: 100,
       minimumEntryScore: 100,
       minimumDistanceExpectedMovePct: 1,
       sizeMultiplier: 0,
@@ -120,13 +125,14 @@ export function classifyZeroDteTimeRegime(args: {
       entryAllowed: true,
       newRiskPreferred: true,
       requiresPeakRollover: true,
+      signalEntryScore: 73,
       minimumEntryScore: 78,
       minimumDistanceExpectedMovePct: 0.75,
       sizeMultiplier: 1,
       weights: [30, 25, 20, 15, 10],
       reasons: [
-        "8:30–10:30 CT is the primary probability window, but entry still requires a confirmed local premium crest.",
-        "Short-strike distance and controlling structure receive the highest weight after the exhaustion trigger is proven.",
+        "8:30–10:30 CT is the primary probability window; entry still requires premium exhaustion plus completed price rejection.",
+        "A sustained noise-adjusted live exact-leg rollover may confirm the crest before the next premium minute closes.",
       ],
     });
   }
@@ -140,12 +146,13 @@ export function classifyZeroDteTimeRegime(args: {
       entryAllowed: true,
       newRiskPreferred: !args.hasEnteredToday,
       requiresPeakRollover: true,
+      signalEntryScore: 75,
       minimumEntryScore: 82,
       minimumDistanceExpectedMovePct: 0.65,
       sizeMultiplier: args.hasEnteredToday ? 0.65 : 0.8,
       weights: [20, 25, 20, 20, 15],
       reasons: [
-        "10:30–12:00 CT requires a fresh premium expansion followed by closed-minute rollover confirmation.",
+        "10:30–12:00 CT requires a fresh premium expansion followed by a confirmed rollover; live exact-leg confirmation is allowed after the completed baseline is established.",
         args.hasEnteredToday
           ? "Existing positions reduce the preferred size of additional risk."
           : "No position has been entered, so one selective continuation setup remains available.",
@@ -162,12 +169,13 @@ export function classifyZeroDteTimeRegime(args: {
       entryAllowed: true,
       newRiskPreferred: !args.hasEnteredToday,
       requiresPeakRollover: true,
+      signalEntryScore: args.hasEnteredToday ? 80 : 77,
       minimumEntryScore: args.hasEnteredToday ? 88 : 84,
       minimumDistanceExpectedMovePct: 0.35,
       sizeMultiplier: args.hasEnteredToday ? 0.4 : 0.6,
       weights: [5, 25, 20, 35, 15],
       reasons: [
-        "After noon, entries must be centered on exhaustion and premium rollover.",
+        "After noon, entries must be centered on exhaustion, premium rollover, and completed price rejection.",
         args.hasEnteredToday
           ? "Portfolio improvement is required before adding another spread."
           : "Because no trade has been entered, a confirmed exhaustion setup may still qualify.",
@@ -184,6 +192,7 @@ export function classifyZeroDteTimeRegime(args: {
       entryAllowed: !args.hasEnteredToday,
       newRiskPreferred: false,
       requiresPeakRollover: true,
+      signalEntryScore: 85,
       minimumEntryScore: 92,
       minimumDistanceExpectedMovePct: 0.25,
       sizeMultiplier: 0.25,
@@ -191,7 +200,7 @@ export function classifyZeroDteTimeRegime(args: {
       reasons: [
         args.hasEnteredToday
           ? "New risk is blocked after 2:30 PM CT because the portfolio already has session exposure."
-          : "A first trade may qualify only with exceptional exhaustion confirmation.",
+          : "A first trade may qualify only with strong exhaustion confirmation; 85 is the signal floor and 92 remains the A+ conviction tier before risk adjustments.",
       ],
     });
   }
@@ -204,6 +213,7 @@ export function classifyZeroDteTimeRegime(args: {
     entryAllowed: false,
     newRiskPreferred: false,
     requiresPeakRollover: false,
+    signalEntryScore: 100,
     minimumEntryScore: 100,
     minimumDistanceExpectedMovePct: 1,
     sizeMultiplier: 0,
@@ -318,6 +328,9 @@ function makeRead(args: {
   entryAllowed: boolean;
   newRiskPreferred: boolean;
   requiresPeakRollover: boolean;
+  /** Minimum conviction after a proven exhaustion trigger to publish a qualified signal. */
+  signalEntryScore: number;
+  /** Higher conviction tier used to distinguish A+ setups from ordinary qualified signals. */
   minimumEntryScore: number;
   minimumDistanceExpectedMovePct: number;
   sizeMultiplier: number;

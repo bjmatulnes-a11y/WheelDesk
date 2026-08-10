@@ -125,19 +125,14 @@ export function useExecutionSignalPaint(args: {
   useEffect(() => {
     if (!tradeDate || !candles.length) return;
 
+    // `candles` is intentionally the completed 1-minute signal series. SELL_READY
+    // already contains the completed price-rejection confirmation, so requiring
+    // another still-open candle here would both contradict the input contract and
+    // add a full minute of unnecessary 0DTE latency. Confirm on the latest
+    // completed signal candle as soon as the execution engine reaches SELL_READY.
     const latestCandle = candles.at(-1);
     if (!latestCandle) return;
-
-    const generatedTimes = reads
-      .map((read) => Date.parse(read.generatedAt))
-      .filter(Number.isFinite);
-    const nowMs = generatedTimes.length
-      ? Math.max(...generatedTimes, Date.now())
-      : Date.now();
-    const intervalMs = Math.max(1, frequencyMinutes) * 60_000;
     const latestCandleTime = latestCandle.time;
-    const latestCandleCloseMs = latestCandleTime * 1000 + intervalMs;
-    const latestCandleIsOpen = nowMs < latestCandleCloseMs;
     const desiredByStrategy = desiredSignals(reads);
 
     setStore((previous) => {
@@ -148,17 +143,20 @@ export function useExecutionSignalPaint(args: {
           : loadStore(tradeDate, frequencyMinutes);
       let changed = false;
 
+      // Pending state belonged to the old extra-candle confirmation model. Clear
+      // any persisted remnants so a deployment cannot resurrect the obsolete gate.
+      if (Object.keys(next.pending).length) {
+        next.pending = {};
+        changed = true;
+      }
+
       for (const strategy of STRATEGIES) {
         const desired = desiredByStrategy.get(strategy) ?? null;
-        let pending = next.pending[strategy];
         const latched = next.latched[strategy];
 
         if (!desired) {
-          if (pending) {
-            delete next.pending[strategy];
-            pending = undefined;
-            changed = true;
-          }
+          // Allow a genuinely new trigger episode later in the day after readiness
+          // has first disappeared. Signal IDs still de-duplicate same-candle flicker.
           if (latched) {
             delete next.latched[strategy];
             changed = true;
@@ -166,62 +164,35 @@ export function useExecutionSignalPaint(args: {
           continue;
         }
 
-        if (latched && latched !== desired.kind) {
-          delete next.latched[strategy];
-          changed = true;
-        }
-
-        if (pending) {
-          const pendingClosed =
-            nowMs >= pending.candleTime * 1000 + intervalMs ||
-            latestCandleTime > pending.candleTime;
-          const stillMaintained =
-            pending.strategy === desired.strategy &&
-            pending.kind === desired.kind;
-
-          if (pendingClosed) {
-            if (stillMaintained) {
-              const signal = confirmSignal(tradeDate, pending);
-              if (!next.confirmed.some((item) => item.id === signal.id)) {
-                next.confirmed.push(signal);
-                next.confirmed.sort((a, b) => a.candleTime - b.candleTime);
-              }
-              next.latched[strategy] = desired.kind;
-            }
-            delete next.pending[strategy];
-            pending = undefined;
-            changed = true;
-          } else if (!stillMaintained) {
-            delete next.pending[strategy];
-            pending = undefined;
-            changed = true;
-          } else {
-            next.pending[strategy] = {
-              ...pending,
-              ...desired,
-              lastSeenAt: new Date(nowMs).toISOString(),
-            };
-            changed = true;
-          }
-        }
-
+        const lastSameKind = [...next.confirmed]
+          .reverse()
+          .find(
+            (signal) =>
+              signal.strategy === strategy && signal.kind === desired.kind,
+          );
         if (
-          !next.pending[strategy] &&
-          next.latched[strategy] !== desired.kind &&
-          latestCandleIsOpen
+          latched === desired.kind &&
+          (lastSameKind?.setupKey ?? null) === (desired.setupKey ?? null)
         ) {
-          next.pending[strategy] = {
-            candleTime: latestCandleTime,
-            ...desired,
-            startedAt: new Date(nowMs).toISOString(),
-            lastSeenAt: new Date(nowMs).toISOString(),
-          };
+          continue;
+        }
+
+        const signal = confirmSignal(tradeDate, {
+          candleTime: latestCandleTime,
+          ...desired,
+          startedAt: new Date(latestCandleTime * 1000).toISOString(),
+          lastSeenAt: new Date(latestCandleTime * 1000).toISOString(),
+        });
+        if (!next.confirmed.some((item) => item.id === signal.id)) {
+          next.confirmed.push(signal);
+          next.confirmed.sort((a, b) => a.candleTime - b.candleTime);
           changed = true;
         }
+        next.latched[strategy] = desired.kind;
+        changed = true;
       }
 
-      if (!changed) return previous;
-      return next;
+      return changed ? next : previous;
     });
   }, [candles, frequencyMinutes, reads, tradeDate]);
 
@@ -374,7 +345,7 @@ function confirmSignal(
   pending: PendingExecutionSignal,
 ): ConfirmedExecutionSignal {
   return {
-    id: `${tradeDate}:${pending.candleTime}:${pending.strategy}:${pending.kind}`,
+    id: `${tradeDate}:${pending.candleTime}:${pending.strategy}:${pending.kind}:${pending.setupKey ?? "none"}`,
     tradeDate,
     candleTime: pending.candleTime,
     strategy: pending.strategy,

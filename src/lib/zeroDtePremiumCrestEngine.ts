@@ -42,6 +42,11 @@ export type ZeroDtePremiumCrestRead = {
   threeMinuteSlope: number | null;
   peakAgeMinutes: number | null;
   confirmationBars: number;
+  liveObservationCount: number;
+  liveWindowSeconds: number | null;
+  liveSlopePerMinute: number | null;
+  liveRolloverConfirmed: boolean;
+  rolloverConfirmationSource: "LIVE_TAPE" | "CLOSED_MINUTE" | null;
   cycleExpanded: boolean;
   nearCrest: boolean;
   rolloverStarted: boolean;
@@ -56,9 +61,12 @@ export type ZeroDtePremiumCrestRead = {
 
 const LOCAL_WINDOW_MINUTES = 8;
 const MIN_COMPLETED_BARS = 3;
-const MAX_SIGNAL_PEAK_AGE_MINUTES = 4;
+const MAX_SIGNAL_PEAK_AGE_MINUTES = 5;
 const MIN_ABSOLUTE_EXPANSION = 0.05;
 const MIN_ABSOLUTE_ROLLOVER = 0.05;
+const LIVE_ROLLOVER_WINDOW_MS = 45_000;
+const LIVE_ROLLOVER_MIN_SPAN_MS = 12_000;
+const LIVE_ROLLOVER_MIN_OBSERVATIONS = 3;
 
 export function buildPremiumCrestRead(args: {
   samples: PremiumTapeLike[];
@@ -96,7 +104,7 @@ export function buildPremiumCrestRead(args: {
   });
   const quoteNoisePoints = estimateQuoteNoise(recentRaw, window);
 
-  const cycle = findCurrentExpansionCycle(window);
+  const cycle = findCurrentExpansionCycle(window, quoteNoisePoints);
   const trough = cycle.trough;
   const peak = cycle.peak;
   const expansionPoints = peak && trough ? peak.median - trough.median : null;
@@ -124,8 +132,13 @@ export function buildPremiumCrestRead(args: {
         quoteNoisePoints * 2.5,
       )
     : null;
-  const rolloverPoints =
+  const liveCredit = finiteNonNegative(args.currentCredit)
+    ? Number(args.currentCredit)
+    : samples.at(-1)?.credit ?? officialCredit;
+  const closedRolloverPoints =
     peak && officialCredit !== null ? peak.median - officialCredit : null;
+  const rolloverPoints =
+    peak && liveCredit !== null ? peak.median - liveCredit : closedRolloverPoints;
   const rolloverPct =
     rolloverPoints !== null && peak && peak.median > 0
       ? (rolloverPoints / peak.median) * 100
@@ -159,29 +172,50 @@ export function buildPremiumCrestRead(args: {
   const decisiveFastRollover = Boolean(
     cycleExpanded &&
       postPeakBars.length >= 1 &&
-      rolloverPoints !== null &&
+      closedRolloverPoints !== null &&
       rolloverThresholdPoints !== null &&
-      rolloverPoints >= rolloverThresholdPoints * 1.75 &&
+      closedRolloverPoints >= rolloverThresholdPoints * 1.75 &&
       (oneMinuteSlope ?? 0) <= -minNegativeSlope,
   );
   const twoBarRollover = Boolean(
     cycleExpanded &&
       postPeakBars.length >= 2 &&
-      rolloverPoints !== null &&
+      closedRolloverPoints !== null &&
       rolloverThresholdPoints !== null &&
-      rolloverPoints >= rolloverThresholdPoints &&
+      closedRolloverPoints >= rolloverThresholdPoints &&
       decliningConfirmationBars >= 2 &&
       (postPeakSlope ?? 0) <= -minNegativeSlope,
   );
-  const rolloverConfirmed = Boolean(
+  const closedMinuteRolloverConfirmed = Boolean(
     cycleExpanded && (twoBarRollover || decisiveFastRollover),
   );
+  const liveEvidence = buildLiveRolloverEvidence({
+    samples,
+    currentCredit: liveCredit,
+    generatedAt: args.generatedAt,
+    peak,
+    rolloverThresholdPoints,
+    quoteNoisePoints,
+    cycleExpanded,
+  });
+  const liveRolloverConfirmed = liveEvidence.confirmed;
+  const rolloverConfirmed = Boolean(
+    cycleExpanded && (closedMinuteRolloverConfirmed || liveRolloverConfirmed),
+  );
+  const rolloverConfirmationSource = closedMinuteRolloverConfirmed
+    ? "CLOSED_MINUTE" as const
+    : liveRolloverConfirmed
+      ? "LIVE_TAPE" as const
+      : null;
 
   const thresholdPct =
     peak && rolloverThresholdPoints !== null && peak.median > 0
       ? (rolloverThresholdPoints / peak.median) * 100
       : 0;
-  const missedDropPct = Math.max(12, thresholdPct * 3.5);
+  // Once a true rollover is detected, do not instantly convert a strong move
+  // into "missed". The live tape is expected to fire earlier; this wider
+  // recycle boundary preserves a short execution window for decisive closes.
+  const missedDropPct = Math.max(15, thresholdPct * 5);
   const stalePeak =
     peakAgeMinutes !== null && peakAgeMinutes > MAX_SIGNAL_PEAK_AGE_MINUTES;
   const missed = Boolean(
@@ -242,11 +276,18 @@ export function buildPremiumCrestRead(args: {
     reasons.push("Premium is expanded and still near the local crest; the engine is armed but will not sell before rollover confirmation.");
   }
   if (rolloverStarted && !rolloverConfirmed) {
-    reasons.push("The first closed-minute rollover is visible; waiting for a second confirmation or a decisive noise-adjusted drop.");
+    reasons.push("Closed-minute rollover has started; the engine can also confirm sooner from a sustained, noise-adjusted live exact-leg decline.");
+  }
+  if (liveEvidence.observationCount >= LIVE_ROLLOVER_MIN_OBSERVATIONS) {
+    reasons.push(
+      `Live rollover tape: ${liveEvidence.observationCount} observations across ${formatNumber(liveEvidence.windowSeconds)}s, slope ${formatNumber(liveEvidence.slopePerMinute)} credit/min.`,
+    );
   }
   if (rolloverConfirmed) {
     reasons.push(
-      `Rollover confirmed ${formatNumber(rolloverPoints)} points (${formatNumber(rolloverPct)}%) below the local crest with ${decliningConfirmationBars} closed-minute decline confirmation bar${decliningConfirmationBars === 1 ? "" : "s"}.`,
+      rolloverConfirmationSource === "LIVE_TAPE"
+        ? `Rollover confirmed by the live exact-leg tape ${formatNumber(rolloverPoints)} points (${formatNumber(rolloverPct)}%) below the completed local crest; completed price rejection remains mandatory.`
+        : `Rollover confirmed ${formatNumber(rolloverPoints)} points (${formatNumber(rolloverPct)}%) below the local crest with ${decliningConfirmationBars} closed-minute decline confirmation bar${decliningConfirmationBars === 1 ? "" : "s"}.`,
     );
   }
   if (missed) {
@@ -274,6 +315,11 @@ export function buildPremiumCrestRead(args: {
     threeMinuteSlope,
     peakAgeMinutes,
     confirmationBars: decliningConfirmationBars,
+    liveObservationCount: liveEvidence.observationCount,
+    liveWindowSeconds: liveEvidence.windowSeconds,
+    liveSlopePerMinute: liveEvidence.slopePerMinute,
+    liveRolloverConfirmed,
+    rolloverConfirmationSource,
     cycleExpanded,
     nearCrest,
     rolloverStarted,
@@ -371,23 +417,197 @@ function estimateQuoteNoise(
   return Math.max(0.01, medianDiff * 1.25, medianHalfRange * 0.5);
 }
 
-function findCurrentExpansionCycle(bars: ExecutionPremiumMinuteBar[]) {
+function findCurrentExpansionCycle(
+  bars: ExecutionPremiumMinuteBar[],
+  quoteNoisePoints: number,
+) {
   if (!bars.length) return { trough: null, peak: null };
-  let trough = bars[0]!;
-  let peak = bars[0]!;
+
+  type Cycle = {
+    trough: ExecutionPremiumMinuteBar;
+    peak: ExecutionPremiumMinuteBar;
+    expansion: number;
+  };
+
+  const cycles: Cycle[] = [];
+  let runningTrough = bars[0]!;
+  let runningPeak = bars[0]!;
+
+  const commitCycle = () => {
+    const expansion = runningPeak.median - runningTrough.median;
+    if (expansion > 0) {
+      cycles.push({
+        trough: runningTrough,
+        peak: runningPeak,
+        expansion,
+      });
+    }
+  };
 
   for (const bar of bars.slice(1)) {
-    if (bar.median < trough.median) {
-      trough = bar;
-      peak = bar;
+    if (bar.median < runningTrough.median) {
+      // Finish the prior excursion before accepting the lower quote as a new
+      // trough. This is the key invariant: the rollover cannot erase the crest
+      // that produced it.
+      commitCycle();
+      runningTrough = bar;
+      runningPeak = bar;
       continue;
     }
-    if (bar.median > peak.median) {
-      peak = bar;
+    if (bar.median > runningPeak.median) {
+      runningPeak = bar;
     }
   }
+  commitCycle();
 
-  return { trough, peak };
+  if (!cycles.length) {
+    return { trough: runningTrough, peak: runningTrough };
+  }
+
+  const maxExpansion = Math.max(...cycles.map((cycle) => cycle.expansion));
+  const meaningfulFloor = Math.max(
+    MIN_ABSOLUTE_EXPANSION,
+    quoteNoisePoints * 3,
+    maxExpansion * 0.55,
+  );
+  const meaningful = cycles.filter(
+    (cycle) => cycle.expansion >= meaningfulFloor,
+  );
+  const selected = (meaningful.length ? meaningful : cycles)
+    .sort((left, right) =>
+      left.peak.minuteKey === right.peak.minuteKey
+        ? right.expansion - left.expansion
+        : right.peak.minuteKey - left.peak.minuteKey,
+    )[0]!;
+
+  return { trough: selected.trough, peak: selected.peak };
+}
+
+function buildLiveRolloverEvidence(args: {
+  samples: PremiumTapeLike[];
+  currentCredit: number | null;
+  generatedAt: string;
+  peak: ExecutionPremiumMinuteBar | null;
+  rolloverThresholdPoints: number | null;
+  quoteNoisePoints: number;
+  cycleExpanded: boolean;
+}) {
+  const generatedMs = Date.parse(args.generatedAt);
+  if (
+    !args.cycleExpanded ||
+    !args.peak ||
+    args.rolloverThresholdPoints === null ||
+    !Number.isFinite(generatedMs)
+  ) {
+    return {
+      confirmed: false,
+      observationCount: 0,
+      windowSeconds: null as number | null,
+      slopePerMinute: null as number | null,
+    };
+  }
+
+  const byTimestamp = new Map<string, PremiumTapeLike>();
+  for (const sample of args.samples) byTimestamp.set(sample.timestamp, sample);
+  if (args.currentCredit !== null && finiteNonNegative(args.currentCredit)) {
+    byTimestamp.set(args.generatedAt, {
+      timestamp: args.generatedAt,
+      credit: args.currentCredit,
+    });
+  }
+
+  const peakClosedAt = args.peak.minuteKey + 60_000;
+  const windowStart = Math.max(
+    peakClosedAt,
+    generatedMs - LIVE_ROLLOVER_WINDOW_MS,
+  );
+  const live = [...byTimestamp.values()]
+    .filter((sample) => {
+      const timestamp = Date.parse(sample.timestamp);
+      return (
+        Number.isFinite(timestamp) &&
+        timestamp >= windowStart &&
+        timestamp <= generatedMs &&
+        finiteNonNegative(sample.credit)
+      );
+    })
+    .sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp));
+
+  const observationCount = live.length;
+  const first = live[0] ?? null;
+  const last = live.at(-1) ?? null;
+  const windowSeconds =
+    first && last
+      ? Math.max(0, (Date.parse(last.timestamp) - Date.parse(first.timestamp)) / 1000)
+      : null;
+  const slopePerMinute = regressionSlopeSamples(live);
+
+  if (
+    observationCount < LIVE_ROLLOVER_MIN_OBSERVATIONS ||
+    windowSeconds === null ||
+    windowSeconds * 1000 < LIVE_ROLLOVER_MIN_SPAN_MS ||
+    !last
+  ) {
+    return { confirmed: false, observationCount, windowSeconds, slopePerMinute };
+  }
+
+  const newHighTolerance = Math.max(0.01, args.quoteNoisePoints * 1.5);
+  const confirmedNewHighCount = live.filter(
+    (sample) => sample.credit > args.peak!.median + newHighTolerance,
+  ).length;
+  const declineSteps = live.slice(1).reduce((count, sample, index) => {
+    const previous = live[index]!;
+    return count + (sample.credit < previous.credit - args.quoteNoisePoints * 0.15 ? 1 : 0);
+  }, 0);
+  const grossLivePath = live.slice(1).reduce((distance, sample, index) => {
+    const previous = live[index]!;
+    return distance + Math.abs(sample.credit - previous.credit);
+  }, 0);
+  const dropFromPeak = args.peak.median - last.credit;
+  const dropFromLiveStart = first ? first.credit - last.credit : 0;
+  const directionalEfficiency =
+    grossLivePath > 0 ? Math.max(0, dropFromLiveStart) / grossLivePath : 0;
+  const liveThreshold = Math.max(
+    MIN_ABSOLUTE_ROLLOVER * 0.8,
+    args.rolloverThresholdPoints * 0.75,
+    args.quoteNoisePoints * 2,
+  );
+  const minimumSlopeMagnitude = Math.max(0.08, args.quoteNoisePoints * 4);
+  const confirmed = Boolean(
+    confirmedNewHighCount < 2 &&
+      dropFromPeak >= liveThreshold &&
+      dropFromLiveStart >= Math.max(0.02, args.quoteNoisePoints * 1.5) &&
+      declineSteps >= Math.max(2, Math.ceil((live.length - 1) * 0.6)) &&
+      directionalEfficiency >= 0.55 &&
+      (slopePerMinute ?? 0) <= -minimumSlopeMagnitude
+  );
+
+  return { confirmed, observationCount, windowSeconds, slopePerMinute };
+}
+
+function regressionSlopeSamples(samples: PremiumTapeLike[]) {
+  if (samples.length < 2) return null;
+  const origin = Date.parse(samples[0]!.timestamp);
+  const points = samples
+    .map((sample) => ({
+      x: (Date.parse(sample.timestamp) - origin) / 60_000,
+      y: sample.credit,
+    }))
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+  if (points.length < 2) return null;
+  const xMean = average(points.map((point) => point.x));
+  const yMean = average(points.map((point) => point.y));
+  let numerator = 0;
+  let denominator = 0;
+  for (const point of points) {
+    numerator += (point.x - xMean) * (point.y - yMean);
+    denominator += (point.x - xMean) ** 2;
+  }
+  return denominator > 0 ? numerator / denominator : null;
+}
+
+function finiteNonNegative(value: number | null | undefined) {
+  return value !== null && value !== undefined && Number.isFinite(value) && value >= 0;
 }
 
 function countTrailingDeclines(values: ExecutionPremiumMinuteBar[]) {
@@ -480,6 +700,11 @@ function makeEmptyRead(args: {
     threeMinuteSlope: null,
     peakAgeMinutes: null,
     confirmationBars: 0,
+    liveObservationCount: 0,
+    liveWindowSeconds: null,
+    liveSlopePerMinute: null,
+    liveRolloverConfirmed: false,
+    rolloverConfirmationSource: null,
     cycleExpanded: false,
     nearCrest: false,
     rolloverStarted: false,

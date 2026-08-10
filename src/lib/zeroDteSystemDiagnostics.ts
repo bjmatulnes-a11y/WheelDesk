@@ -14,6 +14,8 @@ import {
   type MarketMapSnapshot,
   type SessionMapManagerState,
 } from "./session/mapEngine";
+import { buildPremiumCrestRead, type PremiumTapeLike } from "./zeroDtePremiumCrestEngine";
+import { classifyZeroDteTimeRegime } from "./zeroDteTimeRegime";
 
 export type ZeroDteDiagnosticCheck = {
   id: string;
@@ -145,6 +147,53 @@ export function runZeroDteSystemDiagnostics(): ZeroDteDiagnosticCheck[] {
     neutralFreshFlow,
   );
 
+
+  const premiumBase = Date.parse("2026-07-10T15:00:00.000Z");
+  const violentPremium: PremiumTapeLike[] = [];
+  addPremiumBar(violentPremium, premiumBase, 0, 4.0);
+  addPremiumBar(violentPremium, premiumBase, 1, 4.2);
+  addPremiumBar(violentPremium, premiumBase, 2, 4.5);
+  addPremiumBar(violentPremium, premiumBase, 3, 3.95);
+  const violentRollover = buildPremiumCrestRead({
+    samples: violentPremium,
+    generatedAt: new Date(premiumBase + 4 * 60_000 + 5_000).toISOString(),
+    currentCredit: 3.95,
+  });
+
+  const livePremium: PremiumTapeLike[] = [];
+  addPremiumBar(livePremium, premiumBase, 0, 4.0);
+  addPremiumBar(livePremium, premiumBase, 1, 4.2);
+  addPremiumBar(livePremium, premiumBase, 2, 4.5);
+  livePremium.push(
+    { timestamp: new Date(premiumBase + 3 * 60_000 + 5_000).toISOString(), credit: 4.47 },
+    { timestamp: new Date(premiumBase + 3 * 60_000 + 15_000).toISOString(), credit: 4.41 },
+    { timestamp: new Date(premiumBase + 3 * 60_000 + 25_000).toISOString(), credit: 4.34 },
+  );
+  const liveRollover = buildPremiumCrestRead({
+    samples: livePremium,
+    generatedAt: new Date(premiumBase + 3 * 60_000 + 25_000).toISOString(),
+    currentCredit: 4.34,
+  });
+
+  const noisePremium: PremiumTapeLike[] = [];
+  addPremiumBar(noisePremium, premiumBase, 0, 4.0);
+  addPremiumBar(noisePremium, premiumBase, 1, 4.2);
+  addPremiumBar(noisePremium, premiumBase, 2, 4.5);
+  noisePremium.push(
+    { timestamp: new Date(premiumBase + 3 * 60_000 + 5_000).toISOString(), credit: 4.49 },
+    { timestamp: new Date(premiumBase + 3 * 60_000 + 15_000).toISOString(), credit: 4.48 },
+    { timestamp: new Date(premiumBase + 3 * 60_000 + 25_000).toISOString(), credit: 4.49 },
+  );
+  const noiseRead = buildPremiumCrestRead({
+    samples: noisePremium,
+    generatedAt: new Date(premiumBase + 3 * 60_000 + 25_000).toISOString(),
+    currentCredit: 4.49,
+  });
+
+  const openingRegime = classifyZeroDteTimeRegime({
+    generatedAt: "2026-07-10T14:30:00.000Z",
+    hasEnteredToday: false,
+  });
   return [
     {
       id: "opening-map-width",
@@ -228,7 +277,61 @@ export function runZeroDteSystemDiagnostics(): ZeroDteDiagnosticCheck[] {
         getControllingMarketMap(structureOnlyResult).center === activeB.center,
       detail: `Phase ${structureOnlyResult.phase}; proof ${structureOnlyResult.migrationConfirmationMode}; evidence ${structureOnlyResult.migrationScore}/100.`,
     },
+    {
+      id: "premium-cycle-survives-rollover",
+      label: "A decisive rollover cannot erase the expansion cycle that created it",
+      passed:
+        violentRollover.localTroughCredit === 4 &&
+        violentRollover.localPeakCredit === 4.5 &&
+        violentRollover.rolloverConfirmed &&
+        violentRollover.signalEligible,
+      detail: `Cycle ${violentRollover.localTroughCredit} → ${violentRollover.localPeakCredit}; ${violentRollover.status}; source ${violentRollover.rolloverConfirmationSource}.`,
+    },
+    {
+      id: "live-premium-rollover",
+      label: "Three sustained live exact-leg observations can confirm rollover before the next premium minute closes",
+      passed:
+        liveRollover.rolloverConfirmed &&
+        liveRollover.signalEligible &&
+        liveRollover.rolloverConfirmationSource === "LIVE_TAPE" &&
+        liveRollover.liveObservationCount >= 3,
+      detail: `${liveRollover.liveObservationCount} obs / ${liveRollover.liveWindowSeconds}s / slope ${liveRollover.liveSlopePerMinute?.toFixed(2) ?? "—"}.`,
+    },
+    {
+      id: "live-premium-noise-rejection",
+      label: "Flat/noisy live premium cannot manufacture a rollover signal",
+      passed: !noiseRead.rolloverConfirmed && !noiseRead.signalEligible,
+      detail: `${noiseRead.liveObservationCount} obs; status ${noiseRead.status}; slope ${noiseRead.liveSlopePerMinute?.toFixed(2) ?? "—"}.`,
+    },
+    {
+      id: "signal-vs-aplus-floor",
+      label: "Qualified signal floor is distinct from the A+ conviction tier",
+      passed:
+        openingRegime.signalEntryScore === 73 &&
+        openingRegime.minimumEntryScore === 78 &&
+        openingRegime.signalEntryScore < openingRegime.minimumEntryScore,
+      detail: `Opening signal ${openingRegime.signalEntryScore}; A+ ${openingRegime.minimumEntryScore}.`,
+    },
   ];
+}
+
+
+function addPremiumBar(
+  target: PremiumTapeLike[],
+  baseMs: number,
+  minute: number,
+  medianCredit: number,
+) {
+  target.push(
+    {
+      timestamp: new Date(baseMs + minute * 60_000 + 5_000).toISOString(),
+      credit: medianCredit - 0.005,
+    },
+    {
+      timestamp: new Date(baseMs + minute * 60_000 + 35_000).toISOString(),
+      credit: medianCredit + 0.005,
+    },
+  );
 }
 
 function snapshot(
