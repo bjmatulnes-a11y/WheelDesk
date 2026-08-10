@@ -106,15 +106,28 @@ export function useStableExecutionCandidates(args: {
             }
             track.candidate = {
               ...currentVersion,
+              // Keep the discovery thesis frozen for a tracked credit spread.
+              // A later price move cannot silently turn a trend setup into a
+              // fade setup and waive distance/delta gates mid-lifecycle.
+              spreadMode:
+                strategy === "iron-fly"
+                  ? null
+                  : track.candidate.spreadMode ?? currentVersion.spreadMode ?? "trend",
               mapPhase: mapState.phase,
-              mapCenter: controlling.center,
+              mapCenter:
+                strategy === "iron-fly"
+                  ? mapState.opening.center
+                  : controlling.center,
               railBreached: mapState.railBreached,
             };
           } else {
             track.candidate = {
               ...track.candidate,
               mapPhase: mapState.phase,
-              mapCenter: controlling.center,
+              mapCenter:
+                strategy === "iron-fly"
+                  ? mapState.opening.center
+                  : controlling.center,
               railBreached: mapState.railBreached,
             };
           }

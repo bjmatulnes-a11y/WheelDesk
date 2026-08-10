@@ -143,7 +143,7 @@ export type StrikeFlowSnapshot = {
 };
 
 type StrikeFlowHistoryState = {
-  version: 2;
+  version: 3;
   tradeDate: string;
   expiration: string | null;
   live: StrikeFlowSnapshot | null;
@@ -165,7 +165,7 @@ type FlowReferences = {
   completedMinuteCount: number;
 };
 
-const STORAGE_PREFIX = "wheeldesk.zeroDte.strikeFlow.v2";
+const STORAGE_PREFIX = "wheeldesk.zeroDte.strikeFlow.v3";
 const MAX_MINUTE_CLOSES = 40;
 
 export function updateZeroDteStrikeFlow(args: {
@@ -226,7 +226,7 @@ function updateHistoryState(current: StrikeFlowSnapshot): StrikeFlowHistoryState
     existing.expiration === current.expiration
       ? existing
       : {
-          version: 2,
+          version: 3,
           tradeDate: current.tradeDate,
           expiration: current.expiration,
           live: null,
@@ -237,8 +237,11 @@ function updateHistoryState(current: StrikeFlowSnapshot): StrikeFlowHistoryState
   if (
     clock.sessionStatus === "OPEN" &&
     !state.sessionOpenBaseline &&
-    clock.minuteIndex >= 0
+    clock.minuteIndex >= 0 &&
+    clock.minuteIndex <= 1
   ) {
+    // "Since open" is only truthful if we actually observed the cash open. A
+    // browser first opened at 11:15 CT must not relabel 11:15 as session open.
     state = { ...state, sessionOpenBaseline: current };
   }
 
@@ -312,7 +315,16 @@ function referenceAtOrBefore(
   const candidate = [...history.minuteCloses]
     .reverse()
     .find((snapshot) => Date.parse(snapshot.generatedAt) <= target);
-  return candidate ?? history.sessionOpenBaseline;
+  // A missing 5m/15m reference is not "since open." Those are different
+  // measurements and since-open already has its own explicit baseline. Also
+  // reject an arbitrarily old snapshot after tab sleep/network gaps; otherwise
+  // a 10-minute hole could be mislabeled as a 3m/5m confirmation window.
+  if (!candidate) return null;
+  const ageMinutes =
+    (Date.parse(latest.generatedAt) - Date.parse(candidate.generatedAt)) / 60_000;
+  return Number.isFinite(ageMinutes) && ageMinutes <= minutes + 1.5
+    ? candidate
+    : null;
 }
 
 function buildReadFromReferences(
@@ -332,33 +344,34 @@ function buildReadFromReferences(
 
   const raw = strikes.map((strike) => {
     const now = currentMap.get(strike) ?? emptyAggregate();
-    const one = oneMap.get(strike) ?? emptyAggregate();
-    const five = fiveMap.get(strike) ?? emptyAggregate();
-    const confirmation = confirmationMap.get(strike) ?? emptyAggregate();
-    const fifteen = fifteenMap.get(strike) ?? emptyAggregate();
-    const previousOne = previousOneMap.get(strike) ?? emptyAggregate();
-    const open = openMap.get(strike) ?? emptyAggregate();
+    const one = oneMap.get(strike) ?? null;
+    const five = fiveMap.get(strike) ?? null;
+    const confirmation = confirmationMap.get(strike) ?? null;
+    const fifteen = fifteenMap.get(strike) ?? null;
+    const previousOne = previousOneMap.get(strike) ?? null;
+    const open = openMap.get(strike) ?? null;
 
-    const callVolumeDelta1m = positiveDelta(now.callVolume, one.callVolume);
-    const putVolumeDelta1m = positiveDelta(now.putVolume, one.putVolume);
-    const callVolumeDelta5m = positiveDelta(now.callVolume, five.callVolume);
-    const putVolumeDelta5m = positiveDelta(now.putVolume, five.putVolume);
-    const callVolumeDeltaConfirmation = positiveDelta(
-      now.callVolume,
-      confirmation.callVolume,
-    );
-    const putVolumeDeltaConfirmation = positiveDelta(
-      now.putVolume,
-      confirmation.putVolume,
-    );
-    const callVolumeDelta15m = positiveDelta(now.callVolume, fifteen.callVolume);
-    const putVolumeDelta15m = positiveDelta(now.putVolume, fifteen.putVolume);
-    const callVolumeSinceOpen = positiveDelta(now.callVolume, open.callVolume);
-    const putVolumeSinceOpen = positiveDelta(now.putVolume, open.putVolume);
-    const previousCall1m = refs.prior1m
+    // Missing coverage is unknown, not zero. A strike that enters Schwab's
+    // observation window must establish a baseline before it can contribute
+    // delta-volume flow; otherwise cumulative day volume becomes fake 1m flow.
+    const callVolumeDelta1m = one ? positiveDelta(now.callVolume, one.callVolume) : 0;
+    const putVolumeDelta1m = one ? positiveDelta(now.putVolume, one.putVolume) : 0;
+    const callVolumeDelta5m = five ? positiveDelta(now.callVolume, five.callVolume) : 0;
+    const putVolumeDelta5m = five ? positiveDelta(now.putVolume, five.putVolume) : 0;
+    const callVolumeDeltaConfirmation = confirmation
+      ? positiveDelta(now.callVolume, confirmation.callVolume)
+      : 0;
+    const putVolumeDeltaConfirmation = confirmation
+      ? positiveDelta(now.putVolume, confirmation.putVolume)
+      : 0;
+    const callVolumeDelta15m = fifteen ? positiveDelta(now.callVolume, fifteen.callVolume) : 0;
+    const putVolumeDelta15m = fifteen ? positiveDelta(now.putVolume, fifteen.putVolume) : 0;
+    const callVolumeSinceOpen = open ? positiveDelta(now.callVolume, open.callVolume) : 0;
+    const putVolumeSinceOpen = open ? positiveDelta(now.putVolume, open.putVolume) : 0;
+    const previousCall1m = one && previousOne
       ? positiveDelta(one.callVolume, previousOne.callVolume)
       : 0;
-    const previousPut1m = refs.prior1m
+    const previousPut1m = one && previousOne
       ? positiveDelta(one.putVolume, previousOne.putVolume)
       : 0;
 
@@ -531,6 +544,41 @@ function buildReadFromReferences(
     rows,
     notes,
   };
+}
+
+export function classifyStrikeFlowAtLevels(args: {
+  read: ZeroDteStrikeFlowRead;
+  callWall: number | null;
+  putWall: number | null;
+}) {
+  const confirmationPrice =
+    args.read.priceChangeConfirmation === null
+      ? args.read.previousSpxPrice
+      : args.read.currentSpxPrice - args.read.priceChangeConfirmation;
+  const callWall = classifyCallWall({
+    strike: args.callWall,
+    rows: args.read.rows,
+    previousPrice: args.read.previousSpxPrice,
+    confirmationPrice,
+    currentPrice: args.read.currentSpxPrice,
+    confirmationReady: args.read.confirmationReady,
+  });
+  const putWall = classifyPutWall({
+    strike: args.putWall,
+    rows: args.read.rows,
+    previousPrice: args.read.previousSpxPrice,
+    confirmationPrice,
+    currentPrice: args.read.currentSpxPrice,
+    confirmationReady: args.read.confirmationReady,
+  });
+  const map = buildMapDirection({
+    callWall,
+    putWall,
+    priceChange1m: args.read.priceChange1m,
+    priceChangeConfirmation: args.read.priceChangeConfirmation,
+    confirmationReady: args.read.confirmationReady,
+  });
+  return { callWall, putWall, mapDirection: map.direction, mapConfirmationScore: map.score, mapMessage: map.message };
 }
 
 function classifyCallWall(args: {
@@ -964,7 +1012,7 @@ function readHistory(
     const raw = window.localStorage.getItem(storageKey(tradeDate, expiration));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<StrikeFlowHistoryState>;
-    if (parsed.version !== 2 || !Array.isArray(parsed.minuteCloses)) return null;
+    if (parsed.version !== 3 || !Array.isArray(parsed.minuteCloses)) return null;
     return parsed as StrikeFlowHistoryState;
   } catch {
     return null;

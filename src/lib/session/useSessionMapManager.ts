@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ZeroDteChainRow, ZeroDteRecommendation } from "../zeroDteOiIntelligence";
 import type { ZeroDteOpeningMap } from "../zeroDteOpeningMap";
 import type { ZeroDteStrikeFlowRead } from "../zeroDteStrikeFlow";
@@ -20,6 +20,10 @@ export function useSessionMapManager(args: {
   rows: ZeroDteChainRow[];
   openingMap?: ZeroDteOpeningMap | null;
   strikeFlow?: ZeroDteStrikeFlowRead | null;
+  /** Separates live 0DTE state from future-expiration research state. */
+  scopeKey?: string;
+  /** Research scopes may use the state machine in-memory but must never touch live persistence. */
+  persist?: boolean;
 }) {
   const {
     tradeDate,
@@ -28,8 +32,11 @@ export function useSessionMapManager(args: {
     rows,
     openingMap = null,
     strikeFlow = null,
+    scopeKey = "live",
+    persist = true,
   } = args;
   const [state, setState] = useState<SessionMapManagerState | null>(null);
+  const appliedScopeRef = useRef(scopeKey);
 
   const live = useMemo(() => {
     if (!tradeDate || !generatedAt || !recommendation) return null;
@@ -45,10 +52,12 @@ export function useSessionMapManager(args: {
     if (!live) return;
 
     setState((current) => {
+      const scopeChanged = appliedScopeRef.current !== scopeKey;
+      if (scopeChanged) appliedScopeRef.current = scopeKey;
       const initialized =
-        current?.tradeDate === live.tradeDate
+        !scopeChanged && current?.tradeDate === live.tradeDate
           ? current
-          : initializeSessionMapManager(live, openingMap);
+          : initializeSessionMapManager(live, openingMap, { loadStored: persist });
 
       return updateSessionMapManager(initialized, live, strikeFlow);
     });
@@ -56,7 +65,7 @@ export function useSessionMapManager(args: {
     // dependency list prevents one Schwab harvest from counting twice when the
     // persisted opening object is reloaded into React state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [live, strikeFlow]);
+  }, [live, persist, scopeKey, strikeFlow]);
 
   useEffect(() => {
     if (!live || !openingMap) return;
@@ -71,26 +80,26 @@ export function useSessionMapManager(args: {
     // Rebuild against the verified opening map outside a React state updater.
     // This keeps persistence/state-machine I/O out of updater callbacks, which
     // React StrictMode is allowed to invoke more than once in development.
-    resetSessionMapManager(live.tradeDate);
+    if (persist) resetSessionMapManager(live.tradeDate);
     setState(
       updateSessionMapManager(
-        initializeSessionMapManager(live, openingMap),
+        initializeSessionMapManager(live, openingMap, { loadStored: persist }),
         live,
         strikeFlow,
       ),
     );
-  }, [live, openingMap, state, strikeFlow]);
+  }, [live, openingMap, persist, state, strikeFlow]);
 
   useEffect(() => {
-    if (!state) return;
+    if (!state || !persist) return;
     saveSessionMapManager(state);
-  }, [state]);
+  }, [persist, state]);
 
   return {
     state,
     reset() {
       if (!tradeDate) return;
-      resetSessionMapManager(tradeDate);
+      if (persist) resetSessionMapManager(tradeDate);
       setState(null);
     },
   };

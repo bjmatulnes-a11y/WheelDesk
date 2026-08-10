@@ -49,6 +49,13 @@ export async function GET(request: NextRequest) {
   // safe default; callers must never silently fall forward to 1–7 DTE.
   const strictZeroDte = request.nextUrl.searchParams.get("strict") !== "0";
   const manualExpiration = dateParam(request, "expiration");
+  const anchorTradeDate = dateParam(request, "anchorTradeDate");
+  const spxAnchor = anchorTradeDate === tradeDate
+    ? optionalNumberParam(request, "spxAnchor")
+    : null;
+  const spyAnchor = anchorTradeDate === tradeDate
+    ? optionalNumberParam(request, "spyAnchor")
+    : null;
   const researchMode = Boolean(
     manualExpiration && manualExpiration !== tradeDate,
   );
@@ -59,31 +66,35 @@ export async function GET(request: NextRequest) {
   let spx: SchwabHarvestSymbol | undefined;
   let spy: SchwabHarvestSymbol | undefined;
 
-  try {
-    spx = await harvestSchwabSymbol({
+  // SPX and SPY are independent provider requests. Run them together so the
+  // five-second chart cadence is not needlessly exposed to sequential chain
+  // latency. Partial failures are still reported independently below.
+  const [spxResult, spyResult] = await Promise.allSettled([
+    harvestSchwabSymbol({
       symbol: "SPX",
       providerSymbol: process.env.SCHWAB_SPX_SYMBOL?.trim() || "$SPX",
       tradeDate,
       rangePct,
       strictZeroDte,
       expirationDate: manualExpiration,
-    });
-  } catch (error) {
-    errors.push(`SPX harvest failed: ${message(error)}`);
-  }
-
-  try {
-    spy = await harvestSchwabSymbol({
+      anchorSpot: spxAnchor,
+    }),
+    harvestSchwabSymbol({
       symbol: "SPY",
       providerSymbol: process.env.SCHWAB_SPY_SYMBOL?.trim() || "SPY",
       tradeDate,
       rangePct,
       strictZeroDte,
       expirationDate: manualExpiration,
-    });
-  } catch (error) {
-    errors.push(`SPY harvest failed: ${message(error)}`);
-  }
+      anchorSpot: spyAnchor,
+    }),
+  ]);
+
+  if (spxResult.status === "fulfilled") spx = spxResult.value;
+  else errors.push(`SPX harvest failed: ${message(spxResult.reason)}`);
+
+  if (spyResult.status === "fulfilled") spy = spyResult.value;
+  else errors.push(`SPY harvest failed: ${message(spyResult.reason)}`);
 
   if (!spx?.rows.length) errors.push("No SPX option rows available after Schwab filtering.");
   if (!spy?.rows.length) errors.push("No SPY option rows available after Schwab filtering.");
@@ -221,6 +232,7 @@ async function harvestSchwabSymbol(args: {
   rangePct: number;
   strictZeroDte: boolean;
   expirationDate: string | null;
+  anchorSpot?: number | null;
 }): Promise<SchwabHarvestSymbol> {
   const requestedDate = args.expirationDate ?? args.tradeDate;
   const toDate = args.expirationDate
@@ -230,7 +242,9 @@ async function harvestSchwabSymbol(args: {
     symbol: args.providerSymbol,
     fromDate: requestedDate,
     toDate,
-    strikeCount: 160,
+    // Keep enough raw strikes to preserve a fixed session-anchored structural
+    // universe even after a meaningful intraday move.
+    strikeCount: args.anchorSpot && args.anchorSpot > 0 ? 240 : 160,
   });
 
   // Manual expiration is an exact research-chain request. Auto mode retains
@@ -245,8 +259,12 @@ async function harvestSchwabSymbol(args: {
     throw new Error(`Schwab returned no usable underlying price for ${args.providerSymbol}.`);
   }
 
-  const minStrike = price * (1 - args.rangePct);
-  const maxStrike = price * (1 + args.rangePct);
+  const rangeCenter =
+    args.anchorSpot && Number.isFinite(args.anchorSpot) && args.anchorSpot > 0
+      ? args.anchorSpot
+      : price;
+  const minStrike = rangeCenter * (1 - args.rangePct);
+  const maxStrike = rangeCenter * (1 + args.rangePct);
   const calls = contractsForExpiration(chain.callExpDateMap, expiration.key);
   const puts = contractsForExpiration(chain.putExpDateMap, expiration.key);
 
@@ -268,7 +286,7 @@ async function harvestSchwabSymbol(args: {
     throw new Error(
       `No usable ${args.providerSymbol} contracts inside ±${(
         args.rangePct * 100
-      ).toFixed(1)}% of ${price.toFixed(2)}.`,
+      ).toFixed(1)}% of structural anchor ${rangeCenter.toFixed(2)}.`,
     );
   }
 

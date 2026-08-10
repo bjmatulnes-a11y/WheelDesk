@@ -226,8 +226,10 @@ function buildNodes(rows: ZeroDteChainRow[]): StrikeNode[] {
 
     node.totalGamma += gammaWeight;
     node.totalOi += oi;
-    node.structureScore =
-      node.totalOi + node.totalGamma + (node.callVolume + node.putVolume) * 0.18;
+    // Structural state is OI/gamma topology. Cumulative intraday volume is
+    // handled separately by completed-minute strike flow so the map cannot
+    // mechanically strengthen simply because the trading day gets older.
+    node.structureScore = node.totalOi + node.totalGamma;
     map.set(strike, node);
   }
 
@@ -271,11 +273,11 @@ function findLocalZeroGamma(nodes: StrikeNode[], spot: number, expectedMove: num
 
 function findDealerNeutral(nodes: StrikeNode[], spot: number) {
   const totalCall = nodes.reduce(
-    (sum, node) => sum + node.callOi + node.callGamma + node.callVolume * 0.18,
+    (sum, node) => sum + node.callOi + node.callGamma,
     0,
   );
   const totalPut = nodes.reduce(
-    (sum, node) => sum + node.putOi + node.putGamma + node.putVolume * 0.18,
+    (sum, node) => sum + node.putOi + node.putGamma,
     0,
   );
   if (totalCall + totalPut <= 0) return null;
@@ -283,8 +285,8 @@ function findDealerNeutral(nodes: StrikeNode[], spot: number) {
   let callBelow = 0;
   let putBelow = 0;
   const scored = nodes.map((node) => {
-    callBelow += node.callOi + node.callGamma + node.callVolume * 0.18;
-    putBelow += node.putOi + node.putGamma + node.putVolume * 0.18;
+    callBelow += node.callOi + node.callGamma;
+    putBelow += node.putOi + node.putGamma;
     const callAbove = totalCall - callBelow;
     const putAbove = totalPut - putBelow;
     const modeledNet = callAbove + putBelow - (putAbove + callBelow);

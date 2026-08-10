@@ -36,6 +36,9 @@ type Props = {
   onClose: (positionId: string, exitDebit: number) => void | Promise<void>;
   readOnly?: boolean;
   readOnlyReason?: string | null;
+  /** Non-overridable live-data safety lock for NEW entries; closes remain available. */
+  entryLocked?: boolean;
+  entryLockedReason?: string | null;
   busy?: boolean;
   error?: string | null;
 };
@@ -63,6 +66,8 @@ export function ExecutionTradeDock({
   onClose,
   readOnly = false,
   readOnlyReason = null,
+  entryLocked = false,
+  entryLockedReason = null,
   busy = false,
   error = null,
 }: Props) {
@@ -154,6 +159,7 @@ export function ExecutionTradeDock({
         sellableCredit: null,
         buybackDebit: null,
         shortDeltaAbs: null,
+        spreadMode: candidate.spreadMode ?? null,
         maxRiskDollars: calculateMaxRisk(selectedStrategy, legs, credit),
         mapPhase: candidate.mapPhase,
         mapCenter: candidate.mapCenter,
@@ -240,6 +246,7 @@ export function ExecutionTradeDock({
     overrideEnabled && overrideReason.trim().length >= 4;
   const canOpen =
     !readOnly &&
+    !entryLocked &&
     !busy &&
     ticket.candidate !== null &&
     parsedEntryCredit !== null &&
@@ -283,6 +290,14 @@ export function ExecutionTradeDock({
             <div style={styles.readOnlyBanner}>
               <strong>RESEARCH ONLY</strong>
               <span>{readOnlyReason ?? "Live position entry is disabled for this chain."}</span>
+            </div>
+          ) : null}
+
+          {entryLocked && !readOnly ? (
+            <div style={styles.error}>
+              <strong>NEW ENTRY LOCKED</strong>
+              <span> {entryLockedReason ?? "Live execution data failed a freshness or integrity gate."}</span>
+              <div>Existing positions remain manageable; this lock cannot be bypassed with a manual override.</div>
             </div>
           ) : null}
 
@@ -541,14 +556,14 @@ export function ExecutionTradeDock({
             <div style={styles.error}>{contribution.blockers.join(" ")}</div>
           ) : null}
 
-          {!readOnly && !engineCleared ? (
+          {!readOnly && !entryLocked && !engineCleared ? (
             <div style={styles.warning}>
               Engine approval requires SELL READY with no hard blocker. To record
               a broker fill anyway, explicitly enable a manual override below.
             </div>
           ) : null}
 
-          {!readOnly && !engineCleared ? (
+          {!readOnly && !entryLocked && !engineCleared ? (
             <div style={styles.overrideBox}>
               <label style={styles.overrideCheck}>
                 <input
@@ -595,7 +610,9 @@ export function ExecutionTradeDock({
           >
             {readOnly
               ? "Research Only · Entry Disabled"
-              : busy
+              : entryLocked
+                ? "New Entry Locked · Waiting for Fresh Data"
+                : busy
                 ? "Saving…"
                 : `Add / Track ${strategyName(selectedStrategy)}`}
           </button>

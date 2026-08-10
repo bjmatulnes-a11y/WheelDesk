@@ -187,8 +187,9 @@ function buildSpreadRanking(args: {
 
   const mapAlignment = spreadMapAlignment(side, mapState, controlling);
   const fadeSide =
-    (side === "put" && rec.spxPrice < controlling.center) ||
-    (side === "call" && rec.spxPrice > controlling.center);
+    spread.thesis === "exhaustion-fade" &&
+    ((side === "put" && rec.spxPrice < controlling.center) ||
+      (side === "call" && rec.spxPrice > controlling.center));
   const dealerAlignment = clamp(
     fadeSide
       ? side === "put"
@@ -414,6 +415,11 @@ function buildIronFlyRanking(args: {
       "Opening-center fade is blocked while a replacement map is being confirmed.",
     );
   }
+  if (mapState.phase === "ACTIVE") {
+    blockers.push(
+      "The Opening Map has been formally replaced; no new Iron Fly may be opened from the original center.",
+    );
+  }
 
   let score =
     centerValidity * 0.20 +
@@ -470,7 +476,7 @@ function buildIronFlyRanking(args: {
     score: clamp(score),
     eligible:
       credit !== null &&
-      mapState.phase !== "TRANSITION" &&
+      mapState.phase === "OPENING" &&
       centerValidity >= 30 &&
       score >= 35,
     // Keep the legacy field names for UI compatibility, but point them at the

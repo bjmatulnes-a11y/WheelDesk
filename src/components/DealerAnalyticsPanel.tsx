@@ -15,8 +15,8 @@ type PressurePoint = {
 type DealerDirection = "RISING" | "FALLING" | "FLAT";
 type DealerMomentum = "STRONG" | "MODERATE" | "LIGHT" | "NONE";
 type GammaRegime =
-  | "LONG GAMMA / STABILIZING"
-  | "SHORT GAMMA / EXPANSIVE"
+  | "STABILIZING"
+  | "EXPANSIVE"
   | "TRANSITIONAL";
 
 type DealerRead = {
@@ -450,9 +450,9 @@ function buildDealerRead(args: {
           : "NONE";
   const regime: GammaRegime =
     Math.abs(officialPressure) <= 18
-      ? "LONG GAMMA / STABILIZING"
+      ? "STABILIZING"
       : Math.abs(officialPressure) >= 45
-        ? "SHORT GAMMA / EXPANSIVE"
+        ? "EXPANSIVE"
         : "TRANSITIONAL";
 
   const volatilityPenalty = Math.min(45, absoluteVelocity * 2.4);

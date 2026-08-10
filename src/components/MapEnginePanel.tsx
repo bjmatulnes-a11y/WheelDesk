@@ -1,9 +1,10 @@
 "use client";
 
 import type React from "react";
-import type {
-  MarketMapSnapshot,
-  SessionMapManagerState,
+import {
+  getControllingMarketMap,
+  type MarketMapSnapshot,
+  type SessionMapManagerState,
 } from "../lib/session/mapEngine";
 import type { ZeroDteStrikeFlowRead } from "../lib/zeroDteStrikeFlow";
 
@@ -16,12 +17,7 @@ export function MapEnginePanel({
   strikeFlow?: ZeroDteStrikeFlowRead | null;
   onReset: () => void;
 }) {
-  const controlling =
-    state.phase === "ACTIVE"
-      ? state.active
-      : state.phase === "TRANSITION" && state.candidate
-        ? state.candidate
-        : state.opening;
+  const controlling = getControllingMarketMap(state);
   const accepted =
     state.phase === "ACTIVE"
       ? state.active
@@ -44,9 +40,9 @@ export function MapEnginePanel({
             </span>
           </div>
           <div style={styles.subtitle}>
-            The opening thesis is immutable. A replacement map becomes controlling
-            only after price, structure, completed-minute flow, and two closed
-            candles agree.
+            The opening thesis is immutable. A replacement remains non-authoritative
+            until structure shifts, independent migration proof clears the gate, and
+            two completed candles confirm the candidate.
           </div>
         </div>
 
@@ -84,6 +80,10 @@ export function MapEnginePanel({
         <MapMetric
           label="Flow"
           value={state.flowConfirmation}
+        />
+        <MapMetric
+          label="Migration Proof"
+          value={state.migrationConfirmationMode}
         />
       </div>
 
@@ -190,14 +190,15 @@ function MigrationEvidence({
         value={state.latest.confidence}
         suffix="%"
       />
+      <TextRow label="Migration proof" value={state.migrationConfirmationMode} />
       <TextRow label="Flow verdict" value={state.flowConfirmation} />
       <TextRow
         label="Flow direction"
-        value={flow?.mapDirection ?? "UNAVAILABLE"}
+        value={state.flowDirection ?? "UNAVAILABLE"}
       />
       <MapRow
         label="Flow score"
-        value={flow?.mapConfirmationScore}
+        value={state.flowScore}
         suffix="/100"
       />
       <TextRow
@@ -213,8 +214,8 @@ function MigrationEvidence({
         }
       />
       <div style={styles.proxyNote}>
-        {flow?.mapMessage ??
-          "Five-second harvests collect data only. The first official flow read appears after a one-minute candle closes."}
+        {state.flowMessage ??
+          "Five-second harvests collect data only. Migration evidence is evaluated at the confirmed controlling map's levels after a one-minute candle closes."}
       </div>
     </div>
   );

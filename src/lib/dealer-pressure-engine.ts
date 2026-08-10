@@ -175,6 +175,24 @@ function getPutVolume(row: any): number {
   return safeNumber(row?.putVolume ?? row?.putVol ?? row?.putsVolume ?? row?.volumePut) ?? 0;
 }
 
+function getSideGamma(row: any): number | null {
+  return safeNumber(row?.gamma ?? row?.optionGamma);
+}
+
+function getCallGamma(row: any): number | null {
+  const side = rowSide(row);
+  if (side === "call") return getSideGamma(row);
+  if (side === "put") return null;
+  return safeNumber(row?.callGamma ?? row?.gammaCall ?? row?.callsGamma);
+}
+
+function getPutGamma(row: any): number | null {
+  const side = rowSide(row);
+  if (side === "put") return getSideGamma(row);
+  if (side === "call") return null;
+  return safeNumber(row?.putGamma ?? row?.gammaPut ?? row?.putsGamma);
+}
+
 function getChainDte(chain: any): number | null {
   return safeNumber(chain?.dteAtCapture ?? chain?.summary?.dte ?? chain?.dte);
 }
@@ -223,11 +241,20 @@ function buildPressureMap(surface: OptionSurfaceSnapshot | null, spot: number | 
       const putOi = getPutOi(row);
       const callVolume = getCallVolume(row);
       const putVolume = getPutVolume(row);
-      const gWeight = gammaProxyWeight(strike, spot);
+      const proxyGamma = gammaProxyWeight(strike, spot) / Math.max(spot, 1);
+      // Use the broker-supplied absolute gamma whenever it exists. The
+      // distance-to-spot proxy is only a fallback for incomplete surfaces.
+      const callGamma = Math.abs(getCallGamma(row) ?? proxyGamma);
+      const putGamma = Math.abs(getPutGamma(row) ?? proxyGamma);
       const flowBoostCall = 1 + Math.min(0.5, callOi > 0 ? callVolume / Math.max(callOi, 1) : callVolume > 0 ? 0.25 : 0);
       const flowBoostPut = 1 + Math.min(0.5, putOi > 0 ? putVolume / Math.max(putOi, 1) : putVolume > 0 ? 0.25 : 0);
 
-      addPressure(map, strike, callOi * eWeight * gWeight * flowBoostCall, putOi * eWeight * gWeight * flowBoostPut);
+      addPressure(
+        map,
+        strike,
+        callOi * eWeight * callGamma * flowBoostCall,
+        putOi * eWeight * putGamma * flowBoostPut,
+      );
     }
   }
 
@@ -239,8 +266,11 @@ function scoreGammaConcentration(strikes: PressureStrike[], spot: number | null)
   const total = strikes.reduce((sum, item) => sum + item.totalPressure, 0);
   if (total <= 0) return 0;
 
+  // The 0DTE chart harvests a broad ~±4.5% structural envelope. A ±4%
+  // "near" bucket would therefore include almost the entire observed book and
+  // mechanically saturate this score. Keep concentration genuinely local.
   const near = strikes
-    .filter((item) => Math.abs(item.strike - spot) / spot <= 0.04)
+    .filter((item) => Math.abs(item.strike - spot) / spot <= 0.01)
     .reduce((sum, item) => sum + item.totalPressure, 0);
 
   return clampScore((near / total) * 130);
@@ -248,7 +278,9 @@ function scoreGammaConcentration(strikes: PressureStrike[], spot: number | null)
 
 function scoreBalance(strikes: PressureStrike[], spot: number | null): number {
   if (!strikes.length || !spot) return 0;
-  const near = strikes.filter((item) => Math.abs(item.strike - spot) / spot <= 0.06);
+  // Balance is intentionally a little wider than concentration, but still
+  // local enough to discriminate within the fixed session structural envelope.
+  const near = strikes.filter((item) => Math.abs(item.strike - spot) / spot <= 0.015);
   const callPressure = near.reduce((sum, item) => sum + item.callPressure, 0);
   const putPressure = near.reduce((sum, item) => sum + item.putPressure, 0);
   const total = callPressure + putPressure;

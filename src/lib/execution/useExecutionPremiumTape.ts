@@ -12,12 +12,13 @@ import { getZeroDteSessionClock } from "../zeroDteSessionClock";
 import type { StableExecutionCandidateTrack } from "./useStableExecutionCandidates";
 
 type TapeStore = {
-  version: 1;
+  version: 2;
   tradeDate: string;
+  scopeKey: string;
   points: ExecutionPremiumTapePoint[];
 };
 
-const PREFIX = "wheeldesk:execution-premium-tape:v1:";
+const PREFIX = "wheeldesk:execution-premium-tape:v2:";
 const MAX_POINTS = 15_000;
 const HEARTBEAT_MS = 30_000;
 const MIN_CREDIT_CHANGE = 0.005;
@@ -29,6 +30,8 @@ export function useExecutionPremiumTape(args: {
   rows: ZeroDteChainRow[];
   tracks: Record<ExecutionStrategy, StableExecutionCandidateTrack> | null;
   positions?: ExecutionPositionMemory[];
+  scopeKey?: string;
+  enabled?: boolean;
 }) {
   const {
     tradeDate,
@@ -37,18 +40,20 @@ export function useExecutionPremiumTape(args: {
     rows,
     tracks,
     positions = [],
+    scopeKey = "live",
+    enabled = true,
   } = args;
 
-  const [store, setStore] = useState<TapeStore>(() => emptyStore(tradeDate ?? ""));
+  const [store, setStore] = useState<TapeStore>(() => emptyStore(tradeDate ?? "", scopeKey));
 
   useEffect(() => {
     if (!tradeDate) {
-      setStore(emptyStore(""));
+      setStore(emptyStore("", scopeKey));
       return;
     }
     cleanupOtherDays(tradeDate);
-    setStore(loadStore(tradeDate));
-  }, [tradeDate]);
+    setStore(loadStore(tradeDate, scopeKey));
+  }, [scopeKey, tradeDate]);
 
   const setups = useMemo(() => {
     const byKey = new Map<
@@ -90,6 +95,7 @@ export function useExecutionPremiumTape(args: {
 
   useEffect(() => {
     if (
+      !enabled ||
       !tradeDate ||
       !generatedAt ||
       !rows.length ||
@@ -122,7 +128,9 @@ export function useExecutionPremiumTape(args: {
 
     setStore((previous) => {
       const next =
-        previous.tradeDate === tradeDate ? cloneStore(previous) : loadStore(tradeDate);
+        previous.tradeDate === tradeDate && previous.scopeKey === scopeKey
+          ? cloneStore(previous)
+          : loadStore(tradeDate, scopeKey);
       let changed = false;
 
       for (const point of incoming) {
@@ -143,7 +151,7 @@ export function useExecutionPremiumTape(args: {
       next.points = dedupeAndTrim(next.points);
       return next;
     });
-  }, [generatedAt, rows, setups, spot, tradeDate]);
+  }, [enabled, generatedAt, rows, scopeKey, setups, spot, tradeDate]);
 
   useEffect(() => {
     if (!store.tradeDate) return;
@@ -156,14 +164,14 @@ export function useExecutionPremiumTape(args: {
       clearToday: () => {
         if (!tradeDate) return;
         try {
-          window.localStorage.removeItem(storageKey(tradeDate));
+          window.localStorage.removeItem(storageKey(tradeDate, scopeKey));
         } catch {
           // In-memory premium tracking remains available when storage is blocked.
         }
-        setStore(emptyStore(tradeDate));
+        setStore(emptyStore(tradeDate, scopeKey));
       },
     }),
-    [store.points, tradeDate],
+    [scopeKey, store.points, tradeDate],
   );
 }
 
@@ -187,30 +195,31 @@ function dedupeAndTrim(points: ExecutionPremiumTapePoint[]) {
     .slice(-MAX_POINTS);
 }
 
-function emptyStore(tradeDate: string): TapeStore {
-  return { version: 1, tradeDate, points: [] };
+function emptyStore(tradeDate: string, scopeKey: string): TapeStore {
+  return { version: 2, tradeDate, scopeKey, points: [] };
 }
 
 function cloneStore(store: TapeStore): TapeStore {
   return { ...store, points: [...store.points] };
 }
 
-function storageKey(tradeDate: string) {
-  return `${PREFIX}${tradeDate}`;
+function storageKey(tradeDate: string, scopeKey: string) {
+  return `${PREFIX}${tradeDate}:${encodeURIComponent(scopeKey)}`;
 }
 
-function loadStore(tradeDate: string): TapeStore {
-  if (typeof window === "undefined") return emptyStore(tradeDate);
+function loadStore(tradeDate: string, scopeKey: string): TapeStore {
+  if (typeof window === "undefined") return emptyStore(tradeDate, scopeKey);
   try {
-    const raw = window.localStorage.getItem(storageKey(tradeDate));
-    if (!raw) return emptyStore(tradeDate);
+    const raw = window.localStorage.getItem(storageKey(tradeDate, scopeKey));
+    if (!raw) return emptyStore(tradeDate, scopeKey);
     const parsed = JSON.parse(raw) as Partial<TapeStore>;
     if (
-      parsed.version !== 1 ||
+      parsed.version !== 2 ||
       parsed.tradeDate !== tradeDate ||
+      parsed.scopeKey !== scopeKey ||
       !Array.isArray(parsed.points)
     ) {
-      return emptyStore(tradeDate);
+      return emptyStore(tradeDate, scopeKey);
     }
     const points = parsed.points.filter(
       (point): point is ExecutionPremiumTapePoint =>
@@ -223,16 +232,16 @@ function loadStore(tradeDate: string): TapeStore {
             Number.isFinite(point.spot),
         ),
     );
-    return { version: 1, tradeDate, points: dedupeAndTrim(points) };
+    return { version: 2, tradeDate, scopeKey, points: dedupeAndTrim(points) };
   } catch {
-    return emptyStore(tradeDate);
+    return emptyStore(tradeDate, scopeKey);
   }
 }
 
 function saveStore(store: TapeStore) {
   if (typeof window === "undefined" || !store.tradeDate) return;
   try {
-    window.localStorage.setItem(storageKey(store.tradeDate), JSON.stringify(store));
+    window.localStorage.setItem(storageKey(store.tradeDate, store.scopeKey), JSON.stringify(store));
   } catch {
     // The live tape remains in React state if browser storage is unavailable.
   }
@@ -243,7 +252,7 @@ function cleanupOtherDays(currentTradeDate: string) {
   try {
     for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
       const key = window.localStorage.key(index);
-      if (key?.startsWith(PREFIX) && key !== storageKey(currentTradeDate)) {
+      if (key?.startsWith(PREFIX) && !key.startsWith(`${PREFIX}${currentTradeDate}:`)) {
         window.localStorage.removeItem(key);
       }
     }

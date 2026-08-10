@@ -15,6 +15,7 @@ export type ZeroDteLeastResistancePath = {
   stepMinutes: number;
   direction: "UP" | "DOWN" | "NEUTRAL";
   confidence: number;
+  routeSeparationScore: number;
   flowSource: "engine" | "fallback";
   expectedMoveRemaining: number;
   expectedMoveSource: "LIVE_STRADDLE" | "TIME_AWARE_FLOOR";
@@ -124,9 +125,26 @@ export function buildZeroDteLeastResistancePath(args: {
     .filter((item) => Number.isFinite(item.value));
   if (!finiteTerminal.length) return null;
 
-  let endIndex = finiteTerminal.reduce((best, item) =>
-    item.value < best.value ? item : best,
-  ).index;
+  const rankedTerminal = [...finiteTerminal].sort((a, b) => a.value - b.value);
+  const bestTerminal = rankedTerminal[0];
+  if (!bestTerminal) return null;
+  let endIndex = bestTerminal.index;
+  const bestDirectionSign = Math.sign(prices[bestTerminal.index] - spot);
+  const competingTerminal =
+    rankedTerminal.find((item) => {
+      if (item.index === bestTerminal.index) return false;
+      const sign = Math.sign(prices[item.index] - spot);
+      return sign !== bestDirectionSign || Math.abs(item.index - bestTerminal.index) >= 2;
+    }) ?? rankedTerminal[1] ?? null;
+  const routeCostGap = competingTerminal
+    ? Math.max(0, competingTerminal.value - bestTerminal.value)
+    : 0;
+  const routeCostScale = Math.max(10, Math.abs(bestTerminal.value) / Math.max(steps, 1) * 0.35);
+  const routeSeparationScore = clamp(
+    Math.round((routeCostGap / routeCostScale) * 100),
+    0,
+    100,
+  );
   const pathIndexes = new Array<number>(steps + 1);
   pathIndexes[steps] = endIndex;
   for (let step = steps - 1; step >= 0; step -= 1) {
@@ -163,12 +181,20 @@ export function buildZeroDteLeastResistancePath(args: {
       : terminal.center < spot - strikeStep
         ? "DOWN"
         : "NEUTRAL";
-  const rawConfidence = clamp(
+  const inputConfidence = clamp(
     Math.round(
       recommendation.confidenceScore * 0.55 +
         (flow?.confidenceScore ?? 50) * 0.3 +
         recommendation.alignmentScore * 0.15,
     ),
+    0,
+    100,
+  );
+  // Confidence must reflect whether the winning route actually separates from
+  // competing terminal routes; high-quality inputs alone cannot make an
+  // ambiguous path "high confidence."
+  const rawConfidence = clamp(
+    Math.round(inputConfidence * 0.65 + routeSeparationScore * 0.35),
     0,
     100,
   );
@@ -181,6 +207,7 @@ export function buildZeroDteLeastResistancePath(args: {
     stepMinutes,
     direction,
     confidence,
+    routeSeparationScore,
     flowSource,
     expectedMoveRemaining: expectedMove,
     expectedMoveSource: remaining.source,
@@ -197,6 +224,7 @@ export function buildZeroDteLeastResistancePath(args: {
       `Directional hose pressure contributes ${
         directionPush > 0 ? "upward" : directionPush < 0 ? "downward" : "neutral"
       } drift.`,
+      `Winning-route separation is ${routeSeparationScore}/100 versus the nearest materially competing terminal route.`,
     ],
   };
 }
@@ -272,7 +300,7 @@ function terrainCost(args: {
     const distance = Math.abs(args.price - row.strike);
     const decay = Math.exp(-distance / Math.max(args.strikeStep * 2.2, 9));
     const strength = clamp((row.score || 0) / args.maxScore, 0, 1);
-    const sideStrength = clamp((row.sideBiasPct || 0) / 100, 0, 1);
+    const sideStrength = clamp(Math.abs(row.sideBiasPct || 0) / 100, 0, 1);
 
     if (row.sideBias === "call" && args.price <= row.strike) {
       resistance += strength * (0.65 + sideStrength * 0.55) * decay * 38;

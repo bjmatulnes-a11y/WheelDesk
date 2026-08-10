@@ -26,6 +26,7 @@ import {
   buildExecutionCandidate,
   buildExecutionCandidateBooks,
   buildZeroDteExecutionRead,
+  calculateStrategyPackageQuote,
   emptyExecutionMemory,
   repriceExecutionCandidate,
   sampleFromRead,
@@ -197,6 +198,13 @@ export default function SpxCommandChart() {
   const strategyInitializedForDateRef = useRef<string | null>(null);
   const loadSequenceRef = useRef(0);
   const loadAbortRef = useRef<AbortController | null>(null);
+  const loadRequestKeyRef = useRef<string | null>(null);
+  const structuralAnchorsRef = useRef<Record<string, {
+    tradeDate: string;
+    expirationDate: string;
+    spxSpot: number;
+    spySpot: number | null;
+  }>>({});
 
   const [candles, setCandles] = useState<Candle[]>([]);
   const [signalCandles, setSignalCandles] = useState<Candle[]>([]);
@@ -211,6 +219,7 @@ export default function SpxCommandChart() {
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
+  const [freshnessNow, setFreshnessNow] = useState(() => Date.now());
   const [error, setError] = useState<string | null>(null);
   const [executionMemory, setExecutionMemory] = useState<ZeroDteExecutionMemory | null>(null);
   const [executionDbError, setExecutionDbError] = useState<string | null>(null);
@@ -218,6 +227,7 @@ export default function SpxCommandChart() {
   const scannerSelectionCacheRef = useRef<{
     bucket: number;
     tradeDate: string | null;
+    expirationKey: string;
     policyKey: string;
     selection: ZeroDteTradeSelection | null;
   } | null>(null);
@@ -248,6 +258,11 @@ export default function SpxCommandChart() {
   useEffect(() => {
     saveZeroDteRiskPolicy(riskPolicy);
   }, [riskPolicy]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setFreshnessNow(Date.now()), 5_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -329,8 +344,12 @@ export default function SpxCommandChart() {
     generatedAt: harvest?.generatedAt,
     recommendation,
     rows: spxRows,
-    openingMap,
+    openingMap: manualChainResearch ? null : openingMap,
     strikeFlow,
+    scopeKey: manualChainResearch
+      ? `research:${harvest?.spx?.expirationDate ?? selectedExpiration}`
+      : `live:${harvest?.spx?.expirationDate ?? "0dte"}`,
+    persist: !manualChainResearch,
   });
 
   const controllingMap = mapManager.state
@@ -398,6 +417,26 @@ export default function SpxCommandChart() {
     recommendation,
   ]);
 
+  useEffect(() => {
+    if (manualChainResearch || !openingMap || !isOpeningMapCaptureOnTime(openingMap.lockedAt)) {
+      return;
+    }
+
+    // Once a verified Opening Map exists, make its SPX spot the canonical
+    // structural anchor for the rest of the live session. Preserve the SPY
+    // anchor already learned from the corresponding harvest.
+    const existing = structuralAnchorsRef.current.live ?? null;
+    structuralAnchorsRef.current.live = {
+      tradeDate: openingMap.tradeDate,
+      expirationDate: openingMap.tradeDate,
+      spxSpot: openingMap.spot,
+      spySpot:
+        existing?.tradeDate === openingMap.tradeDate
+          ? existing.spySpot
+          : null,
+    };
+  }, [manualChainResearch, openingMap]);
+
   const baseTradeSelection = useMemo(() => {
     if (!recommendation || !spxRows.length) return harvest?.tradeSelection ?? null;
 
@@ -418,11 +457,13 @@ export default function SpxCommandChart() {
       riskPolicy.minimumAbsoluteDistancePoints,
       riskPolicy.minimumAbsoluteDistanceSpotPct,
     ].join(":");
+    const expirationKey = `${harvest?.researchMode ? "research" : "live"}:${harvest?.spx?.expirationDate ?? "none"}`;
     const cached = scannerSelectionCacheRef.current;
     if (
       cached &&
       cached.bucket === bucket &&
       cached.tradeDate === (harvest?.tradeDate ?? null) &&
+      cached.expirationKey === expirationKey &&
       cached.policyKey === policyKey
     ) {
       return cached.selection;
@@ -449,6 +490,7 @@ export default function SpxCommandChart() {
     scannerSelectionCacheRef.current = {
       bucket,
       tradeDate: harvest?.tradeDate ?? null,
+      expirationKey,
       policyKey,
       selection,
     };
@@ -548,8 +590,12 @@ export default function SpxCommandChart() {
     generatedAt: harvest?.generatedAt,
     spot: currentPrice,
     rows: spxRows,
-    tracks: stableCandidateTracker.tracks,
-    positions: executionMemory?.positions ?? [],
+    tracks: manualChainResearch ? null : stableCandidateTracker.tracks,
+    positions: manualChainResearch ? [] : executionMemory?.positions ?? [],
+    scopeKey: manualChainResearch
+      ? `research:${harvest?.spx?.expirationDate ?? selectedExpiration}`
+      : `live:${harvest?.spx?.expirationDate ?? "0dte"}`,
+    enabled: !manualChainResearch,
   });
 
   const priceAction = useMemo(
@@ -652,15 +698,30 @@ export default function SpxCommandChart() {
   }, [recommendation]);
 
   const load = useCallback(async () => {
+    const requestKey = [
+      frequency,
+      selectedExpiration,
+      riskPolicy.riskMode,
+      riskPolicy.maxWidth,
+      riskPolicy.minSellableCredit,
+      riskPolicy.maxRiskPerTradeDollars ?? "none",
+    ].join("|");
+    const activeController = loadAbortRef.current;
+    if (activeController && !activeController.signal.aborted) {
+      // The five-second timer must not repeatedly kill the same slow provider
+      // request. A genuinely changed request (expiry/frequency/policy) still
+      // supersedes and aborts the old one immediately.
+      if (loadRequestKeyRef.current === requestKey) return;
+      activeController.abort();
+    }
+
     const sequence = loadSequenceRef.current + 1;
     loadSequenceRef.current = sequence;
-    loadAbortRef.current?.abort();
     const controller = new AbortController();
     loadAbortRef.current = controller;
+    loadRequestKeyRef.current = requestKey;
 
     try {
-      setError(null);
-
       const displayHistoryRequest = fetch(
         `/api/brokers/schwab/price-history?symbol=${encodeURIComponent("$SPX")}&frequency=${frequency}`,
         { cache: "no-store", signal: controller.signal },
@@ -684,6 +745,18 @@ export default function SpxCommandChart() {
       }
       if (selectedExpiration !== "auto") {
         harvestParams.set("expiration", selectedExpiration);
+      }
+      const anchorScope =
+        selectedExpiration === "auto"
+          ? "live"
+          : `expiration:${selectedExpiration}`;
+      const structuralAnchor = structuralAnchorsRef.current[anchorScope] ?? null;
+      if (structuralAnchor) {
+        harvestParams.set("anchorTradeDate", structuralAnchor.tradeDate);
+        harvestParams.set("spxAnchor", String(structuralAnchor.spxSpot));
+        if (structuralAnchor.spySpot !== null) {
+          harvestParams.set("spyAnchor", String(structuralAnchor.spySpot));
+        }
       }
 
       const [historyResponse, harvestResponse, signalHistoryResponse] =
@@ -748,7 +821,27 @@ export default function SpxCommandChart() {
       setCandles(displayCandles);
       setSignalCandles(oneMinuteCandles);
       setHarvest(harvestJson);
+      setError(null);
+      if (harvestJson.spx?.price && harvestJson.spx.expirationDate) {
+        const anchorScope = harvestJson.researchMode
+          ? `expiration:${harvestJson.spx.expirationDate}`
+          : "live";
+        const currentAnchor = structuralAnchorsRef.current[anchorScope] ?? null;
+        if (
+          !currentAnchor ||
+          currentAnchor.tradeDate !== harvestJson.tradeDate ||
+          currentAnchor.expirationDate !== harvestJson.spx.expirationDate
+        ) {
+          structuralAnchorsRef.current[anchorScope] = {
+            tradeDate: harvestJson.tradeDate,
+            expirationDate: harvestJson.spx.expirationDate,
+            spxSpot: harvestJson.spx.price,
+            spySpot: harvestJson.spy?.price ?? null,
+          };
+        }
+      }
       setLastRefresh(new Date().toISOString());
+      setFreshnessNow(Date.now());
     } catch (loadError) {
       if (controller.signal.aborted || sequence !== loadSequenceRef.current) {
         return;
@@ -759,6 +852,10 @@ export default function SpxCommandChart() {
           : "SPX command chart failed.",
       );
     } finally {
+      if (loadAbortRef.current === controller) {
+        loadAbortRef.current = null;
+        loadRequestKeyRef.current = null;
+      }
       if (sequence === loadSequenceRef.current) setLoading(false);
     }
   }, [frequency, riskPolicy, selectedExpiration]);
@@ -990,12 +1087,9 @@ export default function SpxCommandChart() {
         }
 
         if (overlays.structure) {
-          const structure =
-            (mapManager.state.phase === "ACTIVE"
-              ? mapManager.state.active?.structure
-              : mapManager.state.phase === "TRANSITION" && mapManager.state.candidate
-                ? mapManager.state.candidate.structure
-                : mapManager.state.opening?.structure) ?? null;
+          // Candidate structure is diagnostic only during TRANSITION. The
+          // confirmed controlling map remains authoritative until activation.
+          const structure = controllingMap?.structure ?? null;
 
           if (structure) {
             horizontal(structure?.gammaFlip ?? null, "#ff5fa2", 2, LineStyle.Dashed);
@@ -1056,10 +1150,43 @@ export default function SpxCommandChart() {
       ),
     [executionMemory?.closedTrades],
   );
+  const openPnlDollars = useMemo(
+    () =>
+      (executionMemory?.positions ?? []).reduce((sum, position) => {
+        const debit = calculateStrategyPackageQuote(spxRows, position.legs)?.buybackDebit;
+        if (debit === null || debit === undefined || !Number.isFinite(debit)) return sum;
+        return sum + (position.entryCredit - debit) * 100 * position.quantity;
+      }, 0),
+    [executionMemory?.positions, spxRows],
+  );
   const dailyLossBlocked = Boolean(
     riskPolicy.dailyLossLimitDollars !== null &&
-      realizedPnlDollars <= -riskPolicy.dailyLossLimitDollars,
+      realizedPnlDollars + openPnlDollars <= -riskPolicy.dailyLossLimitDollars,
   );
+  const entryDataHealthBlockers = useMemo(() => {
+    const blockers: string[] = [];
+    if (manualChainResearch) {
+      blockers.push("Manual future-expiration research chain is isolated from live execution.");
+      return blockers;
+    }
+    if (error) blockers.push(`Live refresh failed: ${error}`);
+    const failedQualityChecks = (harvest?.qualityChecks ?? []).filter(
+      (check) => check.status === "fail",
+    );
+    for (const check of failedQualityChecks) {
+      blockers.push(`Data quality failed — ${check.label}: ${check.message}`);
+    }
+    const generatedMs = Date.parse(harvest?.generatedAt ?? "");
+    if (!Number.isFinite(generatedMs)) {
+      blockers.push("Live chain timestamp is unavailable.");
+    } else {
+      const ageSeconds = Math.max(0, (freshnessNow - generatedMs) / 1000);
+      if (ageSeconds > 20) {
+        blockers.push(`Live chain is stale (${ageSeconds.toFixed(0)}s old); new entries are disabled until a fresh harvest arrives.`);
+      }
+    }
+    return blockers;
+  }, [error, freshnessNow, harvest?.generatedAt, harvest?.qualityChecks, manualChainResearch]);
   const volContext = useMemo(() => {
     if (
       !openingMap ||
@@ -1085,10 +1212,13 @@ export default function SpxCommandChart() {
   [executionCandidates]);
 
   const executionReadMemory = useMemo(() => {
-    if (executionMemory) return executionMemory;
+    // Research must never inherit the live account/position memory simply
+    // because the live DB read completed first. Its analytics get a sealed,
+    // empty execution ledger for the selected research trade date.
     if (manualChainResearch && harvest?.tradeDate) {
       return emptyExecutionMemory(harvest.tradeDate);
     }
+    if (executionMemory) return executionMemory;
     return null;
   }, [executionMemory, harvest?.tradeDate, manualChainResearch]);
 
@@ -1147,6 +1277,7 @@ export default function SpxCommandChart() {
       riskPolicy,
       volContext,
       dailyLossBlocked,
+      entryBlockers: entryDataHealthBlockers,
       leaderCandidate,
       leastResistancePath: decisionLeastResistancePath,
     });
@@ -1166,6 +1297,7 @@ export default function SpxCommandChart() {
     riskPolicy,
     volContext,
     dailyLossBlocked,
+    entryDataHealthBlockers,
     leaderCandidate,
     selectedExecutionStrategy,
     spxRows,
@@ -1210,6 +1342,7 @@ export default function SpxCommandChart() {
           riskPolicy,
           volContext,
           dailyLossBlocked,
+          entryBlockers: entryDataHealthBlockers,
           leaderCandidate,
           leastResistancePath: decisionLeastResistancePath,
         }),
@@ -1231,6 +1364,7 @@ export default function SpxCommandChart() {
     riskPolicy,
     volContext,
     dailyLossBlocked,
+    entryDataHealthBlockers,
     leaderCandidate,
     spxRows,
     stableCandidateTracker.tracks,
@@ -1288,6 +1422,7 @@ export default function SpxCommandChart() {
           riskPolicy,
           volContext,
           dailyLossBlocked,
+          entryBlockers: entryDataHealthBlockers,
           leaderCandidate,
           leastResistancePath: decisionLeastResistancePath,
         }),
@@ -1319,6 +1454,7 @@ export default function SpxCommandChart() {
     riskPolicy,
     volContext,
     dailyLossBlocked,
+    entryDataHealthBlockers,
     leaderCandidate,
     spxRows,
     stableCandidateTracker.tracks,
@@ -1370,6 +1506,7 @@ export default function SpxCommandChart() {
         riskPolicy,
         volContext,
         dailyLossBlocked,
+        entryBlockers: entryDataHealthBlockers,
         leaderCandidate,
         leastResistancePath: decisionLeastResistancePath,
       });
@@ -1377,6 +1514,7 @@ export default function SpxCommandChart() {
     return output;
   }, [
     dailyLossBlocked,
+    entryDataHealthBlockers,
     decisionLeastResistancePath,
     manualChainResearch,
     executionMemory,
@@ -1895,6 +2033,8 @@ export default function SpxCommandChart() {
                 ? `Manual future-expiration chain ${harvest?.spx?.expirationDate ?? selectedExpiration}. Analytics and what-if evaluation remain active; live entry and Shadow entry are disabled.`
                 : null
             }
+            entryLocked={entryDataHealthBlockers.length > 0}
+            entryLockedReason={entryDataHealthBlockers[0] ?? null}
             busy={executionBusy}
             error={manualChainResearch ? null : executionDbError}
             evaluateCandidate={(candidate) => {
@@ -1939,6 +2079,7 @@ export default function SpxCommandChart() {
                 riskPolicy,
                 volContext,
                 dailyLossBlocked,
+                entryBlockers: entryDataHealthBlockers,
                 leaderCandidate,
                 leastResistancePath: decisionLeastResistancePath,
               });
@@ -1953,6 +2094,12 @@ export default function SpxCommandChart() {
             }) => {
               if (manualChainResearch) {
                 setExecutionDbError("Research chain is read-only. Live position entry is disabled.");
+                return;
+              }
+              if (entryDataHealthBlockers.length > 0) {
+                setExecutionDbError(
+                  `New entry is locked by the live-data safety gate: ${entryDataHealthBlockers.join(" ")}`,
+                );
                 return;
               }
               if (
@@ -2007,6 +2154,7 @@ export default function SpxCommandChart() {
                   riskPolicy,
                   volContext,
                   dailyLossBlocked,
+                  entryBlockers: entryDataHealthBlockers,
                   leaderCandidate,
                   leastResistancePath: decisionLeastResistancePath,
                 });

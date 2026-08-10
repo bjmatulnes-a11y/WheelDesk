@@ -88,6 +88,8 @@ export type ExecutionCandidate = {
   sellableCredit?: number | null;
   buybackDebit?: number | null;
   shortDeltaAbs?: number | null;
+  /** Frozen discovery thesis for credit spreads; protects fade waivers from later semantic drift. */
+  spreadMode?: "trend" | "exhaustion-fade" | null;
   maxRiskDollars: number | null;
   mapPhase: SessionMapManagerState["phase"];
   mapCenter: number;
@@ -285,6 +287,7 @@ export function buildZeroDteExecutionRead(args: {
   riskPolicy?: ZeroDteRiskPolicy | null;
   volContext?: ZeroDteVolContext | null;
   dailyLossBlocked?: boolean;
+  entryBlockers?: string[];
   leaderCandidate?: ExecutionCandidate | null;
   leastResistancePath?: ZeroDteLeastResistancePath | null;
 }): ZeroDteExecutionRead {
@@ -419,6 +422,7 @@ export function buildZeroDteExecutionRead(args: {
     riskPolicy: args.riskPolicy ?? null,
     volContext: args.volContext ?? null,
     dailyLossBlocked: Boolean(args.dailyLossBlocked),
+    externalBlockers: args.entryBlockers ?? [],
     shortDeltaAbs,
     expectedMoveRemaining: remainingMove.expectedMoveRemaining,
   });
@@ -646,6 +650,7 @@ export function buildExecutionCandidate(
   let sellableCredit: number | null = null;
   let buybackDebit: number | null = null;
   let shortDeltaAbs: number | null = null;
+  let spreadMode: "trend" | "exhaustion-fade" | null = null;
   let maxRiskDollars: number | null = ranking?.maxRiskDollars ?? null;
 
   if (strategy === "iron-fly") {
@@ -692,6 +697,12 @@ export function buildExecutionCandidate(
       sellableCredit = spread.sellableCredit;
       buybackDebit = spread.buybackDebit;
       shortDeltaAbs = spread.shortDeltaAbs;
+      spreadMode =
+        spread.candidates.find(
+          (row) =>
+            row.strike === spread.shortStrike &&
+            row.longStrike === spread.longStrike,
+        )?.thesis ?? spread.thesis ?? "trend";
       maxRiskDollars ??= spread.maxLossDollars;
     }
   }
@@ -707,6 +718,12 @@ export function buildExecutionCandidate(
       sellableCredit = spread.sellableCredit;
       buybackDebit = spread.buybackDebit;
       shortDeltaAbs = spread.shortDeltaAbs;
+      spreadMode =
+        spread.candidates.find(
+          (row) =>
+            row.strike === spread.shortStrike &&
+            row.longStrike === spread.longStrike,
+        )?.thesis ?? spread.thesis ?? "trend";
       maxRiskDollars ??= spread.maxLossDollars;
     }
   }
@@ -730,9 +747,10 @@ export function buildExecutionCandidate(
     sellableCredit,
     buybackDebit,
     shortDeltaAbs,
+    spreadMode,
     maxRiskDollars,
     mapPhase: mapState.phase,
-    mapCenter: controlling.center,
+    mapCenter: strategy === "iron-fly" ? mapState.opening.center : controlling.center,
     railBreached: mapState.railBreached,
     reasons,
     blockers,
@@ -790,6 +808,7 @@ function buildSpreadExecutionCandidateBook(
         spread.maxLossDollars !== null
       ? [
           {
+            thesis: spread.thesis ?? ("trend" as const),
             strike: spread.shortStrike,
             longStrike: spread.longStrike,
             score: spread.score,
@@ -850,6 +869,7 @@ function buildSpreadExecutionCandidateBook(
       sellableCredit: row.sellableCredit,
       buybackDebit: row.buybackDebit,
       shortDeltaAbs: row.shortDeltaAbs,
+      spreadMode: row.thesis ?? "trend",
       maxRiskDollars: row.maxLossDollars,
       mapPhase: mapState.phase,
       mapCenter: controlling.center,
@@ -1003,6 +1023,7 @@ function buildEntryRead(args: {
   riskPolicy: ZeroDteRiskPolicy | null;
   volContext: ZeroDteVolContext | null;
   dailyLossBlocked: boolean;
+  externalBlockers: string[];
   shortDeltaAbs: number | null;
   expectedMoveRemaining: number;
 }) {
@@ -1023,13 +1044,14 @@ function buildEntryRead(args: {
     riskPolicy,
     volContext,
     dailyLossBlocked,
+    externalBlockers,
     shortDeltaAbs,
     expectedMoveRemaining,
   } = args;
   // Candidate discovery blockers are snapshots from the scanner. Once an exact
   // setup is locked, live execution gates below become authoritative so stale
   // scanner blockers cannot permanently suppress a later valid signal.
-  const blockers: string[] = [];
+  const blockers: string[] = [...externalBlockers];
   const reasons = [...(candidate?.reasons ?? []), ...timeRegime.reasons];
 
   const controllingForEntry = getControllingMarketMap(mapState);
@@ -1045,9 +1067,11 @@ function buildEntryRead(args: {
     candidate?.strategy === "iron-fly" && centerStretchRatio >= 0.45;
   const putFadeCandidate =
     candidate?.strategy === "put-credit-spread" &&
+    candidate.spreadMode === "exhaustion-fade" &&
     recommendation.spxPrice < controllingForEntry.center;
   const callFadeCandidate =
     candidate?.strategy === "call-credit-spread" &&
+    candidate.spreadMode === "exhaustion-fade" &&
     recommendation.spxPrice > controllingForEntry.center;
   const exhaustionFadeCandidate =
     ironFlyFadeCandidate || putFadeCandidate || callFadeCandidate;
@@ -1080,7 +1104,7 @@ function buildEntryRead(args: {
     blockers.push("Current controlling structure confidence is below 30%.");
   }
   if (!timeRegime.entryAllowed) blockers.push(`${timeRegime.label} does not permit new risk.`);
-  if (dailyLossBlocked) blockers.push("Daily realized-loss circuit breaker is active; no new positions are permitted.");
+  if (dailyLossBlocked) blockers.push("Daily loss circuit breaker is active using realized plus executable open P&L; no new positions are permitted.");
   if (tracking?.status === "STRUCTURE_INVALID") {
     blockers.push(tracking.lastReplacementReason ?? "The tracked candidate is structurally invalid.");
   }
@@ -1088,6 +1112,11 @@ function buildEntryRead(args: {
   if (candidate?.strategy === "iron-fly") {
     if (mapState.phase === "TRANSITION") {
       blockers.push("Iron Fly fade is blocked during map transition because the old center is being replaced.");
+    }
+    if (mapState.phase === "ACTIVE") {
+      blockers.push(
+        "No new Iron Fly may be opened from the original center after the Opening Map has been formally replaced.",
+      );
     }
     if (!isOpeningMapCaptureOnTime(mapState.opening.capturedAt)) {
       blockers.push("Iron Fly is disabled because the Opening Map was captured after the valid opening window.");

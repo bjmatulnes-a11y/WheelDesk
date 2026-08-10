@@ -67,7 +67,7 @@ export function isOpeningMapCaptureOnTime(lockedAt: string) {
   const minuteOfDay = hour * 60 + minute;
   // A browser snapshot captured after the first 30 cash-session minutes is not
   // allowed to masquerade as the immutable opening thesis.
-  return minuteOfDay >= 8 * 60 + 30 && minuteOfDay <= 9 * 60;
+  return minuteOfDay >= 8 * 60 + 30 && minuteOfDay < 9 * 60;
 }
 
 export function isValidOpeningMap(
@@ -135,7 +135,14 @@ export function isValidOpeningMap(
 export function loadOpeningMap(tradeDate: string): ZeroDteOpeningMap | null {
   if (typeof window === "undefined") return null;
   const cached = memoryCache.get(tradeDate);
-  if (cached && isValidOpeningMap(cached, tradeDate)) return cached;
+  if (
+    cached &&
+    isValidOpeningMap(cached, tradeDate) &&
+    isOpeningMapCaptureOnTime(cached.lockedAt)
+  ) {
+    return cached;
+  }
+  if (cached) memoryCache.delete(tradeDate);
 
   try {
     const raw = window.localStorage.getItem(getOpeningMapKey(tradeDate));
@@ -146,7 +153,10 @@ export function loadOpeningMap(tradeDate: string): ZeroDteOpeningMap | null {
       return null;
     }
     const parsed: unknown = JSON.parse(raw);
-    if (!isValidOpeningMap(parsed, tradeDate)) {
+    if (
+      !isValidOpeningMap(parsed, tradeDate) ||
+      !isOpeningMapCaptureOnTime(parsed.lockedAt)
+    ) {
       window.localStorage.removeItem(getOpeningMapKey(tradeDate));
       return null;
     }
@@ -208,9 +218,14 @@ export function lockOpeningMap(
   lockedAt: string,
   rec: ZeroDteRecommendation,
   rows: ZeroDteChainRow[] = [],
-): ZeroDteOpeningMap {
+): ZeroDteOpeningMap | null {
   const existing = loadOpeningMap(tradeDate);
   if (existing) return existing;
+
+  // Never manufacture an "Opening Map" from a midday/browser-late snapshot.
+  // Downstream logic can operate from an explicitly labeled live fallback, but
+  // the immutable opening thesis only exists when it was captured in-window.
+  if (!isOpeningMapCaptureOnTime(lockedAt)) return null;
 
   const map = buildOpeningMap(tradeDate, lockedAt, rec, rows);
   memoryCache.set(tradeDate, map);

@@ -2,9 +2,10 @@ import type {
   ZeroDteChainRow,
   ZeroDteRecommendation,
 } from "../zeroDteOiIntelligence";
-import type {
-  StrikeFlowMapDirection,
-  ZeroDteStrikeFlowRead,
+import {
+  classifyStrikeFlowAtLevels,
+  type StrikeFlowMapDirection,
+  type ZeroDteStrikeFlowRead,
 } from "../zeroDteStrikeFlow";
 import {
   getZeroDteSessionClock,
@@ -15,6 +16,7 @@ import {
   type MarketStructureRead,
 } from "./marketStructureEngine";
 import {
+  isOpeningMapCaptureOnTime,
   loadOpeningMap,
   type ZeroDteOpeningMap,
 } from "../zeroDteOpeningMap";
@@ -25,6 +27,10 @@ export type MapFlowConfirmation =
   | "REJECTED"
   | "BUILDING"
   | "UNAVAILABLE";
+export type MapMigrationConfirmationMode =
+  | "FLOW_CONFIRMED"
+  | "DISPLACEMENT_CONFIRMED"
+  | "NONE";
 
 export type StrikeBaseline = {
   strike: number;
@@ -74,6 +80,9 @@ export type SessionMapManagerState = {
   opening: MarketMapSnapshot;
   candidate: MarketMapSnapshot | null;
   active: MarketMapSnapshot;
+  /** Confirmed map that remains authoritative while a replacement is unconfirmed. */
+  transitionFrom: MarketMapSnapshot | null;
+  transitionFromPhase: "OPENING" | "ACTIVE" | null;
   latest: MarketMapSnapshot;
   previousLive: MarketMapSnapshot | null;
 
@@ -87,8 +96,13 @@ export type SessionMapManagerState = {
   outsideMinutes: number;
 
   migrationScore: number;
+  /** Independent proof required before a replacement can enter TRANSITION. */
+  migrationConfirmationMode: MapMigrationConfirmationMode;
   flowConfirmation: MapFlowConfirmation;
   flowDirection: StrikeFlowMapDirection | null;
+  /** Flow evidence evaluated specifically at the confirmed controlling map levels. */
+  flowScore: number | null;
+  flowMessage: string | null;
 
   reasons: string[];
   events: MapTransitionEvent[];
@@ -125,13 +139,11 @@ export type ExistingOpenMapLike = Partial<{
 }>;
 
 const key = (tradeDate: string) =>
-  `wheeldesk:session-map-manager:v5:${tradeDate}`;
+  `wheeldesk:session-map-manager:v6:${tradeDate}`;
 const legacyKeys = (tradeDate: string) => [
   `wheeldesk:open-map:${tradeDate}`,
   `wheeldesk:opening-map:${tradeDate}`,
   `wheeldesk:zero-dte:open-map:${tradeDate}`,
-  `wheeldesk_zero_dte_opening_map_v2_${tradeDate}`,
-  `wheeldesk_zero_dte_opening_map_v1_${tradeDate}`,
 ];
 
 export function buildLiveMapSnapshot(args: {
@@ -173,17 +185,35 @@ export function buildLiveMapSnapshot(args: {
 export function initializeSessionMapManager(
   live: MarketMapSnapshot,
   explicitOpeningMap?: ZeroDteOpeningMap | null,
+  options: { loadStored?: boolean } = {},
 ): SessionMapManagerState {
-  const stored = loadSessionMapManager(live.tradeDate);
+  const stored = options.loadStored === false
+    ? null
+    : loadSessionMapManager(live.tradeDate);
   if (stored) {
     const hydrated = hydrateStoredSessionMapManager(stored, live);
     return hydrated;
   }
 
-  const existingOpenMap =
+  const existingOpenMapCandidate =
     explicitOpeningMap ??
     loadOpeningMap(live.tradeDate) ??
     loadExistingOpenMap(live.tradeDate);
+  const existingOpenMapLike =
+    existingOpenMapCandidate as ExistingOpenMapLike | null;
+  const existingOpenMapTimestamp = existingOpenMapLike
+    ? String(
+        existingOpenMapLike.lockedAt ??
+          existingOpenMapLike.capturedAt ??
+          existingOpenMapLike.generatedAt ??
+          "",
+      )
+    : "";
+  const existingOpenMap =
+    existingOpenMapCandidate &&
+    isOpeningMapCaptureOnTime(existingOpenMapTimestamp)
+      ? existingOpenMapCandidate
+      : null;
   const opening = existingOpenMap
     ? normalizeExistingOpenMap(existingOpenMap, live)
     : { ...live, source: "first-live-fallback" as const };
@@ -196,6 +226,8 @@ export function initializeSessionMapManager(
     opening,
     candidate: null,
     active: opening,
+    transitionFrom: null,
+    transitionFromPhase: null,
     latest: live,
     previousLive: null,
     confirmationCount: 0,
@@ -205,12 +237,17 @@ export function initializeSessionMapManager(
     railBreachStartedAt: null,
     outsideMinutes: 0,
     migrationScore: 0,
+    migrationConfirmationMode: "NONE",
     flowConfirmation: "UNAVAILABLE",
     flowDirection: null,
+    flowScore: null,
+    flowMessage: null,
     reasons: [
       existingOpenMap
         ? "Opening thesis loaded from the saved Opening Map."
-        : "Saved Opening Map was unavailable; the first valid live snapshot is labeled as a fallback rather than a verified cash-open map.",
+        : existingOpenMapCandidate
+          ? "A saved Opening Map existed but failed the cash-open timing gate; the first valid live snapshot is labeled as a fallback and cannot authorize the opening Iron Fly."
+          : "Saved Opening Map was unavailable; the first valid live snapshot is labeled as a fallback rather than a verified cash-open map.",
     ],
     events: [],
   };
@@ -224,7 +261,20 @@ export function updateSessionMapManager(
   strikeFlow: ZeroDteStrikeFlowRead | null = null,
 ): SessionMapManagerState {
   const clock = getZeroDteSessionClock(live.capturedAt);
-  const reference = previous.phase === "ACTIVE" ? previous.active : previous.opening;
+  // During TRANSITION the last confirmed map remains authoritative. Never
+  // compare a second/third migration back to the original Opening Map.
+  const reference =
+    previous.phase === "TRANSITION"
+      ? previous.transitionFrom ?? previous.active ?? previous.opening
+      : previous.phase === "ACTIVE"
+        ? previous.active
+        : previous.opening;
+  const referencePhase: "OPENING" | "ACTIVE" =
+    previous.phase === "TRANSITION"
+      ? previous.transitionFromPhase ?? (reference === previous.opening ? "OPENING" : "ACTIVE")
+      : previous.phase === "ACTIVE"
+        ? "ACTIVE"
+        : "OPENING";
   const railBreached =
     live.spot > reference.upperWing
       ? "UPPER"
@@ -273,34 +323,55 @@ export function updateSessionMapManager(
     structuralConfidence >= 60 ||
     majorDisplacement;
 
-  const flowDirection = strikeFlow?.mapDirection ?? null;
+  // Migration evidence must be measured at the confirmed map's levels, not at
+  // whichever walls the new recommendation is proposing. Candidate-wall flow
+  // is useful context, but it cannot prove that the old controlling wall failed.
+  const flowAgeMinutes =
+    strikeFlow?.officialThrough
+      ? Math.max(
+          0,
+          (Date.parse(live.capturedAt) - Date.parse(strikeFlow.officialThrough)) /
+            60_000,
+        )
+      : Number.POSITIVE_INFINITY;
+  const flowContinuous = Boolean(
+    strikeFlow?.hasClosedMinute &&
+      flowAgeMinutes <= 2 &&
+      (strikeFlow.elapsedMinutes === null || strikeFlow.elapsedMinutes <= 2),
+  );
+  const controllingFlow = strikeFlow && flowContinuous
+    ? classifyStrikeFlowAtLevels({
+        read: strikeFlow,
+        callWall: reference.callWall,
+        putWall: reference.putWall,
+      })
+    : null;
+  const flowDirection = controllingFlow?.mapDirection ?? null;
   const flowConfirms =
     railBreached === "UPPER"
       ? flowDirection === "UPPER_ACCEPTED" ||
-        strikeFlow?.callWall.state === "attacked" ||
-        strikeFlow?.putWall.state === "absorbed"
+        controllingFlow?.callWall.state === "attacked" ||
+        controllingFlow?.putWall.state === "absorbed"
       : railBreached === "LOWER"
         ? flowDirection === "LOWER_ACCEPTED" ||
-          strikeFlow?.putWall.state === "breaking" ||
-          strikeFlow?.callWall.state === "defended"
+          controllingFlow?.putWall.state === "breaking" ||
+          controllingFlow?.callWall.state === "defended"
         : false;
   const flowRejects =
     railBreached === "UPPER"
       ? flowDirection === "UPPER_REJECTED" ||
-        strikeFlow?.callWall.state === "defended"
+        controllingFlow?.callWall.state === "defended"
       : railBreached === "LOWER"
         ? flowDirection === "LOWER_REJECTED" ||
-          strikeFlow?.putWall.state === "absorbed"
+          controllingFlow?.putWall.state === "absorbed"
         : false;
-  const flowConfirmation: MapFlowConfirmation = !strikeFlow?.hasClosedMinute
+  const flowConfirmation: MapFlowConfirmation = !flowContinuous
     ? "UNAVAILABLE"
     : flowConfirms
       ? "CONFIRMED"
       : flowRejects
         ? "REJECTED"
-        : strikeFlow.confirmationReady
-          ? "BUILDING"
-          : "BUILDING";
+        : "BUILDING";
 
   const migrationScore = clampScore(
     (railBreached !== "NONE" ? 25 : 0) +
@@ -312,11 +383,23 @@ export function updateSessionMapManager(
       (flowRejects ? 25 : 0),
   );
 
+  // Do not let correlated descendants of the same chain topology manufacture
+  // conviction. A replacement map needs one independent confirmation family:
+  // either completed flow at the *confirmed* map's levels, or a genuinely large
+  // price displacement backed by directional dealer pressure. Structural score
+  // and recommendation confidence alone can never authorize migration.
+  const migrationConfirmationMode: MapMigrationConfirmationMode = flowConfirms
+    ? "FLOW_CONFIRMED"
+    : majorDisplacement && pressureConfirms
+      ? "DISPLACEMENT_CONFIRMED"
+      : "NONE";
+
   const transitionSignal =
     railBreached !== "NONE" &&
     structuralShift &&
     confidenceConfirms &&
     migrationScore >= 55 &&
+    migrationConfirmationMode !== "NONE" &&
     !flowRejects;
 
   const closedMinuteKey = strikeFlow?.closedMinuteKey ?? null;
@@ -334,8 +417,11 @@ export function updateSessionMapManager(
     railBreachStartedAt: breachStartedAt,
     outsideMinutes,
     migrationScore,
+    migrationConfirmationMode,
     flowConfirmation,
     flowDirection,
+    flowScore: controllingFlow?.mapConfirmationScore ?? null,
+    flowMessage: controllingFlow?.mapMessage ?? null,
   };
 
   if (clock.sessionStatus !== "OPEN") {
@@ -359,20 +445,31 @@ export function updateSessionMapManager(
       structuralShift,
       confidenceConfirms,
       flowRejects,
-      strikeFlow,
+      migrationConfirmationMode,
+      strikeFlow: flowContinuous ? strikeFlow : null,
       migrationScore,
     });
+    if (strikeFlow?.hasClosedMinute && !flowContinuous) {
+      missing.push(
+        `Completed-minute flow is stale or gapped (${Number.isFinite(flowAgeMinutes) ? flowAgeMinutes.toFixed(1) : "unknown"} min old); it cannot confirm migration.`,
+      );
+    }
 
     if (previous.phase === "TRANSITION" && isNewClosedMinute) {
       const confirmationCount = Math.max(0, previous.confirmationCount - 1);
+      const reverting = confirmationCount === 0;
       next = {
         ...next,
-        phase: confirmationCount > 0 ? "TRANSITION" : "OPENING",
-        candidate: confirmationCount > 0 ? previous.candidate : null,
+        phase: reverting ? referencePhase : "TRANSITION",
+        candidate: reverting ? null : previous.candidate,
+        transitionFrom: reverting ? null : previous.transitionFrom ?? reference,
+        transitionFromPhase: reverting ? null : previous.transitionFromPhase ?? referencePhase,
         confirmationCount,
         lastConfirmationMinuteKey: closedMinuteKey,
         reasons: [
-          "Candidate lost a completed-candle confirmation.",
+          reverting
+            ? `Candidate failed confirmation; restored the last confirmed ${referencePhase.toLowerCase()} map.`
+            : "Candidate lost a completed-candle confirmation.",
           ...missing,
         ],
       };
@@ -389,7 +486,7 @@ export function updateSessionMapManager(
     return next;
   }
 
-  if (!strikeFlow?.hasClosedMinute || !closedMinuteKey) {
+  if (!flowContinuous || !closedMinuteKey) {
     next = {
       ...next,
       reasons: [
@@ -428,11 +525,9 @@ export function updateSessionMapManager(
         ? `; general recommendation confidence ${live.confidence}%`
         : ""
     }.`,
-    flowConfirms
-      ? `Completed-minute strike flow confirms migration (${strikeFlow.mapDirection}, score ${strikeFlow.mapConfirmationScore}).`
-      : pressureConfirms
-        ? "Dealer pressure confirms migration while completed-minute flow is still building."
-        : "Large price displacement keeps the candidate alive while flow confirmation builds.",
+    migrationConfirmationMode === "FLOW_CONFIRMED"
+      ? `Completed-minute strike flow confirms failure of the controlling map (${controllingFlow?.mapDirection ?? "UNAVAILABLE"}, score ${controllingFlow?.mapConfirmationScore ?? 0}).`
+      : "Major price displacement plus directional dealer pressure independently confirm the replacement while completed-minute flow continues building.",
     `Closed-candle confirmation ${confirmationCount}/${previous.confirmationRequired}.`,
   ];
 
@@ -452,6 +547,8 @@ export function updateSessionMapManager(
       phase: "ACTIVE",
       active: live,
       candidate: null,
+      transitionFrom: null,
+      transitionFromPhase: null,
       confirmationCount: 0,
       lastConfirmationMinuteKey: closedMinuteKey,
       reasons: ["Replacement map is ACTIVE.", ...reasons.slice(0, 4)],
@@ -463,6 +560,12 @@ export function updateSessionMapManager(
       ...next,
       phase: "TRANSITION",
       candidate,
+      transitionFrom: enteringTransition
+        ? reference
+        : previous.transitionFrom ?? reference,
+      transitionFromPhase: enteringTransition
+        ? referencePhase
+        : previous.transitionFromPhase ?? referencePhase,
       confirmationCount,
       lastConfirmationMinuteKey: isNewClosedMinute
         ? closedMinuteKey
@@ -492,7 +595,9 @@ export function getControllingMarketMap(
   state: SessionMapManagerState,
 ): MarketMapSnapshot {
   if (state.phase === "ACTIVE") return state.active;
-  if (state.phase === "TRANSITION" && state.candidate) return state.candidate;
+  if (state.phase === "TRANSITION") {
+    return state.transitionFrom ?? state.active ?? state.opening;
+  }
   return state.opening;
 }
 
@@ -516,6 +621,7 @@ function buildMissingEvidence(args: {
   structuralShift: boolean;
   confidenceConfirms: boolean;
   flowRejects: boolean;
+  migrationConfirmationMode: MapMigrationConfirmationMode;
   strikeFlow: ZeroDteStrikeFlowRead | null;
   migrationScore: number;
 }) {
@@ -530,6 +636,11 @@ function buildMissingEvidence(args: {
   }
   if (!args.confidenceConfirms) {
     reasons.push("Neither structural confidence nor displacement is strong enough to validate migration.");
+  }
+  if (args.migrationConfirmationMode === "NONE" && !args.flowRejects) {
+    reasons.push(
+      "Independent migration proof is missing: require completed flow at the confirmed map levels, or major price displacement plus directional dealer pressure.",
+    );
   }
   if (!args.strikeFlow?.hasClosedMinute) {
     reasons.push("Completed one-minute delta-volume flow is not available yet.");
@@ -563,13 +674,20 @@ function hydrateStoredSessionMapManager(
       ? hydrateSnapshot(stored.previousLive, live)
       : null,
     candidate,
+    transitionFrom: stored.transitionFrom
+      ? hydrateSnapshot(stored.transitionFrom, active)
+      : null,
+    transitionFromPhase: stored.transitionFromPhase ?? null,
     sessionStatus: stored.sessionStatus ?? clock.sessionStatus,
     confirmationRequired: 2,
     lastConfirmationMinuteKey: stored.lastConfirmationMinuteKey ?? null,
     railBreachStartedAt: stored.railBreachStartedAt ?? null,
     migrationScore: stored.migrationScore ?? 0,
+    migrationConfirmationMode: stored.migrationConfirmationMode ?? "NONE",
     flowConfirmation: stored.flowConfirmation ?? "UNAVAILABLE",
     flowDirection: stored.flowDirection ?? null,
+    flowScore: stored.flowScore ?? null,
+    flowMessage: stored.flowMessage ?? null,
     reasons: Array.isArray(stored.reasons) ? stored.reasons : [],
     events: Array.isArray(stored.events) ? stored.events : [],
   };
@@ -723,8 +841,7 @@ export function buildStrikeBaseline(
       existing.callOi +
       existing.putOi +
       existing.callGamma +
-      existing.putGamma +
-      (existing.callVolume + existing.putVolume) * 0.18;
+      existing.putGamma;
 
     map.set(strike, existing);
   }

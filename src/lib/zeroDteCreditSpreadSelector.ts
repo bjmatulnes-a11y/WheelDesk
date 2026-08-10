@@ -52,6 +52,8 @@ export type ZeroDteCreditSpreadBook = {
 export type ZeroDteCreditSpreadSelection = {
   tradeType: "put-credit-spread" | "call-credit-spread";
   side: CreditSpreadSide;
+  /** Thesis of the selected executable candidate. */
+  thesis: "trend" | "exhaustion-fade" | null;
   shortStrike: number | null;
   longStrike: number | null;
   actualWidth: number | null;
@@ -87,6 +89,8 @@ export type ZeroDteCreditSpreadSelection = {
 };
 
 export type CreditSpreadCandidate = {
+  /** Discovery thesis. Exhaustion mode may relax placement filters, but never execution confirmation. */
+  thesis?: "trend" | "exhaustion-fade";
   strike: number;
   longStrike: number;
   score: number;
@@ -317,6 +321,7 @@ export function selectZeroDteCreditSpread(input: SelectCreditSpreadInput): ZeroD
   return {
     tradeType: side === "put" ? "put-credit-spread" : "call-credit-spread",
     side,
+    thesis: best?.thesis ?? null,
     shortStrike: best?.strike ?? null,
     longStrike: best?.longStrike ?? null,
     actualWidth: best?.actualWidth ?? null,
@@ -502,11 +507,14 @@ function scoreCandidate(args: {
   const spyScore = row.spyAlignment === "aligned" ? 100 : row.spyAlignment === "near" ? 70 : 40;
   const premiumScore = scorePremium({ creditToRiskPct, creditToWidthPct, riskMode });
   const deltaScore = fadeCandidateMode && richFadeGeometry
-      ? clamp(
-      55 + Math.min(35, Math.max(0, shortDeltaAbs - shortDeltaMax) * 120),
-      0,
-      100
-    )
+    ? clamp(
+        // Exhaustion mode may *tolerate* higher delta so the crest engine can
+        // observe the rich premium, but additional delta is never rewarded.
+        // Risk decays progressively above the normal short-delta ceiling.
+        70 - Math.max(0, shortDeltaAbs - shortDeltaMax) * 140,
+        25,
+        70,
+      )
     : scoreDelta(shortDeltaAbs, riskMode);
   const liquidityScore = scoreLiquidity(shortRow, longRow);
   const skewScore = scoreSideBias(side, row);
@@ -581,6 +589,7 @@ function scoreCandidate(args: {
 
   rejectionDiagnostics.accepted += 1;
   return {
+    thesis: fadeCandidateMode && richFadeGeometry ? "exhaustion-fade" : "trend",
     strike: row.strike,
     longStrike: longRow.strike,
     score: Math.round(score),

@@ -247,8 +247,8 @@ export function buildOiIntelligence(
   const sortedByScore = [...clusters].sort((a, b) => b.score - a.score);
   const strongestPin = sortedByScore[0]?.strike ?? null;
 
-  const callWall = strongestBySide(clusters, "call");
-  const putWall = strongestBySide(clusters, "put");
+  const callWall = strongestBySide(clusters, "call", spot);
+  const putWall = strongestBySide(clusters, "put", spot);
   const gravity = calculateOiGravity(clusters);
   const oiStrength = calculateOiStrength(clusters);
   const symmetryScore = calculateSymmetryScore({ spot, callWall, putWall });
@@ -295,9 +295,11 @@ export function convertSpyRowsToSpx(
     // Raw SPY OI is large and should not overpower SPX, which is the actual trade.
     openInterest: scale(row.openInterest, notionalWeight),
     volume: scale(row.volume, notionalWeight),
-    // Keep gamma unscaled. SPY gamma is naturally larger because the underlying price is lower.
-    // Scaling OI/volume to SPX-contract equivalents keeps gamma-weight comparison usable.
-    gamma: row.gamma ?? null,
+    // Coordinate transform: S_spx = ratio * S_spy and premium_spx = ratio * premium_spy.
+    // Delta is invariant, while gamma transforms by 1/ratio.
+    gamma: typeof row.gamma === "number" && Number.isFinite(row.gamma)
+      ? row.gamma / ratio
+      : null,
     // Premium/expected-move values are SPY points, so convert them to SPX points.
     bid: scale(row.bid, ratio),
     ask: scale(row.ask, ratio),
@@ -358,10 +360,15 @@ function buildClusters(rows: ZeroDteChainRow[]): OiCluster[] {
   return [...map.values()];
 }
 
-function strongestBySide(clusters: OiCluster[], side: OptionType) {
+function strongestBySide(clusters: OiCluster[], side: OptionType, spot: number) {
   if (!clusters.length) return null;
 
-  return [...clusters]
+  const geometricallyValid = clusters.filter((cluster) =>
+    side === "call" ? cluster.strike >= spot : cluster.strike <= spot,
+  );
+  if (!geometricallyValid.length) return null;
+
+  return [...geometricallyValid]
     .map((cluster) => ({
       strike: cluster.strike,
       score:
@@ -431,7 +438,10 @@ function estimateDealerPressure(rows: ZeroDteChainRow[], spot: number) {
     const gamma = safe(row.gamma);
     const oi = safe(row.openInterest);
     const volume = safe(row.volume);
-    const side = row.optionType === "call" ? 1 : -1;
+    // Signed-pressure contract: positive = upward/bullish hedge pressure,
+    // negative = downward/bearish. Put concentration is therefore positive
+    // and call concentration negative, matching dealerSummaryToSignedPressure().
+    const side = row.optionType === "put" ? 1 : -1;
 
     pressure += side * gamma * (oi + volume * 0.5) * distanceWeight;
   }
@@ -643,7 +653,8 @@ function getMid(row?: ZeroDteChainRow) {
   if (!row) return null;
   if (safe(row.mid) > 0) return safe(row.mid);
   if (safe(row.bid) > 0 && safe(row.ask) > 0) return (safe(row.bid) + safe(row.ask)) / 2;
-  if (safe(row.last) > 0) return safe(row.last);
+  // LAST may be hours old in 0DTE. Never let it manufacture the live ATM
+  // straddle/expected-move input when the executable market is unavailable.
   return null;
 }
 
