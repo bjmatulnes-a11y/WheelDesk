@@ -49,6 +49,12 @@ export type EsOrderFlowSample = {
   intensityZ: number | null;
   priceDisplacementTicks20s: number | null;
   efficiencyDisplacementTicks: number | null;
+  grossTravelTicks20s: number | null;
+  pathEfficiencyPct: number | null;
+  directionalAlignmentPct: number | null;
+  flowConfidencePct: number | null;
+  flowConfidence: "LOW" | "MEDIUM" | "HIGH";
+  rawEfficiencyPct: number | null;
   efficiencyPct: number | null;
   bidStacking: number | null;
   askStacking: number | null;
@@ -68,8 +74,10 @@ export type EsOrderFlowRead = {
 const ES_TICK = 0.25;
 const MAX_SAMPLES = 240;
 const ROLLING_WINDOW_MS = 20_000;
-const EFFICIENCY_WINDOW_MS = 8_000;
+const EFFICIENCY_WINDOW_MS = 20_000;
 const RECENT_STATE_MS = 45_000;
+const MIN_EFFICIENCY_SPAN_MS = 8_000;
+const MIN_EFFICIENCY_SAMPLES = 7;
 
 export function updateEsOrderFlow(
   previousSamples: EsOrderFlowSample[],
@@ -125,6 +133,12 @@ export function updateEsOrderFlow(
     intensityZ: null,
     priceDisplacementTicks20s: null,
     efficiencyDisplacementTicks: null,
+    grossTravelTicks20s: null,
+    pathEfficiencyPct: null,
+    directionalAlignmentPct: null,
+    flowConfidencePct: null,
+    flowConfidence: "LOW",
+    rawEfficiencyPct: null,
     efficiencyPct: null,
     bidStacking: samePriceDelta(snapshot.bid, snapshot.bidSize, prior?.bid, prior?.bidSize),
     askStacking: samePriceDelta(snapshot.ask, snapshot.askSize, prior?.ask, prior?.askSize),
@@ -152,19 +166,14 @@ export function updateEsOrderFlow(
   const efficiencyRolling = samples.filter(
     (sample) => timestampMs - parseMs(sample.timestamp) <= EFFICIENCY_WINDOW_MS,
   );
-  const efficiencyFirstMid =
-    efficiencyRolling.find((sample) => sample.mid != null)?.mid ?? null;
-  const efficiencyDisplacementTicks =
-    mid != null && efficiencyFirstMid != null
-      ? (mid - efficiencyFirstMid) / ES_TICK
-      : null;
-  const efficiencyVolume = sum(
-    efficiencyRolling.map((sample) => sample.volumeDelta),
-  );
-  const efficiencyPct = calculateEfficiencyPct(
-    efficiencyDisplacementTicks,
-    efficiencyVolume,
-  );
+  const efficiencyMetrics = calculateAuctionEfficiency({
+    samples: efficiencyRolling,
+    latestMid: mid,
+    directionalPressurePct,
+    rollingVolume: rollingVolume20s,
+    intensityZ,
+    priorEfficiencyPct: prior?.efficiencyPct ?? null,
+  });
 
   const enriched: EsOrderFlowSample = {
     ...provisional,
@@ -173,8 +182,14 @@ export function updateEsOrderFlow(
     directionalPressurePct,
     intensityZ,
     priceDisplacementTicks20s,
-    efficiencyDisplacementTicks,
-    efficiencyPct,
+    efficiencyDisplacementTicks: efficiencyMetrics.displacementTicks,
+    grossTravelTicks20s: efficiencyMetrics.grossTravelTicks,
+    pathEfficiencyPct: efficiencyMetrics.pathEfficiencyPct,
+    directionalAlignmentPct: efficiencyMetrics.directionalAlignmentPct,
+    flowConfidencePct: efficiencyMetrics.flowConfidencePct,
+    flowConfidence: efficiencyMetrics.flowConfidence,
+    rawEfficiencyPct: efficiencyMetrics.rawEfficiencyPct,
+    efficiencyPct: efficiencyMetrics.efficiencyPct,
     state: "WARMING",
   };
   enriched.state = classifyState([...history, enriched], enriched);
@@ -271,30 +286,134 @@ function calculateIntensityZ(samples: EsOrderFlowSample[], latest: EsOrderFlowSa
   return clamp((latest.volumeRatePerSec - mean) / sd, -3, 6);
 }
 
-function calculateEfficiencyPct(
-  displacementTicks: number | null,
-  rollingVolume: number,
-) {
-  if (displacementTicks == null || rollingVolume <= 0) return null;
-  // Impact is intentionally normalized by sqrt(volume), not raw volume. This
-  // prevents very active periods from appearing inefficient simply because
-  // absolute contracts are large. It is a relative auction-efficiency proxy,
-  // not a claim about true market impact per contract.
-  const expectedTicks = Math.max(1, Math.sqrt(rollingVolume / 40));
-  return clamp((Math.abs(displacementTicks) / expectedTicks) * 100, 0, 100);
+function calculateAuctionEfficiency(input: {
+  samples: EsOrderFlowSample[];
+  latestMid: number | null;
+  directionalPressurePct: number;
+  rollingVolume: number;
+  intensityZ: number | null;
+  priorEfficiencyPct: number | null;
+}) {
+  const mids = input.samples
+    .map((sample) => ({ ms: parseMs(sample.timestamp), mid: sample.mid }))
+    .filter((point): point is { ms: number; mid: number } => point.mid != null);
+  const firstMid = mids[0]?.mid ?? null;
+  const lastMid = input.latestMid ?? mids.at(-1)?.mid ?? null;
+  const spanMs = mids.length >= 2 ? mids.at(-1)!.ms - mids[0]!.ms : 0;
+  const displacementTicks =
+    firstMid != null && lastMid != null ? (lastMid - firstMid) / ES_TICK : null;
+  let grossTravelTicks = 0;
+  for (let index = 1; index < mids.length; index += 1) {
+    grossTravelTicks += Math.abs(mids[index].mid - mids[index - 1].mid) / ES_TICK;
+  }
+
+  const enoughPath =
+    mids.length >= MIN_EFFICIENCY_SAMPLES && spanMs >= MIN_EFFICIENCY_SPAN_MS;
+  const pathEfficiencyPct =
+    enoughPath && displacementTicks != null
+      ? grossTravelTicks > 0.001
+        ? clamp((Math.abs(displacementTicks) / grossTravelTicks) * 100, 0, 100)
+        : 0
+      : null;
+
+  const pressureStrength = clamp(Math.abs(input.directionalPressurePct) / 100, 0, 1);
+  const displacementDirection = Math.sign(displacementTicks ?? 0);
+  const pressureDirection = Math.sign(input.directionalPressurePct);
+  const directionalAlignmentPct =
+    pathEfficiencyPct == null || displacementDirection === 0 || pressureDirection === 0
+      ? pathEfficiencyPct == null
+        ? null
+        : 35
+      : displacementDirection === pressureDirection
+        ? 60 + 40 * pressureStrength
+        : 30 * (1 - pressureStrength);
+
+  const flowConfidencePct = calculateFlowConfidencePct({
+    samples: input.samples,
+    rollingVolume: input.rollingVolume,
+    intensityZ: input.intensityZ,
+    spanMs,
+  });
+  const flowConfidence = confidenceLabel(flowConfidencePct);
+
+  const rawEfficiencyPct =
+    pathEfficiencyPct == null || directionalAlignmentPct == null
+      ? null
+      : clamp(pathEfficiencyPct * (directionalAlignmentPct / 100), 0, 100);
+
+  // Low-confidence REST snapshots are allowed to move the displayed efficiency,
+  // but only slowly. This keeps one half-tick quote change from creating the old
+  // 0 -> 50 -> 100 flashing behavior while preserving fast response when the tape
+  // becomes active and well classified.
+  const confidenceFraction = (flowConfidencePct ?? 0) / 100;
+  const alpha = clamp(0.10 + 0.42 * confidenceFraction, 0.10, 0.52);
+  const efficiencyPct =
+    rawEfficiencyPct == null
+      ? input.priorEfficiencyPct
+      : input.priorEfficiencyPct == null
+        ? rawEfficiencyPct
+        : input.priorEfficiencyPct + alpha * (rawEfficiencyPct - input.priorEfficiencyPct);
+
+  return {
+    displacementTicks,
+    grossTravelTicks: enoughPath ? grossTravelTicks : null,
+    pathEfficiencyPct,
+    directionalAlignmentPct,
+    flowConfidencePct,
+    flowConfidence,
+    rawEfficiencyPct,
+    efficiencyPct: efficiencyPct == null ? null : clamp(efficiencyPct, 0, 100),
+  };
+}
+
+function calculateFlowConfidencePct(input: {
+  samples: EsOrderFlowSample[];
+  rollingVolume: number;
+  intensityZ: number | null;
+  spanMs: number;
+}) {
+  if (input.samples.length < 2 || input.spanMs <= 0) return 0;
+  const coverageScore = clamp(input.spanMs / ROLLING_WINDOW_MS, 0, 1);
+  const classifiedVolume = sum(
+    input.samples.map((sample) => sample.aggressiveBuyVolume + sample.aggressiveSellVolume),
+  );
+  const totalVolume = sum(input.samples.map((sample) => sample.volumeDelta));
+  const classifiedScore = totalVolume > 0 ? clamp(classifiedVolume / totalVolume, 0, 1) : 0;
+
+  // ES cash-session flow commonly reaches hundreds of contracts in 20 seconds.
+  // This saturating curve intentionally keeps thin overnight samples low
+  // confidence without imposing a brittle fixed minimum-volume gate.
+  const volumeScore = 1 - Math.exp(-Math.max(0, input.rollingVolume) / 180);
+  const z = input.intensityZ ?? -0.5;
+  const intensityScore = clamp((z + 0.5) / 2.75, 0, 1);
+  const activityScore = 0.65 * volumeScore + 0.35 * intensityScore;
+  const qualityScore = Math.sqrt(coverageScore * classifiedScore);
+  return clamp(qualityScore * activityScore * 100, 0, 100);
+}
+
+function confidenceLabel(value: number | null): "LOW" | "MEDIUM" | "HIGH" {
+  if (value == null || value < 45) return "LOW";
+  if (value < 70) return "MEDIUM";
+  return "HIGH";
 }
 
 function classifyState(
   samples: EsOrderFlowSample[],
   latest: EsOrderFlowSample,
 ): EsOrderFlowState {
-  if (samples.length < 12 || latest.intensityZ == null || latest.efficiencyPct == null) {
+  if (
+    samples.length < 12 ||
+    latest.intensityZ == null ||
+    latest.efficiencyPct == null ||
+    latest.flowConfidencePct == null
+  ) {
     return "WARMING";
   }
   const pressure = latest.directionalPressurePct;
   const displacement = latest.efficiencyDisplacementTicks ?? 0;
   const intensity = latest.intensityZ;
   const efficiency = latest.efficiencyPct;
+  const confidence = latest.flowConfidencePct;
   const nowMs = parseMs(latest.timestamp);
   const recentStates = samples
     .slice(0, -1)
@@ -305,38 +424,171 @@ function classifyState(
   const hadUpExhaustion = recentStates.includes("EXHAUSTING_UP");
   const hadDownExhaustion = recentStates.includes("EXHAUSTING_DOWN");
 
-  if (hadUpExhaustion && pressure <= -20 && displacement <= -1) return "REVERSAL_DOWN";
-  if (hadDownExhaustion && pressure >= 20 && displacement >= 1) return "REVERSAL_UP";
+  const reversalDown = sustainedCondition(
+    samples,
+    latest,
+    (sample) =>
+      sample.directionalPressurePct <= -20 &&
+      (sample.efficiencyDisplacementTicks ?? 0) <= -1 &&
+      (sample.flowConfidencePct ?? 0) >= 35,
+    2,
+    5_000,
+  );
+  const reversalUp = sustainedCondition(
+    samples,
+    latest,
+    (sample) =>
+      sample.directionalPressurePct >= 20 &&
+      (sample.efficiencyDisplacementTicks ?? 0) >= 1 &&
+      (sample.flowConfidencePct ?? 0) >= 35,
+    2,
+    5_000,
+  );
+  if (hadUpExhaustion && reversalDown) return "REVERSAL_DOWN";
+  if (hadDownExhaustion && reversalUp) return "REVERSAL_UP";
 
-  if (
-    hadHighAbsorption &&
-    (pressure < 25 || intensity < 0.6) &&
-    displacement <= 1
-  ) {
+  const exhaustingUp = sustainedCondition(
+    samples,
+    latest,
+    (sample) =>
+      sample.directionalPressurePct < 25 ||
+      (sample.flowConfidencePct ?? 0) < 40 ||
+      ((sample.intensityZ ?? 0) < 0.3 && (sample.flowConfidencePct ?? 0) < 55),
+    2,
+    5_000,
+  );
+  const exhaustingDown = sustainedCondition(
+    samples,
+    latest,
+    (sample) =>
+      sample.directionalPressurePct > -25 ||
+      (sample.flowConfidencePct ?? 0) < 40 ||
+      ((sample.intensityZ ?? 0) < 0.3 && (sample.flowConfidencePct ?? 0) < 55),
+    2,
+    5_000,
+  );
+  if (hadHighAbsorption && exhaustingUp && displacement <= 1.5) {
     return "EXHAUSTING_UP";
   }
-  if (
-    hadLowAbsorption &&
-    (pressure > -25 || intensity < 0.6) &&
-    displacement >= -1
-  ) {
+  if (hadLowAbsorption && exhaustingDown && displacement >= -1.5) {
     return "EXHAUSTING_DOWN";
   }
 
-  if (pressure >= 45 && intensity >= 1.1 && efficiency <= 45 && displacement < 3) {
+  // Hysteresis: once absorption is confirmed, a one-second REST classification
+  // wobble should not blink the state back to BUILDING while the broader
+  // auction still shows heavy directional force with poor price progress.
+  if (
+    hadHighAbsorption &&
+    pressure >= 35 &&
+    confidence >= 50 &&
+    efficiency <= 50 &&
+    displacement < 3
+  ) {
     return "ABSORBING_HIGH";
   }
-  if (pressure <= -45 && intensity >= 1.1 && efficiency <= 45 && displacement > -3) {
+  if (
+    hadLowAbsorption &&
+    pressure <= -35 &&
+    confidence >= 50 &&
+    efficiency <= 50 &&
+    displacement > -3
+  ) {
     return "ABSORBING_LOW";
   }
-  if (pressure >= 30 && intensity >= 0.7 && efficiency >= 55 && displacement >= 1) {
+
+  const absorbingHigh = sustainedCondition(
+    samples,
+    latest,
+    (sample) =>
+      sample.directionalPressurePct >= 45 &&
+      (sample.flowConfidencePct ?? 0) >= 55 &&
+      (sample.efficiencyPct ?? 100) <= 42 &&
+      ((sample.intensityZ ?? 0) >= 0.8 || (sample.flowConfidencePct ?? 0) >= 70) &&
+      (sample.efficiencyDisplacementTicks ?? 0) < 3,
+    3,
+    6_000,
+  );
+  const absorbingLow = sustainedCondition(
+    samples,
+    latest,
+    (sample) =>
+      sample.directionalPressurePct <= -45 &&
+      (sample.flowConfidencePct ?? 0) >= 55 &&
+      (sample.efficiencyPct ?? 100) <= 42 &&
+      ((sample.intensityZ ?? 0) >= 0.8 || (sample.flowConfidencePct ?? 0) >= 70) &&
+      (sample.efficiencyDisplacementTicks ?? 0) > -3,
+    3,
+    6_000,
+  );
+  if (absorbingHigh) return "ABSORBING_HIGH";
+  if (absorbingLow) return "ABSORBING_LOW";
+
+  const previousState = samples.length >= 2 ? samples[samples.length - 2].state : null;
+  if (
+    previousState === "RELEASE_UP" &&
+    pressure >= 20 &&
+    confidence >= 40 &&
+    efficiency >= 48 &&
+    displacement >= 0.5
+  ) {
     return "RELEASE_UP";
   }
-  if (pressure <= -30 && intensity >= 0.7 && efficiency >= 55 && displacement <= -1) {
+  if (
+    previousState === "RELEASE_DOWN" &&
+    pressure <= -20 &&
+    confidence >= 40 &&
+    efficiency >= 48 &&
+    displacement <= -0.5
+  ) {
     return "RELEASE_DOWN";
   }
-  if (intensity >= 0.5 || Math.abs(pressure) >= 20) return "BUILDING";
+
+  const releaseUp = sustainedCondition(
+    samples,
+    latest,
+    (sample) =>
+      sample.directionalPressurePct >= 30 &&
+      (sample.flowConfidencePct ?? 0) >= 45 &&
+      (sample.efficiencyPct ?? 0) >= 55 &&
+      ((sample.intensityZ ?? 0) >= 0.5 || (sample.flowConfidencePct ?? 0) >= 70) &&
+      (sample.efficiencyDisplacementTicks ?? 0) >= 1,
+    3,
+    6_000,
+  );
+  const releaseDown = sustainedCondition(
+    samples,
+    latest,
+    (sample) =>
+      sample.directionalPressurePct <= -30 &&
+      (sample.flowConfidencePct ?? 0) >= 45 &&
+      (sample.efficiencyPct ?? 0) >= 55 &&
+      ((sample.intensityZ ?? 0) >= 0.5 || (sample.flowConfidencePct ?? 0) >= 70) &&
+      (sample.efficiencyDisplacementTicks ?? 0) <= -1,
+    3,
+    6_000,
+  );
+  if (releaseUp) return "RELEASE_UP";
+  if (releaseDown) return "RELEASE_DOWN";
+
+  if (intensity >= 0.5 || Math.abs(pressure) >= 20 || confidence >= 35) {
+    return "BUILDING";
+  }
   return "DORMANT";
+}
+
+function sustainedCondition(
+  samples: EsOrderFlowSample[],
+  latest: EsOrderFlowSample,
+  predicate: (sample: EsOrderFlowSample) => boolean,
+  minimumMatches: number,
+  windowMs: number,
+) {
+  if (!predicate(latest)) return false;
+  const latestMs = parseMs(latest.timestamp);
+  const recent = samples.filter(
+    (sample) => latestMs - parseMs(sample.timestamp) <= windowMs,
+  );
+  return recent.filter(predicate).length >= minimumMatches;
 }
 
 function midpoint(bid: number | null, ask: number | null) {

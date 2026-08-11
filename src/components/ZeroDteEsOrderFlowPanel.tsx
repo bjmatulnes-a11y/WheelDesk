@@ -123,7 +123,8 @@ export function ZeroDteEsOrderFlowPanel({ enabled = true }: Props) {
         <FlowMetric label="20s Delta" value={signedInteger(latest?.rollingDelta20s)} tone={deltaTone(latest?.rollingDelta20s ?? 0)} />
         <FlowMetric label="Flow Pressure" value={signedPct(latest?.directionalPressurePct)} tone={pressureTone(latest?.directionalPressurePct ?? 0)} />
         <FlowMetric label="Intensity" value={latest?.intensityZ == null ? "warming" : `${latest.intensityZ.toFixed(1)}σ`} tone={intensityTone(latest?.intensityZ)} />
-        <FlowMetric label="Efficiency" value={latest?.efficiencyPct == null ? "—" : `${latest.efficiencyPct.toFixed(0)}%`} tone={efficiencyTone(latest?.efficiencyPct)} />
+        <FlowMetric label="Efficiency" value={latest?.efficiencyPct == null ? "warming" : `${latest.efficiencyPct.toFixed(0)}%`} tone={efficiencyTone(latest?.efficiencyPct)} />
+        <FlowMetric label="Flow Confidence" value={latest?.flowConfidencePct == null ? "warming" : `${latest.flowConfidence} · ${latest.flowConfidencePct.toFixed(0)}%`} tone={confidenceTone(latest?.flowConfidencePct)} />
         <FlowMetric label="Book Imbalance" value={signedPct(latest?.bookImbalancePct)} tone={pressureTone(latest?.bookImbalancePct ?? 0)} />
         <FlowMetric label="20s Move" value={latest?.priceDisplacementTicks20s == null ? "—" : `${signed(latest.priceDisplacementTicks20s, 1)} ticks`} tone={deltaTone(latest?.priceDisplacementTicks20s ?? 0)} />
       </div>
@@ -330,6 +331,13 @@ function efficiencyTone(value: number | null | undefined) {
   if (value >= 60) return "#34d399";
   if (value <= 30) return "#f6c453";
   return "#d7e0eb";
+}
+
+function confidenceTone(value: number | null | undefined) {
+  if (value == null) return "#8ea0b8";
+  if (value >= 70) return "#34d399";
+  if (value >= 45) return "#f6c453";
+  return "#8ea0b8";
 }
 
 const styles: Record<string, React.CSSProperties> = {
