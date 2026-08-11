@@ -53,7 +53,12 @@ export type SchwabHarvestSymbol = {
 
 
 export type SchwabQuoteFields = {
+  bidPrice?: number;
+  askPrice?: number;
+  bidSize?: number;
+  askSize?: number;
   lastPrice?: number;
+  lastSize?: number;
   mark?: number;
   closePrice?: number;
   netChange?: number;

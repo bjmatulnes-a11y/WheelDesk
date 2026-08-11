@@ -55,6 +55,7 @@ import { orchestrateZeroDteStrategySelection } from "../lib/zeroDteStrategyOrche
 import { ZeroDteTradeSelectionPanel } from "./ZeroDteTradeSelectionPanel";
 import { ZeroDteMoodPanel } from "./ZeroDteMoodPanel";
 import { ZeroDteStrikeFlowPanel } from "./ZeroDteStrikeFlowPanel";
+import { ZeroDteEsOrderFlowPanel } from "./ZeroDteEsOrderFlowPanel";
 import { ExecutionTradeDock } from "./execution/ExecutionTradeDock";
 import {
   useExecutionSignalPaint,
@@ -1949,6 +1950,8 @@ export default function SpxCommandChart() {
       <div style={styles.commandGrid}>
         <div style={styles.chartPanel}>
           <div ref={chartHostRef} style={styles.chartHost} />
+
+          <ZeroDteEsOrderFlowPanel enabled={!manualChainResearch} />
 
           <div style={styles.legend}>
             <LegendItem color="#ff8a34" text="Call Wall" />
