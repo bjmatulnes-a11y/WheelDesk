@@ -197,6 +197,7 @@ export default function SpxCommandChart() {
   const signalMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const hasInitialFitRef = useRef(false);
   const strategyInitializedForDateRef = useRef<string | null>(null);
+  const strategyUserPinnedRef = useRef(false);
   const loadSequenceRef = useRef(0);
   const loadAbortRef = useRef<AbortController | null>(null);
   const loadRequestKeyRef = useRef<string | null>(null);
@@ -624,8 +625,29 @@ export default function SpxCommandChart() {
     if (!tradeDate || !recommendedExecutionCandidate) return;
     if (strategyInitializedForDateRef.current === tradeDate) return;
     strategyInitializedForDateRef.current = tradeDate;
+    strategyUserPinnedRef.current = false;
     setSelectedExecutionStrategy(recommendedExecutionCandidate.strategy);
   }, [harvest?.tradeDate, recommendedExecutionCandidate]);
+
+  useEffect(() => {
+    if (manualChainResearch || strategyUserPinnedRef.current) return;
+    if (executionCandidates[selectedExecutionStrategy]) return;
+
+    const fallback = Object.values(executionCandidates)
+      .filter((candidate): candidate is ExecutionCandidate => Boolean(candidate))
+      .sort((a, b) => b.score - a.score)[0] ?? null;
+
+    if (!fallback || fallback.strategy === selectedExecutionStrategy) return;
+    setSelectedExecutionStrategy(fallback.strategy);
+  }, [executionCandidates, manualChainResearch, selectedExecutionStrategy]);
+
+  const handleExecutionStrategyChange = useCallback(
+    (strategy: ExecutionStrategy) => {
+      strategyUserPinnedRef.current = true;
+      setSelectedExecutionStrategy(strategy);
+    },
+    [],
+  );
 
   const analytics = useMemo(() => {
     // EMAs may warm from prior history, but only the current cash-session
@@ -2029,7 +2051,7 @@ export default function SpxCommandChart() {
             tracks={manualChainResearch ? null : stableCandidateTracker.tracks}
             riskPolicy={riskPolicy}
             selectedStrategy={selectedExecutionStrategy}
-            onStrategyChange={setSelectedExecutionStrategy}
+            onStrategyChange={handleExecutionStrategyChange}
             readOnly={manualChainResearch}
             readOnlyReason={
               manualChainResearch
