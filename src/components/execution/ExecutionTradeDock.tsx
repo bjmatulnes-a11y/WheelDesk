@@ -94,7 +94,20 @@ export function ExecutionTradeDock({
   }, [candidateKey, setupMode, selectedStrategy]);
 
   useEffect(() => {
-    if (setupMode === "manual") return;
+    if (setupMode === "manual") {
+      // Manual entry must remain available even when the engine has no tracked
+      // candidate/center for the selected strategy. Preserve anything the user
+      // has already typed; otherwise seed the editor from the tracked legs when
+      // available, or from a blank strategy template.
+      setDraftLegs((current) =>
+        current.length
+          ? current
+          : candidate
+            ? candidate.legs.map((leg) => ({ ...leg, strike: leg.strike.toFixed(0) }))
+            : defaultDraftLegs(selectedStrategy),
+      );
+      return;
+    }
     if (!candidate) {
       setDraftLegs([]);
       setEntryCredit("");
@@ -106,14 +119,14 @@ export function ExecutionTradeDock({
     // Actual fill is user-entered execution data. Never pin a scanner snapshot
     // into this field and make it look like a live market quote.
     setEntryCredit("");
-  }, [candidateKey, setupMode]);
+  }, [candidateKey, setupMode, selectedStrategy]);
 
   const parsedEntryCredit = parseNonNegative(entryCredit);
   const parsedQuantity = Math.max(1, Math.floor(Number(quantity) || 1));
 
   const ticket = useMemo(() => {
-    if (!candidate) return { candidate: null, error: "No tracked setup is available." };
     if (setupMode === "recommended") {
+      if (!candidate) return { candidate: null, error: "No tracked setup is available." };
       const credit =
         parsedEntryCredit ??
         read?.currentSellableCredit ??
@@ -134,6 +147,10 @@ export function ExecutionTradeDock({
       };
     }
 
+    // Manual mode is intentionally independent of the tracked-candidate book.
+    // This lets the user record an actual IF/spread at a center the scanner did
+    // not track, while still re-evaluating those exact live legs through the
+    // execution engine and requiring an explicit override when it is not cleared.
     const legs = draftLegs.map((leg) => ({
       optionType: leg.optionType,
       action: leg.action,
@@ -159,13 +176,20 @@ export function ExecutionTradeDock({
         sellableCredit: null,
         buybackDebit: null,
         shortDeltaAbs: null,
-        spreadMode: candidate.spreadMode ?? null,
+        spreadMode: candidate?.spreadMode ?? null,
         maxRiskDollars: calculateMaxRisk(selectedStrategy, legs, credit),
-        mapPhase: candidate.mapPhase,
-        mapCenter: candidate.mapCenter,
-        railBreached: candidate.railBreached,
+        mapPhase: candidate?.mapPhase ?? read?.mapPhase ?? "OPENING",
+        mapCenter:
+          candidate?.mapCenter ??
+          read?.mapCenter ??
+          legs.find((leg) => leg.action === "sell")?.strike ??
+          legs[0]?.strike ??
+          0,
+        railBreached: candidate?.railBreached ?? read?.railBreached ?? "NONE",
         reasons: [
-          "Manual execution legs entered in the WheelDesk Portfolio Dock and independently re-evaluated by the execution engine.",
+          candidate
+            ? "Manual execution legs entered in the WheelDesk Portfolio Dock and independently re-evaluated by the execution engine."
+            : "Manual execution legs entered without a tracked engine center; exact live legs are independently re-evaluated by the execution engine.",
         ],
         blockers: [],
       },
@@ -401,7 +425,14 @@ export function ExecutionTradeDock({
             </button>
             <button
               type="button"
-              onClick={() => setSetupMode("manual")}
+              onClick={() => {
+                setDraftLegs(
+                  candidate
+                    ? candidate.legs.map((leg) => ({ ...leg, strike: leg.strike.toFixed(0) }))
+                    : defaultDraftLegs(selectedStrategy),
+                );
+                setSetupMode("manual");
+              }}
               style={{
                 ...styles.modeButton,
                 ...(setupMode === "manual" ? styles.modeButtonActive : {}),
@@ -443,7 +474,11 @@ export function ExecutionTradeDock({
               ))}
             </div>
           ) : (
-            <div style={styles.empty}>No executable tracked legs for this strategy.</div>
+            <div style={styles.empty}>
+              {setupMode === "manual"
+                ? "Enter the exact broker legs. A tracked engine center is not required."
+                : "No executable tracked legs for this strategy. Manual Legs remains available."}
+            </div>
           )}
 
           <div style={styles.twoColumn}>
@@ -795,6 +830,27 @@ function DockMetric({ label, value }: { label: string; value: string }) {
       <strong>{value}</strong>
     </div>
   );
+}
+
+function defaultDraftLegs(strategy: ExecutionStrategy): DraftLeg[] {
+  if (strategy === "put-credit-spread") {
+    return [
+      { action: "sell", optionType: "put", strike: "" },
+      { action: "buy", optionType: "put", strike: "" },
+    ];
+  }
+  if (strategy === "call-credit-spread") {
+    return [
+      { action: "sell", optionType: "call", strike: "" },
+      { action: "buy", optionType: "call", strike: "" },
+    ];
+  }
+  return [
+    { action: "buy", optionType: "put", strike: "" },
+    { action: "sell", optionType: "put", strike: "" },
+    { action: "sell", optionType: "call", strike: "" },
+    { action: "buy", optionType: "call", strike: "" },
+  ];
 }
 
 function validateLegs(strategy: ExecutionStrategy, legs: ExecutionLeg[]) {
