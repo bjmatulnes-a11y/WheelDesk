@@ -1623,24 +1623,32 @@ function buildExitRead(args: {
   );
   if (terminalThreat) warnings.push("Late-session gamma risk is elevated because spot is approaching the short strike.");
 
-  const profitComponent = clamp((capturedPct / 40) * 58, 0, 58);
+  // BUY management is profit-led. Structural/path reads remain advisory inputs,
+  // but they are not allowed to manufacture repeated small-loss exits.
+  const profitComponent = clamp((capturedPct / 50) * 70, 0, 70);
+  const currentProfitDollars =
+    managementDebit === null
+      ? 0
+      : Math.max(0, position.entryCredit - managementDebit) * 100 * Math.max(1, position.quantity);
+  const dollarProfitComponent = clamp((currentProfitDollars / 500) * 15, 0, 15);
   const velocityComponent =
     premiumVelocityPerMinute === null
       ? 0
-      : clamp(-premiumVelocityPerMinute * 35, 0, 14);
-  const timeComponent = clamp((ageMinutes / 45) * 10, 0, 10);
-  const rotationComponent = strategyRotated ? 10 : 0;
-  const invalidationComponent = hardThreat
-    ? 25
-    : confirmedStructuralFailure
-      ? 18
-      : mapFailure || wallFailure
-        ? 8
-        : pathThreat
-          ? 7
-          : 0;
+      : clamp(-premiumVelocityPerMinute * 25, 0, 8);
+  const timeComponent = clamp((ageMinutes / 60) * 4, 0, 4);
+  const rotationComponent = strategyRotated && capturedPct > 0 ? 4 : 0;
+  const invalidationComponent = capturedPct > 0
+    ? hardThreat
+      ? 6
+      : confirmedStructuralFailure
+        ? 4
+        : mapFailure || wallFailure || pathThreat
+          ? 2
+          : 0
+    : 0;
   let exitScore = clamp(
     profitComponent +
+      dollarProfitComponent +
       velocityComponent +
       timeComponent +
       rotationComponent +
@@ -1649,32 +1657,19 @@ function buildExitRead(args: {
     100,
   );
 
-  // Keep capture scoring continuous; avoid 35%/50% one-cent cliffs.
-  if (capturedPct >= 50) reasons.push("At least half of the entry premium has been harvested.");
-  if (terminalThreat && position.strategy !== "iron-fly") {
-    exitScore = Math.max(exitScore, 88);
+  if (currentProfitDollars >= 250) {
+    reasons.push(`Open profit is $${currentProfitDollars.toFixed(0)}; profit preservation now carries additional BUY weight.`);
+  }
+  if (capturedPct >= 50) {
+    reasons.push("At least half of the entry premium has been harvested — take-profit gate is active.");
+    exitScore = 100;
   }
 
-  // A stretched IF is intentionally opened with one sold option possibly ITM.
-  // A fixed +35% debit can also occur during the normal path before reversion.
-  // For IF, emergency invalidation is therefore structural migration / near-max
-  // defined loss, not the fact that its center strike is ITM.
-  const nearMaxDefinedLoss =
-    position.maxRiskDollars !== null &&
-    managementDebit !== null &&
-    (managementDebit - position.entryCredit) * 100 >=
-      position.maxRiskDollars * 0.80;
-
-  const emergencyExit = Boolean(
-    (position.strategy !== "iron-fly" && shortItm) ||
-      hardThreat ||
-      (confirmedStructuralFailure && terminalThreat) ||
-      (position.strategy !== "iron-fly" && adversePct >= 35) ||
-      nearMaxDefinedLoss,
-  );
-  if (emergencyExit) {
-    exitScore = 100;
-    warnings.push("Emergency exit gate is active.");
+  // No automatic emergency liquidation from strike touch, map wobble, LRP threat,
+  // or a small adverse debit move. Those remain warnings for the trader.
+  const emergencyExit = false;
+  if (shortItm && position.strategy !== "iron-fly") {
+    warnings.push("Short strike is at/through spot, but this is advisory only; no small-loss emergency exit is generated.");
   }
 
   return {
@@ -1687,35 +1682,42 @@ function buildExitRead(args: {
         key: "capture",
         label: "Premium captured",
         value: profitComponent,
-        max: 58,
+        max: 70,
         reason: `${capturedPct.toFixed(1)}% captured`,
+      },
+      {
+        key: "profit-dollars",
+        label: "Open profit",
+        value: dollarProfitComponent,
+        max: 15,
+        reason: `$${currentProfitDollars.toFixed(0)} open profit`,
       },
       {
         key: "velocity",
         label: "Debit contraction",
         value: velocityComponent,
-        max: 14,
+        max: 8,
         reason: `${premiumVelocityPerMinute?.toFixed(3) ?? "—"} credit/min`,
       },
       {
         key: "time",
         label: "Time in trade",
         value: timeComponent,
-        max: 10,
+        max: 4,
         reason: `${Math.round(ageMinutes)} minutes open`,
       },
       {
         key: "rotation",
         label: "Strategy rotation",
         value: rotationComponent,
-        max: 10,
+        max: 4,
         reason: strategyRotated ? "A different strategy now leads" : "Original strategy still leads",
       },
       {
         key: "invalidation",
         label: "Map / wall invalidation",
         value: invalidationComponent,
-        max: 25,
+        max: 6,
         reason: hardThreat
           ? "Hard short-strike / rail threat"
           : confirmedStructuralFailure

@@ -63,6 +63,7 @@ async function openShadow(body: any, userId: string) {
     short_distance_points: numeric(body.shortDistancePoints),
     entry_mark_credit: numeric(body.entryMarkCredit),
     entry_sellable_credit: entryCredit,
+    entry_short_legs: Array.isArray(body.entryShortLegs) ? body.entryShortLegs : [],
     signal_peak_credit: numeric(body.signalPeakCredit),
     premium_expansion_pct: numeric(body.premiumExpansionPct),
     premium_rollover_pct: numeric(body.premiumRolloverPct),
@@ -154,6 +155,8 @@ async function sampleShadowBatch(body: any, userId: string) {
     const markCredit = numeric(item.markCredit);
     const sellableCredit = numeric(item.sellableCredit);
     const buybackDebit = numeric(item.buybackDebit);
+    const currentShortBuybackPrice = numeric(item.currentShortBuybackPrice);
+    const currentShortLegMultiple = numeric(item.currentShortLegMultiple);
     const entryCredit = numeric(row.entry_sellable_credit) ?? 0;
     const width = numeric(row.width_points);
     const shortStrike = shortStrikeFromLegs(row.legs);
@@ -179,6 +182,8 @@ async function sampleShadowBatch(body: any, userId: string) {
       mark_credit: markCredit,
       sellable_credit: sellableCredit,
       buyback_debit: buybackDebit,
+      current_short_buyback_price: currentShortBuybackPrice,
+      current_short_leg_multiple: currentShortLegMultiple,
       pnl_conservative_dollars:
         buybackDebit === null ? null : (entryCredit - buybackDebit) * 100,
       short_distance_points: numeric(item.shortDistancePoints),
@@ -201,6 +206,8 @@ async function sampleShadowBatch(body: any, userId: string) {
       last_sample_at: generatedAt,
       current_mark_credit: markCredit,
       current_buyback_debit: buybackDebit,
+      current_short_buyback_price: currentShortBuybackPrice,
+      current_short_leg_multiple: currentShortLegMultiple,
       max_mark_credit:
         markCredit === null
           ? numeric(row.max_mark_credit)
@@ -313,6 +320,7 @@ function mapShadowTrade(row: any) {
     shortDistancePoints: numeric(row.short_distance_points),
     entryMarkCredit: numeric(row.entry_mark_credit),
     entrySellableCredit: Number(row.entry_sellable_credit ?? 0),
+    entryShortLegs: Array.isArray(row.entry_short_legs) ? row.entry_short_legs : [],
     signalPeakCredit: numeric(row.signal_peak_credit),
     premiumExpansionPct: numeric(row.premium_expansion_pct),
     premiumRolloverPct: numeric(row.premium_rollover_pct),
@@ -346,6 +354,8 @@ function mapShadowTrade(row: any) {
     lastSampleAt: row.last_sample_at ?? null,
     currentMarkCredit: numeric(row.current_mark_credit),
     currentBuybackDebit: numeric(row.current_buyback_debit),
+    currentShortBuybackPrice: numeric(row.current_short_buyback_price),
+    currentShortLegMultiple: numeric(row.current_short_leg_multiple),
     maxMarkCredit: numeric(row.max_mark_credit),
     minBuybackDebit: numeric(row.min_buyback_debit),
     maxAdverseExcursionDollars: Number(row.max_adverse_excursion_dollars ?? 0),

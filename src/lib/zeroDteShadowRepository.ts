@@ -1,7 +1,8 @@
 import type { ConfirmedExecutionSignal } from "./execution/useExecutionSignalPaint";
 import type { ZeroDteExecutionRead } from "./zeroDteExecutionIntelligence";
 import type { ZeroDteShadowTrade } from "./zeroDteShadowTrade";
-import { shadowWidthPoints } from "./zeroDteShadowTrade";
+import { buildShadowShortLegEntries, shadowWidthPoints } from "./zeroDteShadowTrade";
+import type { ZeroDteChainRow } from "./zeroDteOiIntelligence";
 import { getSupabaseAuthClient } from "./auth/supabase-auth-client";
 
 async function authHeaders(includeJson = false) {
@@ -45,6 +46,7 @@ export async function loadZeroDteShadowTrades(
 
 export async function openZeroDteShadowTrade(args: {
   signal: ConfirmedExecutionSignal;
+  spxRows: ZeroDteChainRow[];
 }) {
   const signal = args.signal;
   if (
@@ -58,6 +60,7 @@ export async function openZeroDteShadowTrade(args: {
     return null;
   }
 
+  const entryShortLegs = buildShadowShortLegEntries(args.spxRows, signal.legs);
   const json = await call({
     action: "open",
     tradeDate: signal.tradeDate,
@@ -75,6 +78,7 @@ export async function openZeroDteShadowTrade(args: {
     shortDistancePoints: signal.shortDistancePoints,
     entryMarkCredit: signal.markCredit,
     entrySellableCredit: signal.sellableCredit,
+    entryShortLegs,
     signalPeakCredit: signal.peakCreditAtSignal,
     premiumExpansionPct: signal.premiumExpansionPct,
     premiumRolloverPct: signal.premiumRolloverPct,
@@ -101,13 +105,18 @@ export async function sampleZeroDteShadowTrades(args: {
   tradeDate: string;
   generatedAt: string;
   spot: number;
-  items: Array<{ tradeId: string; read: ZeroDteExecutionRead }>;
+  items: Array<{
+    tradeId: string;
+    read: ZeroDteExecutionRead;
+    currentShortBuybackPrice: number | null;
+    currentShortLegMultiple: number | null;
+  }>;
 }) {
   if (!args.items.length) return [] as ZeroDteShadowTrade[];
   const json = await call({
     action: "sample-batch",
     ...args,
-    items: args.items.map(({ tradeId, read }) => ({
+    items: args.items.map(({ tradeId, read, currentShortBuybackPrice, currentShortLegMultiple }) => ({
       tradeId,
       strategy: read.position?.strategy ?? read.strategy,
       lifecycle: read.lifecycle,
@@ -116,6 +125,8 @@ export async function sampleZeroDteShadowTrades(args: {
       markCredit: read.currentCredit,
       sellableCredit: read.currentSellableCredit,
       buybackDebit: read.currentBuybackDebit,
+      currentShortBuybackPrice,
+      currentShortLegMultiple,
       shortDistancePoints: read.position
         ? shortDistanceForPosition(read, args.spot)
         : read.shortDistancePoints,

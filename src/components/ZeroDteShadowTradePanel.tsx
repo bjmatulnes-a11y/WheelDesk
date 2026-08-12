@@ -62,8 +62,9 @@ export function ZeroDteShadowTradePanel({
 
       <div style={styles.note}>
         Every confirmed SELL_READY signal is paper-entered at conservative
-        sellable credit and managed by the same exit engine. Short-touch and
-        1.5×/2× debit events are measured, not used as automatic stops.
+        sellable credit. Shadow exits are deterministic: 50% premium take-profit,
+        3× short-leg premium stop, or large-profit giveback protection. Map/LRP
+        warnings remain advisory and do not create small-loss emergency exits.
       </div>
 
       {error ? <div style={styles.error}>{error}</div> : null}
@@ -102,6 +103,9 @@ export function ZeroDteShadowTradePanel({
                   <span style={styles.muted}>
                     MAE {money(trade.maxAdverseExcursionDollars)} · MFE{" "}
                     {money(trade.maxFavorableExcursionDollars)}
+                  </span>
+                  <span style={styles.muted}>
+                    TP debit ≤ {credit(trade.entrySellableCredit * 0.5)} · short {trade.currentShortLegMultiple == null ? "—" : `${trade.currentShortLegMultiple.toFixed(2)}× / 3.00×`}
                   </span>
                 </div>
               </div>
@@ -145,6 +149,11 @@ function formatLegs(legs: ZeroDteShadowTrade["legs"]) {
         `${leg.action === "sell" ? "S" : "B"}${leg.strike.toFixed(0)}${leg.optionType === "call" ? "C" : "P"}`,
     )
     .join(" · ");
+}
+
+function credit(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return `$${value.toFixed(2)}`;
 }
 
 function money(value: number | null | undefined) {

@@ -81,6 +81,8 @@ import {
   sampleZeroDteShadowTrades,
 } from "../lib/zeroDteShadowRepository";
 import {
+  currentShadowShortLegRead,
+  evaluateZeroDteShadowExit,
   shadowTradeToExecutionPosition,
   type ZeroDteShadowTrade,
 } from "../lib/zeroDteShadowTrade";
@@ -1579,6 +1581,7 @@ export default function SpxCommandChart() {
       pending.map((signal) =>
         openZeroDteShadowTrade({
           signal,
+          spxRows,
         }),
       ),
     )
@@ -1602,7 +1605,7 @@ export default function SpxCommandChart() {
             : "Shadow trade creation failed.",
         );
       });
-  }, [shadowTrades, signalPaint.signals]);
+  }, [shadowTrades, signalPaint.signals, spxRows]);
 
   useEffect(() => {
     if (
@@ -1621,7 +1624,9 @@ export default function SpxCommandChart() {
     const openItems = shadowTrades.flatMap((trade) => {
       if (trade.state !== "open") return [];
       const read = shadowExecutionReads[trade.id];
-      return read ? [{ tradeId: trade.id, read }] : [];
+      if (!read) return [];
+      const shortRead = currentShadowShortLegRead(spxRows, trade.entryShortLegs);
+      return [{ tradeId: trade.id, read, ...shortRead }];
     });
     if (!openItems.length) return;
 
@@ -1640,26 +1645,28 @@ export default function SpxCommandChart() {
           });
         }
 
-        const exits = openItems.filter(({ read }) =>
-          read.lifecycle === "BUYBACK_READY" ||
-          read.emergencyExit ||
-          read.timeRegime.regime === "CLOSED"
-        );
+        const updatedById = new Map(updated.map((trade) => [trade.id, trade]));
+        const exits = openItems.flatMap(({ tradeId, read }) => {
+          const sampledTrade = updatedById.get(tradeId);
+          if (!sampledTrade) return [];
+          if (read.timeRegime.regime === "CLOSED") {
+            return [{ tradeId, read, reason: "SESSION_CLOSE" }];
+          }
+          const decision = evaluateZeroDteShadowExit(sampledTrade);
+          return decision.shouldExit && decision.reason
+            ? [{ tradeId, read, reason: decision.reason }]
+            : [];
+        });
         if (!exits.length) return;
 
         const closed = await Promise.all(
-          exits.map(({ tradeId, read }) =>
+          exits.map(({ tradeId, read, reason }) =>
             closeZeroDteShadowTrade({
               tradeId,
               tradeDate: harvest.tradeDate,
               generatedAt: harvest.generatedAt,
               read,
-              reason:
-                read.timeRegime.regime === "CLOSED"
-                  ? "SESSION_CLOSE"
-                  : read.emergencyExit
-                    ? "EMERGENCY_EXIT"
-                    : "EXIT_ENGINE",
+              reason,
             }),
           ),
         );
@@ -1688,6 +1695,7 @@ export default function SpxCommandChart() {
     recommendation,
     shadowExecutionReads,
     shadowTrades,
+    spxRows,
   ]);
 
   const visibleExecutionSignals = useMemo(() => {
