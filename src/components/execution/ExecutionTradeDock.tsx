@@ -268,6 +268,7 @@ export function ExecutionTradeDock({
       : null;
   const overrideValid =
     overrideEnabled && overrideReason.trim().length >= 4;
+  const isManualActualPosition = setupMode === "manual";
   const canOpen =
     !readOnly &&
     !entryLocked &&
@@ -275,7 +276,7 @@ export function ExecutionTradeDock({
     ticket.candidate !== null &&
     parsedEntryCredit !== null &&
     parsedEntryCredit > 0 &&
-    (engineCleared || overrideValid);
+    (isManualActualPosition || engineCleared || overrideValid);
 
   return (
     <div style={styles.card}>
@@ -595,14 +596,21 @@ export function ExecutionTradeDock({
             <div style={styles.error}>{contribution.blockers.join(" ")}</div>
           ) : null}
 
-          {!readOnly && !entryLocked && !engineCleared ? (
+          {!readOnly && !entryLocked && !engineCleared && !isManualActualPosition ? (
             <div style={styles.warning}>
               Engine approval requires SELL READY with no hard blocker. To record
               a broker fill anyway, explicitly enable a manual override below.
             </div>
           ) : null}
 
-          {!readOnly && !entryLocked && !engineCleared ? (
+          {isManualActualPosition ? (
+            <div style={styles.warning}>
+              Manual Actual Position: WheelDesk will record and manage these exact legs
+              even when the scanner has no tracked candidate. Engine entry approval is informational only.
+            </div>
+          ) : null}
+
+          {!readOnly && !entryLocked && !engineCleared && !isManualActualPosition ? (
             <div style={styles.overrideBox}>
               <label style={styles.overrideCheck}>
                 <input
@@ -641,8 +649,12 @@ export function ExecutionTradeDock({
                 entryCredit: parsedEntryCredit,
                 quantity: parsedQuantity,
                 setupSource: setupMode === "manual" ? "manual" : "engine",
-                engineClearedAtEntry: engineCleared,
-                overrideReason: engineCleared ? null : overrideReason.trim(),
+                engineClearedAtEntry: isManualActualPosition ? false : engineCleared,
+                overrideReason: isManualActualPosition
+                  ? "Manual actual position"
+                  : engineCleared
+                    ? null
+                    : overrideReason.trim(),
               });
             }}
             style={{ ...styles.openButton, opacity: canOpen ? 1 : 0.45 }}

@@ -39,6 +39,7 @@ import {
   closeExecutionPositionDb,
   loadExecutionMemoryDb,
   openExecutionPositionDb,
+  openManualExecutionPositionDb,
   persistExecutionSample,
   persistExecutionSamples,
 } from "../lib/zeroDteExecutionRepository";
@@ -2135,23 +2136,68 @@ export default function SpxCommandChart() {
                 );
                 return;
               }
+              if (!harvest?.tradeDate || !harvest.spx?.expirationDate || !executionMemory) {
+                setExecutionDbError(
+                  "Live execution persistence is still initializing. Try the entry again after the next refresh.",
+                );
+                return;
+              }
               if (
-                !harvest?.tradeDate ||
-                !harvest.spx?.expirationDate ||
-                !recommendation ||
-                !openingMap ||
-                !mapAwareTradeSelection ||
-                !mapManager.state ||
-                !executionMemory
+                setupSource !== "manual" &&
+                (!recommendation ||
+                  !openingMap ||
+                  !mapAwareTradeSelection ||
+                  !mapManager.state)
               ) {
                 setExecutionDbError(
-                  "Live session context is still building. Try the entry again after the next refresh.",
+                  "Live session context is still building. Try the engine entry again after the next refresh.",
                 );
                 return;
               }
 
               setExecutionBusy(true);
               try {
+                if (setupSource === "manual") {
+                  if (!executionMemory?.tradeDayId) {
+                    throw new Error(
+                      "The execution trade day is not initialized yet. Wait for one normal execution sample, then track the manual position.",
+                    );
+                  }
+
+                  const memory = await openManualExecutionPositionDb({
+                    tradeDate: harvest.tradeDate,
+                    entryTime: new Date().toISOString(),
+                    entryCredit,
+                    contracts: quantity,
+                    candidate,
+                    overrideReason: overrideReason ?? "Manual actual position",
+                    entryMarkCredit: null,
+                    entrySellableCredit: null,
+                    entryShortDeltaAbs: null,
+                    entryTouchRiskProxyPct: null,
+                    entryRangeConsumptionPct: volContext?.rangeConsumptionPct ?? null,
+                    entryEventRisk: riskPolicy.eventRisk,
+                  });
+                  setExecutionMemory(memory);
+                  setSelectedExecutionStrategy(candidate.strategy);
+                  setExecutionDbError(null);
+                  return;
+                }
+
+                // From this point forward we are on the engine-entry path.
+                // Re-assert the engine-only context so TypeScript can narrow
+                // these values after the manual branch returns.
+                if (
+                  !recommendation ||
+                  !openingMap ||
+                  !mapAwareTradeSelection ||
+                  !mapManager.state
+                ) {
+                  throw new Error(
+                    "Live session context is still building. Try the engine entry again after the next refresh.",
+                  );
+                }
+
                 const openCandidates = {
                   ...executionCandidates,
                   [candidate.strategy]: candidate,
@@ -2177,10 +2223,7 @@ export default function SpxCommandChart() {
                   memory: executionMemory,
                   candidateOverride: candidate,
                   positionOverride: null,
-                  tracking:
-                    setupSource === "manual"
-                      ? null
-                      : stableCandidateTracker.tracks[candidate.strategy],
+                  tracking: stableCandidateTracker.tracks[candidate.strategy],
                   portfolio: openPortfolio,
                   priceAction,
                   premiumTape: premiumTape.points,

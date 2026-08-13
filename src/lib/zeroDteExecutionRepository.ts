@@ -109,6 +109,29 @@ export async function openExecutionPositionDb(args: {
   });
 }
 
+
+export async function openManualExecutionPositionDb(args: {
+  tradeDate: string;
+  entryTime: string;
+  entryCredit: number;
+  contracts: number;
+  candidate: ExecutionCandidate;
+  overrideReason?: string | null;
+  entryMarkCredit?: number | null;
+  entrySellableCredit?: number | null;
+  entryShortDeltaAbs?: number | null;
+  entryTouchRiskProxyPct?: number | null;
+  entryRangeConsumptionPct?: number | null;
+  entryEventRisk?: "NORMAL" | "HIGH" | null;
+}): Promise<ZeroDteExecutionMemory> {
+  return call({
+    action: "manual-open",
+    ...args,
+    setupSource: "manual",
+    engineClearedAtEntry: false,
+  });
+}
+
 export async function closeExecutionPositionDb(args: {
   tradeDate: string;
   positionId: string;

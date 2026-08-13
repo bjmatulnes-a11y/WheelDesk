@@ -496,12 +496,13 @@ export async function POST(request: NextRequest) {
       return err("Opening trade day has not been persisted yet", 409);
     }
 
-    if (body.action === "open") {
+    if (body.action === "open" || body.action === "manual-open") {
+      const manualOpen = body.action === "manual-open";
       if (memory.positions.length >= 8) {
         return err("The 0DTE portfolio already has the maximum of eight open positions", 409);
       }
       const candidate = body.candidate;
-      if (!candidate) return err("Missing execution candidate", 400);
+      if (!candidate) return err(manualOpen ? "Missing manual position legs" : "Missing execution candidate", 400);
       const entryCredit = numeric(body.entryCredit);
       if (entryCredit === null || entryCredit <= 0) {
         return err("Invalid entry credit", 400);
@@ -539,10 +540,14 @@ export async function POST(request: NextRequest) {
           entry_rail_breached: candidate.railBreached,
           entry_reasons: candidate.reasons ?? [],
           entry_time_regime: body.read?.timeRegime?.regime ?? null,
-          setup_source: body.setupSource === "manual" ? "manual" : "engine",
-          engine_cleared_at_entry: Boolean(body.engineClearedAtEntry),
+          setup_source: manualOpen || body.setupSource === "manual" ? "manual" : "engine",
+          engine_cleared_at_entry: manualOpen ? false : Boolean(body.engineClearedAtEntry),
           override_reason:
-            body.engineClearedAtEntry ? null : body.overrideReason ?? null,
+            manualOpen
+              ? body.overrideReason ?? "Manual actual position"
+              : body.engineClearedAtEntry
+                ? null
+                : body.overrideReason ?? null,
           signal_time: body.signalTime ?? null,
           signal_credit: numeric(body.signalCredit),
           entry_mark_credit: numeric(body.entryMarkCredit),
