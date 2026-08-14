@@ -97,7 +97,7 @@ export function ZeroDteShadowTradePanel({
                     }}
                   >
                     {trade.state === "open"
-                      ? `OPEN · ${money(trade.currentBuybackDebit)}`
+                      ? `OPEN · ${credit(trade.currentBuybackDebit)}`
                       : money(trade.pnlConservativeDollars)}
                   </strong>
                   <span style={styles.muted}>
