@@ -105,7 +105,7 @@ export function ZeroDteShadowTradePanel({
                     {money(trade.maxFavorableExcursionDollars)}
                   </span>
                   <span style={styles.muted}>
-                    TP debit ≤ {credit(trade.entrySellableCredit * 0.5)} · short {trade.currentShortLegMultiple == null ? "—" : `${trade.currentShortLegMultiple.toFixed(2)}× / 3.00×`}
+                    Open {credit(trade.entrySellableCredit)} · TP debit ≤ {credit(trade.entrySellableCredit * 0.5)} · short {trade.currentShortLegMultiple == null ? "—" : `${trade.currentShortLegMultiple.toFixed(2)}× / 3.00×`}
                   </span>
                 </div>
               </div>
