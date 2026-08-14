@@ -20,7 +20,10 @@ type TapeStore = {
 
 const PREFIX = "wheeldesk:execution-premium-tape:v2:";
 const MAX_POINTS = 15_000;
-const HEARTBEAT_MS = 30_000;
+// Three quiet-market observations per minute makes the completed-minute
+// premium bar resilient to one delayed/missed refresh without manufacturing
+// high-frequency noise.
+const HEARTBEAT_MS = 20_000;
 const MIN_CREDIT_CHANGE = 0.005;
 
 export function useExecutionPremiumTape(args: {

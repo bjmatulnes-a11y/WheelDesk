@@ -290,10 +290,20 @@ function ScannerRejectionDiagnostics({ spread }: { spread: ZeroDteCreditSpreadSe
   const f = d.filters;
   return (
     <div style={styles.diagnosticBox}>
-      <div style={styles.diagnosticTitle}>Filter diagnostics · {d.tested} combinations tested · {d.accepted} passed</div>
-      <div style={styles.diagnosticPolicy}>
-        Policy: {f.minWidth}–{f.maxWidth} wide · max risk {f.maxRiskDollars == null ? "OFF" : `$${Math.round(f.maxRiskDollars)}`} · min sellable ${f.minCredit.toFixed(2)} · C/R ≥ {(f.minCreditToRiskPct*100).toFixed(0)}% · Δ ≤ {f.shortDeltaMax.toFixed(2)} · abs ≥ {f.minAbsoluteDistancePoints.toFixed(1)} pts · EM ≥ {(f.minDistancePctOfExpectedMove*100).toFixed(0)}%
+      <div style={styles.diagnosticTitle}>
+        Filter diagnostics · {d.tested} combinations tested · {d.trendAccepted} standard · {d.exhaustionAccepted} exhaustion watch
       </div>
+      <div style={styles.diagnosticPolicy}>
+        Standard: {f.minWidth}–{f.maxWidth} wide · max risk {f.maxRiskDollars == null ? "OFF" : `$${Math.round(f.maxRiskDollars)}`} · min sellable ${f.minCredit.toFixed(2)} · C/R ≥ {(f.minCreditToRiskPct*100).toFixed(0)}% · Δ ≤ {f.shortDeltaMax.toFixed(2)} · abs ≥ {f.minAbsoluteDistancePoints.toFixed(1)} pts · EM ≥ {(f.minDistancePctOfExpectedMove*100).toFixed(0)}%
+      </div>
+      <div style={styles.diagnosticPolicy}>
+        Exhaustion watch: Δ ≤ {f.exhaustionWatchShortDeltaMax.toFixed(2)} · abs ≥ {f.exhaustionWatchMinAbsoluteDistancePoints.toFixed(1)} pts · EM ≥ {(f.exhaustionWatchMinDistancePctOfExpectedMove*100).toFixed(0)}% · all credit/risk/quote gates remain hard
+      </div>
+      {d.exhaustionAccepted > 0 ? (
+        <div style={styles.diagnosticPolicy}>
+          Watch relaxations: {d.exhaustionRelaxations.aboveDeltaLimit} delta · {d.exhaustionRelaxations.insideExpectedMoveDistance} EM distance · {d.exhaustionRelaxations.insideAbsoluteDistance} absolute distance
+        </div>
+      ) : null}
       <div style={styles.diagnosticGrid}>
         {top.map(([reason,count]) => <div key={reason} style={styles.diagnosticChip}><strong>{count}</strong><span>{labels[reason] ?? reason}</span></div>)}
       </div>
@@ -333,6 +343,7 @@ function CandidateTable({
               <th style={styles.th}>Score</th>
               <th style={styles.th}>EM</th>
               <th style={styles.th}>Δ</th>
+              <th style={styles.th}>Mode</th>
               <th style={styles.th}>State</th>
             </tr>
           </thead>
@@ -361,6 +372,7 @@ function CandidateTable({
                   <td style={styles.td}>{candidate.score}</td>
                   <td style={styles.td}>{Math.round(candidate.distanceAsExpectedMovePct * 100)}%</td>
                   <td style={styles.td}>{candidate.shortDeltaAbs == null ? "—" : candidate.shortDeltaAbs.toFixed(2)}</td>
+                  <td style={styles.td}>{candidate.thesis === "exhaustion-fade" ? "EXHAUSTION" : "STANDARD"}</td>
                   <td style={styles.tdState}>{state}</td>
                 </tr>
               );

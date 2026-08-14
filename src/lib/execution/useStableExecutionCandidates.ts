@@ -28,10 +28,12 @@ const STRATEGIES: ExecutionStrategy[] = [
   "put-credit-spread",
   "call-credit-spread",
 ];
-// Premium exhaustion needs three completed minute bars before its baseline is
-// trusted. Do not routinely rotate an unfilled spread before that diagnostic
-// window has had time to exist. Structural invalidation still replaces at once.
-const MIN_ROUTINE_SIGNAL_DEVELOPMENT_CANDLES = 3;
+// Premium exhaustion needs three VALID completed minute bars, not merely three
+// elapsed candles. A quiet minute can fail the observation-count requirement,
+// so routine scanner rotation is held for five closes. Structural invalidation
+// still replaces immediately. This gives the premium diagnostic time to finish
+// without trapping a broken setup indefinitely.
+const MIN_ROUTINE_SIGNAL_DEVELOPMENT_CANDLES = 5;
 
 export function useStableExecutionCandidates(args: {
   tradeDate: string | null | undefined;

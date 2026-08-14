@@ -26,6 +26,13 @@ export type CreditSpreadRejectionReason =
 export type CreditSpreadRejectionDiagnostics = {
   tested: number;
   accepted: number;
+  trendAccepted: number;
+  exhaustionAccepted: number;
+  exhaustionRelaxations: {
+    insideAbsoluteDistance: number;
+    insideExpectedMoveDistance: number;
+    aboveDeltaLimit: number;
+  };
   rejected: Record<CreditSpreadRejectionReason, number>;
   filters: {
     maxRiskDollars: number | null;
@@ -34,6 +41,9 @@ export type CreditSpreadRejectionDiagnostics = {
     minDistancePctOfExpectedMove: number;
     minAbsoluteDistancePoints: number;
     shortDeltaMax: number;
+    exhaustionWatchMinDistancePctOfExpectedMove: number;
+    exhaustionWatchShortDeltaMax: number;
+    exhaustionWatchMinAbsoluteDistancePoints: number;
     minWidth: number;
     maxWidth: number;
   };
@@ -461,38 +471,53 @@ function scoreCandidate(args: {
   const breakeven = side === "put" ? row.strike - sellableCredit : row.strike + sellableCredit;
   const shortDeltaAbs = cleanAbs(shortRow.delta);
 
-  // 6J: directional pressure on the same side as the excursion is treated as
-  // potential PREMIUM INFLATION, not automatic disqualification.  These are
-  // only candidate-discovery relaxations: SELL_READY still requires the
-  // completed 1-minute premium crest + price rejection and all defined-risk
-  // economics above remain hard.
-  const fadeCandidateMode =
+  // Candidate discovery has two populations:
+  //   1) TREND candidates that satisfy the normal placement preferences.
+  //   2) EXHAUSTION candidates that preserve good defined-risk economics but
+  //      may sit modestly inside the preferred EM/delta geometry so the premium
+  //      crest engine can actually observe the excursion.
+  //
+  // The second population is TRACKING ONLY. It does not waive SELL_READY:
+  // execution still requires the correct side of the controlling center,
+  // premium expansion/rollover, completed price rejection, score, and all
+  // hard risk/data-integrity gates.
+  const directionalFadeMode =
     (side === "put" && dealerPressure <= -20) ||
     (side === "call" && dealerPressure >= 20);
   const richFadeGeometry =
     creditToWidthPct >= 0.20 || creditToRiskPct >= 0.35;
+  const directionalRichFade = directionalFadeMode && richFadeGeometry;
 
-  if (
-    distanceFromSpot < minAbsoluteDistancePoints &&
-    !(fadeCandidateMode && richFadeGeometry)
-  ) {
+  // Missing delta remains a hard data-quality failure.
+  if (shortDeltaAbs === null) return rejectCandidate(rejectionDiagnostics, "missing_delta");
+
+  const standardAbsoluteOk = distanceFromSpot >= minAbsoluteDistancePoints;
+  const standardExpectedMoveOk = distanceAsExpectedMovePct >= minPct;
+  const standardDeltaOk = shortDeltaAbs <= shortDeltaMax;
+  const standardPlacementOk =
+    standardAbsoluteOk && standardExpectedMoveOk && standardDeltaOk;
+
+  // The watch band is intentionally modest rather than unlimited. It exists to
+  // prevent the selector from deleting a potentially rich exhaustion setup
+  // before the crest/rejection engines have a chance to judge it.
+  const watchMinPct = exhaustionWatchMinPct(minPct);
+  const watchDeltaMax = exhaustionWatchDeltaMax(shortDeltaMax);
+  const watchAbsoluteFloor = exhaustionWatchAbsoluteFloor(minAbsoluteDistancePoints);
+  const watchPlacementOk =
+    distanceFromSpot >= watchAbsoluteFloor &&
+    distanceAsExpectedMovePct >= watchMinPct &&
+    shortDeltaAbs <= watchDeltaMax;
+  const exhaustionWatchMode =
+    !standardPlacementOk && !directionalRichFade && watchPlacementOk;
+  const trackingFadeMode = directionalRichFade || exhaustionWatchMode;
+
+  if (!standardAbsoluteOk && !trackingFadeMode) {
     return rejectCandidate(rejectionDiagnostics, "inside_absolute_distance");
   }
-  if (
-    distanceAsExpectedMovePct < minPct &&
-    !(fadeCandidateMode && richFadeGeometry)
-  ) {
+  if (!standardExpectedMoveOk && !trackingFadeMode) {
     return rejectCandidate(rejectionDiagnostics, "inside_expected_move_distance");
   }
-
-  // Missing delta remains a hard data-quality failure.  A high delta is
-  // allowed into the TRACKING population only for a rich exhaustion candidate;
-  // it is not treated as POP and no entry can occur without crest confirmation.
-  if (shortDeltaAbs === null) return rejectCandidate(rejectionDiagnostics, "missing_delta");
-  if (
-    shortDeltaAbs > shortDeltaMax &&
-    !(fadeCandidateMode && richFadeGeometry)
-  ) {
+  if (!standardDeltaOk && !trackingFadeMode) {
     return rejectCandidate(rejectionDiagnostics, "above_delta_limit");
   }
 
@@ -502,11 +527,11 @@ function scoreCandidate(args: {
   const oiScore = clamp((sideOi / oiMagnitude) * 55 + (totalOi / oiMagnitude) * 20, 0, 100);
   const distanceScore = scoreDistance(distanceAsExpectedMovePct, minPct, maxPct, riskMode);
   const wallScore = scoreWall(side, row.strike, wall, expectedMoveRemaining);
-  const dealerScore = scoreDealer(side, dealerPressure, fadeCandidateMode);
-  const moodScore = scoreMood(side, mood, fadeCandidateMode);
+  const dealerScore = scoreDealer(side, dealerPressure, directionalRichFade);
+  const moodScore = scoreMood(side, mood, directionalRichFade);
   const spyScore = row.spyAlignment === "aligned" ? 100 : row.spyAlignment === "near" ? 70 : 40;
   const premiumScore = scorePremium({ creditToRiskPct, creditToWidthPct, riskMode });
-  const deltaScore = fadeCandidateMode && richFadeGeometry
+  const deltaScore = trackingFadeMode
     ? clamp(
         // Exhaustion mode may *tolerate* higher delta so the crest engine can
         // observe the rich premium, but additional delta is never rewarded.
@@ -561,19 +586,19 @@ function scoreCandidate(args: {
   reasons.push(`Credit/risk is ${(creditToRiskPct * 100).toFixed(1)}%; credit/width is ${(creditToWidthPct * 100).toFixed(1)}%.`);
   reasons.push(`${row.strike} is ${distanceFromSpot.toFixed(1)} points from spot (${Math.round(distanceAsExpectedMovePct * 100)}% of expected move).`);
   if (shortDeltaAbs !== null) reasons.push(`Short strike delta estimate: ${shortDeltaAbs.toFixed(2)}.`);
-  if (fadeCandidateMode && richFadeGeometry) {
+  if (directionalRichFade) {
     reasons.push(
       `EXHAUSTION FADE candidate: directional pressure and rich package geometry keep this strike in tracking so the premium crest can decide the entry.`,
     );
-    if (
-      distanceFromSpot < minAbsoluteDistancePoints ||
-      distanceAsExpectedMovePct < minPct ||
-      shortDeltaAbs > shortDeltaMax
-    ) {
-      warnings.push(
-        "Fade candidate is inside a conventional distance/delta preference; this is a tracking exception, not an entry waiver.",
-      );
-    }
+  } else if (exhaustionWatchMode) {
+    reasons.push(
+      `EXHAUSTION WATCH candidate: defined-risk economics are valid, but placement is modestly inside the normal distance/delta preference. It is admitted to tracking only so premium exhaustion can be observed.`,
+    );
+  }
+  if (trackingFadeMode && !standardPlacementOk) {
+    warnings.push(
+      "Exhaustion candidate is inside a conventional distance/delta preference; this is a tracking exception, not an entry waiver.",
+    );
   }
   if (wall) reasons.push(describeWallRelationship(side, row.strike, wall));
   if (row.spyAlignment !== "none") reasons.push(`SPY confirmation is ${row.spyAlignment} near this SPX strike.`);
@@ -588,8 +613,16 @@ function scoreCandidate(args: {
   }
 
   rejectionDiagnostics.accepted += 1;
+  if (trackingFadeMode) {
+    rejectionDiagnostics.exhaustionAccepted += 1;
+    if (!standardAbsoluteOk) rejectionDiagnostics.exhaustionRelaxations.insideAbsoluteDistance += 1;
+    if (!standardExpectedMoveOk) rejectionDiagnostics.exhaustionRelaxations.insideExpectedMoveDistance += 1;
+    if (!standardDeltaOk) rejectionDiagnostics.exhaustionRelaxations.aboveDeltaLimit += 1;
+  } else {
+    rejectionDiagnostics.trendAccepted += 1;
+  }
   return {
-    thesis: fadeCandidateMode && richFadeGeometry ? "exhaustion-fade" : "trend",
+    thesis: trackingFadeMode ? "exhaustion-fade" : "trend",
     strike: row.strike,
     longStrike: longRow.strike,
     score: Math.round(score),
@@ -889,6 +922,13 @@ function createRejectionDiagnostics(args: {
   return {
     tested: 0,
     accepted: 0,
+    trendAccepted: 0,
+    exhaustionAccepted: 0,
+    exhaustionRelaxations: {
+      insideAbsoluteDistance: 0,
+      insideExpectedMoveDistance: 0,
+      aboveDeltaLimit: 0,
+    },
     rejected: {
       missing_expected_move: 0,
       missing_long_leg: 0,
@@ -911,6 +951,9 @@ function createRejectionDiagnostics(args: {
       minDistancePctOfExpectedMove: args.minPct,
       minAbsoluteDistancePoints: args.minAbsoluteDistancePoints,
       shortDeltaMax: args.shortDeltaMax,
+      exhaustionWatchMinDistancePctOfExpectedMove: exhaustionWatchMinPct(args.minPct),
+      exhaustionWatchShortDeltaMax: exhaustionWatchDeltaMax(args.shortDeltaMax),
+      exhaustionWatchMinAbsoluteDistancePoints: exhaustionWatchAbsoluteFloor(args.minAbsoluteDistancePoints),
       minWidth: args.minWidth,
       maxWidth: args.maxWidth,
     },
@@ -923,6 +966,19 @@ function rejectCandidate(
 ): null {
   diagnostics.rejected[reason] += 1;
   return null;
+}
+
+function exhaustionWatchMinPct(standardMinPct: number) {
+  return Math.max(0.25, standardMinPct * 0.70);
+}
+
+function exhaustionWatchDeltaMax(standardDeltaMax: number) {
+  return Math.min(0.40, Math.max(standardDeltaMax + 0.10, standardDeltaMax * 1.35));
+}
+
+function exhaustionWatchAbsoluteFloor(standardAbsoluteFloor: number) {
+  if (!(standardAbsoluteFloor > 0)) return 0;
+  return Math.max(5, standardAbsoluteFloor * 0.65);
 }
 
 export function minimumDistanceExpectedMovePctForRiskMode(mode: CreditSpreadRiskMode) {
