@@ -1,6 +1,7 @@
 import type {
   ExecutionCandidate,
   ExecutionPremiumSample,
+  ExecutionShortLegEntry,
   ZeroDteExecutionMemory,
   ZeroDteExecutionRead,
 } from "./zeroDteExecutionIntelligence";
@@ -41,7 +42,7 @@ export async function persistExecutionSamples(args: {
   tradeDate: string;
   expirationDate: string | null;
   generatedAt: string;
-  openingMap: ZeroDteOpeningMap;
+  openingMap: ZeroDteOpeningMap | null;
   openingPlan: ZeroDteOpeningTradePlan | null;
   recommendation: ZeroDteRecommendation;
   strikeFlow: ZeroDteStrikeFlowRead | null;
@@ -64,7 +65,7 @@ export async function persistExecutionSample(args: {
   tradeDate: string;
   expirationDate: string | null;
   generatedAt: string;
-  openingMap: ZeroDteOpeningMap;
+  openingMap: ZeroDteOpeningMap | null;
   openingPlan: ZeroDteOpeningTradePlan | null;
   recommendation: ZeroDteRecommendation;
   strikeFlow: ZeroDteStrikeFlowRead | null;
@@ -95,6 +96,7 @@ export async function openExecutionPositionDb(args: {
   entryTouchRiskProxyPct?: number | null;
   entryRangeConsumptionPct?: number | null;
   entryEventRisk?: "NORMAL" | "HIGH" | null;
+  entryShortLegs?: ExecutionShortLegEntry[];
 }): Promise<ZeroDteExecutionMemory> {
   const candidate = args.candidate ?? args.read.candidate;
   if (!candidate) {
@@ -123,6 +125,8 @@ export async function openManualExecutionPositionDb(args: {
   entryTouchRiskProxyPct?: number | null;
   entryRangeConsumptionPct?: number | null;
   entryEventRisk?: "NORMAL" | "HIGH" | null;
+  entryShortLegs?: ExecutionShortLegEntry[];
+  expirationDate?: string | null;
 }): Promise<ZeroDteExecutionMemory> {
   return call({
     action: "manual-open",

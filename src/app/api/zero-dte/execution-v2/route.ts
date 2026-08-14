@@ -5,6 +5,7 @@ import type {
   ExecutionLeg,
   ExecutionPositionMemory,
   ExecutionPremiumSample,
+  ExecutionShortLegEntry,
   ExecutionStrategy,
   ZeroDteExecutionMemory,
 } from "../../../../lib/zeroDteExecutionIntelligence";
@@ -140,6 +141,33 @@ const normalizeLegs = (value: unknown): ExecutionLeg[] => {
       return [];
     }
     return [{ optionType: leg.optionType, action: leg.action, strike }];
+  });
+};
+
+const normalizeShortLegEntries = (value: unknown): ExecutionShortLegEntry[] => {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const entry = item as Record<string, unknown>;
+    const strike = numeric(entry.strike);
+    const sellPrice = numeric(entry.sellPrice);
+    const optionType = entry.optionType;
+    if (
+      strike === null ||
+      (optionType !== "call" && optionType !== "put")
+    ) {
+      return [];
+    }
+    const source =
+      entry.source === "actual" || entry.source === "live-bid"
+        ? entry.source
+        : "unknown";
+    return [{
+      optionType,
+      strike,
+      sellPrice: sellPrice !== null && sellPrice > 0 ? sellPrice : null,
+      source,
+    }];
   });
 };
 
@@ -280,6 +308,7 @@ async function loadMemory(tradeDate: string): Promise<ZeroDteExecutionMemory> {
       entryTouchRiskProxyPct: numeric(row.entry_touch_risk_proxy_pct),
       entryRangeConsumptionPct: numeric(row.entry_range_consumption_pct),
       entryEventRisk: row.entry_event_risk === "HIGH" ? "HIGH" : row.entry_event_risk === "NORMAL" ? "NORMAL" : null,
+      entryShortLegs: normalizeShortLegEntries(row.entry_short_legs),
     };
   };
 
@@ -314,6 +343,8 @@ async function loadMemory(tradeDate: string): Promise<ZeroDteExecutionMemory> {
         strategy,
         setupKey: row.setup_key ?? makeSetupKey(strategy, fallbackLegs),
         credit: Number(row.strategy_credit ?? row.if_credit ?? 0),
+        sellableCredit: numeric(row.sellable_credit),
+        buybackDebit: numeric(row.buyback_debit),
         entryScore: Number(row.entry_score ?? row.sell_score ?? 0),
         exitScore: Number(row.exit_score ?? row.buyback_score ?? 0),
         mapPhase: normalizePhase(row.map_phase),
@@ -368,6 +399,7 @@ async function upsertTradeDay(body: any): Promise<string> {
     opening_if_credit: firstSample?.credit ?? null,
     opening_dealer_pressure: recommendation.dealerPressure,
     opening_pin_score: recommendation.confidenceScore,
+    initialization_source: "engine",
     updated_at: new Date().toISOString(),
   };
 
@@ -380,6 +412,32 @@ async function upsertTradeDay(body: any): Promise<string> {
     .select("id")
     .single();
 
+  if (error) throw error;
+  return data.id;
+}
+
+async function ensureManualTradeDay(body: any): Promise<string> {
+  const { data: existing, error: existingError } = await supabaseServer
+    .from("zero_dte_execution_trade_days")
+    .select("id")
+    .eq("trade_date", body.tradeDate)
+    .eq("symbol", "SPX")
+    .maybeSingle();
+  if (existingError) throw existingError;
+  if (existing?.id) return existing.id;
+
+  const payload = {
+    trade_date: body.tradeDate,
+    symbol: "SPX",
+    expiration_date: body.expirationDate ?? body.tradeDate,
+    initialization_source: "manual-shell",
+    updated_at: new Date().toISOString(),
+  };
+  const { data, error } = await supabaseServer
+    .from("zero_dte_execution_trade_days")
+    .insert(payload)
+    .select("id")
+    .single();
   if (error) throw error;
   return data.id;
 }
@@ -404,7 +462,17 @@ export async function POST(request: NextRequest) {
     if (!body.tradeDate) return err("Missing tradeDate", 400);
 
     if (body.action === "sample" || body.action === "sample-batch") {
-      const tradeDayId = await upsertTradeDay(body);
+      const existing = await loadMemory(body.tradeDate);
+      let tradeDayId = existing.tradeDayId;
+      if (body.openingMap && body.recommendation) {
+        tradeDayId = await upsertTradeDay(body);
+      }
+      if (!tradeDayId) {
+        return err(
+          "Execution day is not initialized and no valid Opening Map was supplied",
+          409,
+        );
+      }
       const items =
         body.action === "sample-batch"
           ? Array.isArray(body.items)
@@ -491,7 +559,11 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const memory = await loadMemory(body.tradeDate);
+    let memory = await loadMemory(body.tradeDate);
+    if (!memory.tradeDayId && body.action === "manual-open") {
+      await ensureManualTradeDay(body);
+      memory = await loadMemory(body.tradeDate);
+    }
     if (!memory.tradeDayId) {
       return err("Opening trade day has not been persisted yet", 409);
     }
@@ -509,14 +581,6 @@ export async function POST(request: NextRequest) {
       }
       const legs = normalizeLegs(candidate.legs);
       if (!legs.length) return err("Execution candidate has no valid legs", 400);
-      if (
-        memory.positions.some(
-          (position) => position.setupKey === candidate.setupKey,
-        )
-      ) {
-        return err("This exact strategy and strike set is already open", 409);
-      }
-
       const { error } = await supabaseServer
         .from("zero_dte_execution_positions")
         .insert({
@@ -557,6 +621,7 @@ export async function POST(request: NextRequest) {
           entry_range_consumption_pct: numeric(body.entryRangeConsumptionPct),
           entry_event_risk:
             body.entryEventRisk === "HIGH" ? "HIGH" : "NORMAL",
+          entry_short_legs: normalizeShortLegEntries(body.entryShortLegs),
         });
 
       if (error) throw error;

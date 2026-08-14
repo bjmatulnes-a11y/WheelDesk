@@ -30,6 +30,14 @@ export function buildZeroDteLeastResistancePath(args: {
   recommendation: ZeroDteRecommendation;
   generatedAt: string;
   candleFrequencyMinutes: number;
+  structuralMap?: {
+    center: number;
+    lowerWing: number;
+    upperWing: number;
+    callWall: number | null;
+    putWall: number | null;
+    pin: number | null;
+  } | null;
 }): ZeroDteLeastResistancePath | null {
   const { recommendation } = args;
   const spot = recommendation.spxPrice;
@@ -40,6 +48,14 @@ export function buildZeroDteLeastResistancePath(args: {
   }
 
   const flow = recommendation.dealerPressureRead?.flowState ?? null;
+  const structuralMap = args.structuralMap ?? {
+    center: recommendation.suggestedCenter,
+    lowerWing: recommendation.lowerWing,
+    upperWing: recommendation.upperWing,
+    callWall: recommendation.spx.callWall,
+    putWall: recommendation.spx.putWall,
+    pin: recommendation.spx.strongestPin,
+  };
   const flowSource: ZeroDteLeastResistancePath["flowSource"] = flow ? "engine" : "fallback";
   const stepMinutes = args.candleFrequencyMinutes === 1 ? 5 : 10;
   const baseHorizonMinutes = args.candleFrequencyMinutes === 1 ? 75 : 120;
@@ -70,6 +86,7 @@ export function buildZeroDteLeastResistancePath(args: {
       spot,
       rows,
       recommendation,
+      structuralMap,
       flow,
       expectedMove,
       strikeStep,
@@ -236,11 +253,13 @@ export function scoreLeastResistanceStrike(args: {
 }): number {
   const path = args.path;
   if (!path) return 50;
+  const pathTrough = Math.min(...path.points.map((point) => point.trough));
+  const pathCrest = Math.max(...path.points.map((point) => point.crest));
   const halfWidth = Math.max(path.terminalConeWidth / 2, 5);
   const insidePoints =
     args.side === "put"
-      ? Math.max(0, args.shortStrike - path.terminalTrough)
-      : Math.max(0, path.terminalCrest - args.shortStrike);
+      ? Math.max(0, args.shortStrike - pathTrough)
+      : Math.max(0, pathCrest - args.shortStrike);
   const raw = insidePoints <= 0
     ? 100
     : clamp(100 - (insidePoints / halfWidth) * 100, 0, 100);
@@ -275,10 +294,10 @@ export function leastResistanceThreatensShort(args: {
   const path = args.path;
   if (!path || args.shortStrike === null || path.confidence < 60) return false;
   if (args.strategy === "put-credit-spread") {
-    return path.terminalTrough <= args.shortStrike;
+    return path.points.some((point) => point.trough <= args.shortStrike!);
   }
   if (args.strategy === "call-credit-spread") {
-    return path.terminalCrest >= args.shortStrike;
+    return path.points.some((point) => point.crest >= args.shortStrike!);
   }
   return false;
 }
@@ -288,6 +307,14 @@ function terrainCost(args: {
   spot: number;
   rows: SpxOiMapRow[];
   recommendation: ZeroDteRecommendation;
+  structuralMap: {
+    center: number;
+    lowerWing: number;
+    upperWing: number;
+    callWall: number | null;
+    putWall: number | null;
+    pin: number | null;
+  };
   flow: ZeroDteFlowStateRead | null;
   expectedMove: number;
   strikeStep: number;
@@ -314,24 +341,21 @@ function terrainCost(args: {
   }
 
   const centerDistance =
-    Math.abs(args.price - args.recommendation.suggestedCenter) /
-    args.expectedMove;
-  const pin =
-    args.recommendation.spx.strongestPin ??
-    args.recommendation.suggestedCenter;
+    Math.abs(args.price - args.structuralMap.center) / args.expectedMove;
+  const pin = args.structuralMap.pin ?? args.structuralMap.center;
   const pinDistance = Math.abs(args.price - pin) / args.expectedMove;
   const wallPenalty =
     barrierPenalty(
       args.price,
       args.spot,
-      args.recommendation.spx.callWall,
+      args.structuralMap.callWall,
       "up",
       args.expectedMove,
     ) +
     barrierPenalty(
       args.price,
       args.spot,
-      args.recommendation.spx.putWall,
+      args.structuralMap.putWall,
       "down",
       args.expectedMove,
     );

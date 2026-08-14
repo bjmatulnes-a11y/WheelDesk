@@ -46,6 +46,7 @@ export function useStableExecutionCandidates(args: {
   >;
   scannerCandidateBooks?: Partial<ExecutionCandidateBook>;
   openSetupKeys?: string[];
+  premiumBaselineReadySetupKeys?: string[];
 }) {
   const {
     tradeDate,
@@ -56,11 +57,24 @@ export function useStableExecutionCandidates(args: {
     scannerCandidates = {},
     scannerCandidateBooks = {},
     openSetupKeys = [],
+    premiumBaselineReadySetupKeys = [],
   } = args;
   const openSetupKeySignature = [...openSetupKeys].sort().join("|");
   const openSetupKeySet = useMemo(
     () => new Set(openSetupKeySignature ? openSetupKeySignature.split("|") : []),
     [openSetupKeySignature],
+  );
+  const premiumBaselineReadySignature = [...premiumBaselineReadySetupKeys]
+    .sort()
+    .join("|");
+  const premiumBaselineReadySet = useMemo(
+    () =>
+      new Set(
+        premiumBaselineReadySignature
+          ? premiumBaselineReadySignature.split("|")
+          : [],
+      ),
+    [premiumBaselineReadySignature],
   );
   const [store, setStore] = useState<TrackStore>(() =>
     emptyStore(tradeDate ?? ""),
@@ -252,8 +266,13 @@ export function useStableExecutionCandidates(args: {
             (trackedSetupIsOpen &&
               challengerAgeSeconds === 0 &&
               candleIsClosed));
+        const premiumBaselineReady = Boolean(
+          track.candidate?.setupKey &&
+            premiumBaselineReadySet.has(track.candidate.setupKey),
+        );
         const signalDevelopmentReady =
           trackedSetupIsOpen ||
+          premiumBaselineReady ||
           track.ageCandles >= MIN_ROUTINE_SIGNAL_DEVELOPMENT_CANDLES;
 
         if (survivedClosedCandle && signalDevelopmentReady) {
@@ -271,7 +290,7 @@ export function useStableExecutionCandidates(args: {
           track.status = "CHALLENGER_BUILDING";
           if (!signalDevelopmentReady) {
             track.lastReplacementReason =
-              `The locked setup is being given ${MIN_ROUTINE_SIGNAL_DEVELOPMENT_CANDLES} completed candles to establish its premium-exhaustion tape before routine scanner rotation.`;
+              `The locked setup is protected until its premium baseline has 3 valid completed minute bars or ${MIN_ROUTINE_SIGNAL_DEVELOPMENT_CANDLES} completed candles have elapsed.`;
           }
         }
       }
@@ -284,6 +303,7 @@ export function useStableExecutionCandidates(args: {
     generatedAt,
     mapState,
     openSetupKeySet,
+    premiumBaselineReadySet,
     scannerCandidateBooks,
     scannerCandidates,
     tradeDate,
@@ -342,9 +362,10 @@ function isWatchableCandidate(
   if (candidate.estimatedCredit === null || candidate.estimatedCredit <= 0) {
     return false;
   }
-  return !candidate.blockers.some((blocker) =>
-    blocker.includes("short strike sits inside the controlling wall"),
-  );
+  // Tracking is intentionally broader than execution. A rich exhaustion-watch
+  // spread may sit inside the controlling wall and is still worth taping; the
+  // live entry read keeps the wall condition as a hard SELL blocker.
+  return true;
 }
 
 function selectScannerCandidate(args: {
@@ -382,7 +403,9 @@ function structuralInvalidation(
   const short = candidate.legs.find((leg) => leg.action === "sell")?.strike;
   if (short == null) return "The tracked spread no longer has a valid short strike.";
 
-  if (strategy === "put-credit-spread") {
+  const exhaustionWatch = candidate.spreadMode === "exhaustion-fade";
+
+  if (strategy === "put-credit-spread" && !exhaustionWatch) {
     if (mapState.railBreached === "LOWER") {
       return "The lower controlling rail was breached against the tracked put spread.";
     }
@@ -391,7 +414,7 @@ function structuralInvalidation(
     }
   }
 
-  if (strategy === "call-credit-spread") {
+  if (strategy === "call-credit-spread" && !exhaustionWatch) {
     if (mapState.railBreached === "UPPER") {
       return "The upper controlling rail was breached against the tracked call spread.";
     }

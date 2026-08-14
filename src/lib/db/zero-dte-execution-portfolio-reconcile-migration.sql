@@ -14,9 +14,10 @@ DROP INDEX IF EXISTS uq_zero_dte_execution_score_sample;
 ALTER TABLE zero_dte_execution_score_history
   DROP CONSTRAINT IF EXISTS zero_dte_execution_score_history_trade_day_id_sampled_at_key;
 
--- Permit multiple positions per day, but never duplicate the same live setup.
-CREATE UNIQUE INDEX IF NOT EXISTS uq_zero_dte_execution_open_setup
-  ON zero_dte_execution_positions(trade_day_id, setup_key)
+-- Permit multiple positions and repeated fills/lots of the same setup.
+DROP INDEX IF EXISTS uq_zero_dte_execution_open_setup;
+CREATE INDEX IF NOT EXISTS idx_zero_dte_execution_positions_open_setup
+  ON zero_dte_execution_positions(trade_day_id, setup_key, entry_time)
   WHERE state = 'open' AND setup_key IS NOT NULL;
 
 -- Permit each tracked setup to write its own sample at the same timestamp.

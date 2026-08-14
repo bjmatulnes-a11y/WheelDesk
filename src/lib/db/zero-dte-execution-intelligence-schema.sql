@@ -7,10 +7,10 @@ CREATE TABLE IF NOT EXISTS zero_dte_execution_trade_days (
   trade_date DATE NOT NULL,
   symbol TEXT NOT NULL DEFAULT 'SPX',
   expiration_date DATE,
-  opening_if_center NUMERIC NOT NULL,
+  opening_if_center NUMERIC,
   opening_if_width NUMERIC NOT NULL DEFAULT 50,
-  lower_wing NUMERIC NOT NULL,
-  upper_wing NUMERIC NOT NULL,
+  lower_wing NUMERIC,
+  upper_wing NUMERIC,
   opening_put_wall NUMERIC,
   opening_call_wall NUMERIC,
   opening_gravity NUMERIC,
@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS zero_dte_execution_trade_days (
   opening_if_credit NUMERIC,
   opening_dealer_pressure NUMERIC,
   opening_pin_score NUMERIC,
+  initialization_source TEXT NOT NULL DEFAULT 'engine',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE(trade_date, symbol)
@@ -61,6 +62,7 @@ CREATE TABLE IF NOT EXISTS zero_dte_execution_positions (
   entry_touch_risk_proxy_pct NUMERIC,
   entry_range_consumption_pct NUMERIC,
   entry_event_risk TEXT,
+  entry_short_legs JSONB NOT NULL DEFAULT '[]'::jsonb,
   exit_buyback_score NUMERIC,
   exit_score NUMERIC,
   exit_reason TEXT,
@@ -72,8 +74,8 @@ CREATE TABLE IF NOT EXISTS zero_dte_execution_positions (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS uq_zero_dte_execution_open_setup
-  ON zero_dte_execution_positions(trade_day_id, setup_key)
+CREATE INDEX IF NOT EXISTS idx_zero_dte_execution_positions_open_setup
+  ON zero_dte_execution_positions(trade_day_id, setup_key, entry_time)
   WHERE state = 'open' AND setup_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS zero_dte_execution_score_history (

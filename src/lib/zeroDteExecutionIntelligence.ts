@@ -117,6 +117,8 @@ export type ExecutionPremiumSample = {
   strategy: ExecutionStrategy;
   setupKey: string;
   credit: number;
+  sellableCredit?: number | null;
+  buybackDebit?: number | null;
   entryScore: number;
   exitScore: number;
   mapPhase: SessionMapManagerState["phase"];
@@ -130,6 +132,26 @@ export type ExecutionPremiumSample = {
   trackedSince: string | null;
   dealerPressure?: number | null;
   strikeFlowState?: string | null;
+};
+
+export type ExecutionShortLegEntry = {
+  optionType: "call" | "put";
+  strike: number;
+  sellPrice: number | null;
+  source: "actual" | "live-bid" | "unknown";
+};
+
+export type ExecutionShortLegQuoteRead = {
+  optionType: "call" | "put";
+  strike: number;
+  bid: number | null;
+  ask: number | null;
+  mid: number | null;
+};
+
+export type ExecutionShortLegRiskRead = ExecutionShortLegEntry & {
+  currentAsk: number | null;
+  multiple: number | null;
 };
 
 export type ExecutionPositionMemory = {
@@ -160,6 +182,7 @@ export type ExecutionPositionMemory = {
   entryTouchRiskProxyPct?: number | null;
   entryRangeConsumptionPct?: number | null;
   entryEventRisk?: "NORMAL" | "HIGH" | null;
+  entryShortLegs?: ExecutionShortLegEntry[];
 };
 
 export type ExecutionClosedTrade = ExecutionPositionMemory & {
@@ -203,6 +226,10 @@ export type ZeroDteExecutionRead = {
   currentCredit: number | null;
   currentSellableCredit: number | null;
   currentBuybackDebit: number | null;
+  quoteStatus: "LIVE" | "DEGRADED" | "WAITING_FOR_QUOTES";
+  shortLegQuotes: ExecutionShortLegQuoteRead[];
+  shortLegRisk: ExecutionShortLegRiskRead[];
+  worstShortLegMultiple: number | null;
   shortDeltaAbs: number | null;
   touchRiskProxyPct: number | null;
   remainingMovePoints: number;
@@ -222,6 +249,9 @@ export type ZeroDteExecutionRead = {
   confidence: number;
   maxRiskDollars: number | null;
   livePnlDollars: number | null;
+  maxAdverseExcursionDollars: number;
+  maxFavorableExcursionDollars: number;
+  profitGivebackPct: number | null;
   centerDistance: number;
   edge: "upper" | "lower" | "center";
   peakDetected: boolean;
@@ -279,7 +309,7 @@ export function buildZeroDteExecutionRead(args: {
   recommendation: ZeroDteRecommendation;
   spxRows: ZeroDteChainRow[];
   strikeFlow: ZeroDteStrikeFlowRead | null;
-  tradeSelection: ZeroDteTradeSelection;
+  tradeSelection?: ZeroDteTradeSelection | null;
   mapState: SessionMapManagerState;
   memory: ZeroDteExecutionMemory;
   candidateOverride?: ExecutionCandidate | null;
@@ -309,7 +339,9 @@ export function buildZeroDteExecutionRead(args: {
   const controlling = getControllingMarketMap(mapState);
   const candidate =
     args.candidateOverride === undefined
-      ? buildExecutionCandidate(tradeSelection, mapState)
+      ? tradeSelection
+        ? buildExecutionCandidate(tradeSelection, mapState)
+        : null
       : args.candidateOverride;
   const positions = memory.positions ?? (memory.position ? [memory.position] : []);
   const position =
@@ -328,6 +360,18 @@ export function buildZeroDteExecutionRead(args: {
   const currentCredit = packageQuote?.markCredit ?? null;
   const currentSellableCredit = packageQuote?.sellableCredit ?? null;
   const currentBuybackDebit = packageQuote?.buybackDebit ?? null;
+  const shortLegQuotes = buildShortLegQuoteReads(spxRows, legs);
+  const quoteStatus = strategyQuoteStatus(spxRows, legs);
+  const shortLegRisk = buildShortLegRiskReads(position, shortLegQuotes);
+  const worstShortLegMultiple = shortLegRisk.reduce<number | null>(
+    (worst, leg) =>
+      leg.multiple === null
+        ? worst
+        : worst === null
+          ? leg.multiple
+          : Math.max(worst, leg.multiple),
+    null,
+  );
   const shortDeltaAbs =
     strategy === "put-credit-spread" || strategy === "call-credit-spread"
       ? findShortDeltaAbs(spxRows, legs)
@@ -393,11 +437,18 @@ export function buildZeroDteExecutionRead(args: {
       : null;
   const peakDetected = premiumCrest.rolloverConfirmed;
 
-  const shortDistance = candidateShortDistance(
-    candidate,
-    recommendation.spxPrice,
-    remainingMove.expectedMoveRemaining,
-  );
+  const shortDistance = position
+    ? strategyShortDistance(
+        position.strategy,
+        position.legs,
+        recommendation.spxPrice,
+        remainingMove.expectedMoveRemaining,
+      )
+    : candidateShortDistance(
+        candidate,
+        recommendation.spxPrice,
+        remainingMove.expectedMoveRemaining,
+      );
   const portfolioContribution = candidate?.strategy
     ? args.portfolio?.candidateContribution[candidate.strategy] ?? null
     : null;
@@ -431,6 +482,47 @@ export function buildZeroDteExecutionRead(args: {
     expectedMoveRemaining: remainingMove.expectedMoveRemaining,
   });
 
+  const managementDebitForPnl = position ? currentBuybackDebit ?? currentCredit : null;
+  const livePnlDollars =
+    position && managementDebitForPnl !== null
+      ? (position.entryCredit - managementDebitForPnl) * 100 * position.quantity
+      : null;
+  const pnlHistory = position
+    ? memory.samples
+        .filter(
+          (sample) =>
+            sample.setupKey === position.setupKey &&
+            Date.parse(sample.timestamp) >= Date.parse(position.openedAt) &&
+            sample.buybackDebit !== null &&
+            sample.buybackDebit !== undefined,
+        )
+        .map(
+          (sample) =>
+            (position.entryCredit - Number(sample.buybackDebit)) *
+            100 *
+            position.quantity,
+        )
+        .filter(Number.isFinite)
+    : [];
+  if (livePnlDollars !== null && Number.isFinite(livePnlDollars)) {
+    pnlHistory.push(livePnlDollars);
+  }
+  const maxFavorableExcursionDollars = pnlHistory.length
+    ? Math.max(0, ...pnlHistory)
+    : 0;
+  const maxAdverseExcursionDollars = pnlHistory.length
+    ? Math.max(0, ...pnlHistory.map((value) => -value))
+    : 0;
+  const profitGivebackPct =
+    livePnlDollars !== null && maxFavorableExcursionDollars > 0
+      ? Math.max(
+          0,
+          ((maxFavorableExcursionDollars - livePnlDollars) /
+            maxFavorableExcursionDollars) *
+            100,
+        )
+      : null;
+
   const exitRead = buildExitRead({
     position,
     candidate,
@@ -447,6 +539,11 @@ export function buildZeroDteExecutionRead(args: {
     memory,
     leastResistancePath,
     expectedMoveRemaining: remainingMove.expectedMoveRemaining,
+    shortLegRisk,
+    livePnlDollars,
+    maxFavorableExcursionDollars,
+    maxAdverseExcursionDollars,
+    profitGivebackPct,
   });
 
   const cooldownActive = Boolean(
@@ -470,8 +567,14 @@ export function buildZeroDteExecutionRead(args: {
     if (exitRead.emergencyExit || exitRead.exitScore >= 80) {
       lifecycle = "BUYBACK_READY";
       action = exitRead.emergencyExit
-        ? "BUYBACK NOW — the position thesis has failed or defined risk is accelerating."
-        : "BUYBACK READY — sufficient premium has been harvested and the exit stack is aligned.";
+        ? "BUYBACK NOW — a short leg has reached the deterministic 3× entry-premium stop."
+        : "BUYBACK READY — take-profit / peak-profit protection has cleared the exit gate.";
+    } else if (quoteStatus !== "LIVE") {
+      lifecycle = ageMinutes <= 1.5 ? "POSITION_OPEN" : "HOLD";
+      action =
+        quoteStatus === "WAITING_FOR_QUOTES"
+          ? "TRACKING — position is recorded; waiting for exact live leg quotes before package P/L / buyback management is available."
+          : "TRACKING — live position remains recorded, but one or more leg quotes are incomplete; management is using only the quote components that remain valid.";
     } else if (ageMinutes <= 1.5) {
       lifecycle = "POSITION_OPEN";
       action = "POSITION OPEN — confirm the fill, map state, and live debit before managing.";
@@ -509,10 +612,6 @@ export function buildZeroDteExecutionRead(args: {
     position && managementDebit !== null && position.entryCredit > 0
       ? ((position.entryCredit - managementDebit) / position.entryCredit) * 100
       : null;
-  const livePnlDollars =
-    position && managementDebit !== null
-      ? (position.entryCredit - managementDebit) * 100 * position.quantity
-      : null;
   const maxRiskDollars =
     position?.maxRiskDollars ?? candidate?.maxRiskDollars ?? null;
   const entryScore = position?.entryScore ?? entryRead.entryScore;
@@ -524,9 +623,21 @@ export function buildZeroDteExecutionRead(args: {
       ? [...exitRead.reasons, ...entryRead.reasons]
       : entryRead.reasons,
   ).slice(0, 10);
+  const positionQuoteWarnings = position
+    ? [
+        ...(quoteStatus === "WAITING_FOR_QUOTES"
+          ? ["Exact live quotes are not available for all position legs. The position remains tracked; package P/L and debit-based exits wait for valid quotes."]
+          : quoteStatus === "DEGRADED"
+            ? ["One or more position leg quotes are incomplete. The position remains tracked and will resume full package management when exact bid/ask quotes recover."]
+            : []),
+        ...(shortLegRisk.some((leg) => leg.sellPrice === null)
+          ? ["At least one short leg has no stored entry sale premium, so its 3× stop cannot arm until a valid baseline is supplied on a new position / backfill."]
+          : []),
+      ]
+    : [];
   const warnings = unique(
     position
-      ? [...exitRead.warnings, ...entryRead.blockers]
+      ? [...exitRead.warnings, ...positionQuoteWarnings, ...entryRead.blockers]
       : entryRead.blockers,
   ).slice(0, 10);
 
@@ -547,6 +658,10 @@ export function buildZeroDteExecutionRead(args: {
     currentCredit,
     currentSellableCredit,
     currentBuybackDebit,
+    quoteStatus,
+    shortLegQuotes,
+    shortLegRisk,
+    worstShortLegMultiple,
     shortDeltaAbs,
     touchRiskProxyPct,
     remainingMovePoints: remainingMove.expectedMoveRemaining,
@@ -569,6 +684,9 @@ export function buildZeroDteExecutionRead(args: {
     confidence,
     maxRiskDollars,
     livePnlDollars,
+    maxAdverseExcursionDollars,
+    maxFavorableExcursionDollars,
+    profitGivebackPct,
     centerDistance,
     edge,
     peakDetected,
@@ -626,6 +744,8 @@ export function sampleFromRead(
     strategy: read.strategy,
     setupKey: read.setupKey,
     credit: read.currentCredit,
+    sellableCredit: read.currentSellableCredit,
+    buybackDebit: read.currentBuybackDebit,
     entryScore: read.entryScore,
     exitScore: read.exitScore,
     mapPhase: read.mapPhase,
@@ -1452,6 +1572,11 @@ function buildExitRead(args: {
   memory: ZeroDteExecutionMemory;
   leastResistancePath: ZeroDteLeastResistancePath | null;
   expectedMoveRemaining: number;
+  shortLegRisk: ExecutionShortLegRiskRead[];
+  livePnlDollars: number | null;
+  maxFavorableExcursionDollars: number;
+  maxAdverseExcursionDollars: number;
+  profitGivebackPct: number | null;
 }) {
   const {
     position,
@@ -1469,6 +1594,11 @@ function buildExitRead(args: {
     memory,
     leastResistancePath,
     expectedMoveRemaining,
+    shortLegRisk,
+    livePnlDollars,
+    maxFavorableExcursionDollars,
+    maxAdverseExcursionDollars,
+    profitGivebackPct,
   } = args;
 
   if (!position) {
@@ -1626,11 +1756,9 @@ function buildExitRead(args: {
   // BUY management is profit-led. Structural/path reads remain advisory inputs,
   // but they are not allowed to manufacture repeated small-loss exits.
   const profitComponent = clamp((capturedPct / 50) * 70, 0, 70);
-  const currentProfitDollars =
-    managementDebit === null
-      ? 0
-      : Math.max(0, position.entryCredit - managementDebit) * 100 * Math.max(1, position.quantity);
-  const dollarProfitComponent = clamp((currentProfitDollars / 500) * 15, 0, 15);
+  const currentProfitDollars = Math.max(0, livePnlDollars ?? 0);
+  const perContractProfit = currentProfitDollars / Math.max(1, position.quantity);
+  const dollarProfitComponent = clamp((perContractProfit / 500) * 15, 0, 15);
   const velocityComponent =
     premiumVelocityPerMinute === null
       ? 0
@@ -1657,17 +1785,42 @@ function buildExitRead(args: {
     100,
   );
 
-  if (currentProfitDollars >= 250) {
+  if (currentProfitDollars >= 250 * Math.max(1, position.quantity)) {
     reasons.push(`Open profit is $${currentProfitDollars.toFixed(0)}; profit preservation now carries additional BUY weight.`);
+  }
+
+  const threeXShort = shortLegRisk.find(
+    (leg) => leg.multiple !== null && leg.multiple >= 3,
+  ) ?? null;
+  const meaningfulMfeFloor = 100 * Math.max(1, position.quantity);
+  const retainedProfitFloor = 50 * Math.max(1, position.quantity);
+  const profitProtection = Boolean(
+    maxFavorableExcursionDollars >= meaningfulMfeFloor &&
+      currentProfitDollars >= retainedProfitFloor &&
+      (profitGivebackPct ?? 0) >= 35,
+  );
+
+  if (threeXShort) {
+    reasons.push(
+      `${threeXShort.strike.toFixed(0)} ${threeXShort.optionType.toUpperCase()} short is ${threeXShort.multiple?.toFixed(2)}× its entry sale premium; the 3× short-leg stop is active.`,
+    );
+    exitScore = 100;
+  }
+  if (profitProtection) {
+    reasons.push(
+      `Profit protection is active: MFE $${maxFavorableExcursionDollars.toFixed(0)}, current $${currentProfitDollars.toFixed(0)}, giveback ${Math.round(profitGivebackPct ?? 0)}%.`,
+    );
+    exitScore = 100;
   }
   if (capturedPct >= 50) {
     reasons.push("At least half of the entry premium has been harvested — take-profit gate is active.");
     exitScore = 100;
   }
 
-  // No automatic emergency liquidation from strike touch, map wobble, LRP threat,
-  // or a small adverse debit move. Those remain warnings for the trader.
-  const emergencyExit = false;
+  // Structural/map wobble remains advisory. The only deterministic loss stop is
+  // the user's short-premium rule: any short leg reaching 3× its own entry sale
+  // premium marks the whole package BUYBACK_READY immediately.
+  const emergencyExit = Boolean(threeXShort);
   if (shortItm && position.strategy !== "iron-fly") {
     warnings.push("Short strike is at/through spot, but this is advisory only; no small-loss emergency exit is generated.");
   }
@@ -1691,6 +1844,15 @@ function buildExitRead(args: {
         value: dollarProfitComponent,
         max: 15,
         reason: `$${currentProfitDollars.toFixed(0)} open profit`,
+      },
+      {
+        key: "mfe-protection",
+        label: "Peak-profit protection",
+        value: profitProtection ? 15 : 0,
+        max: 15,
+        reason: maxFavorableExcursionDollars > 0
+          ? `MFE $${maxFavorableExcursionDollars.toFixed(0)} · MAE $${maxAdverseExcursionDollars.toFixed(0)} · giveback ${Math.round(profitGivebackPct ?? 0)}%`
+          : "No meaningful favorable excursion yet",
       },
       {
         key: "velocity",
@@ -1737,14 +1899,27 @@ function candidateShortDistance(
   spot: number,
   expectedMove: number,
 ) {
-  const shortStrike = candidate?.legs.find((leg) => leg.action === "sell")?.strike;
-  if (shortStrike == null || !candidate) {
-    return { points: null, expectedMovePct: null };
-  }
+  if (!candidate) return { points: null, expectedMovePct: null };
+  return strategyShortDistance(
+    candidate.strategy,
+    candidate.legs,
+    spot,
+    expectedMove,
+  );
+}
+
+function strategyShortDistance(
+  strategy: ExecutionStrategy,
+  legs: ExecutionLeg[],
+  spot: number,
+  expectedMove: number,
+) {
+  const shortStrike = legs.find((leg) => leg.action === "sell")?.strike;
+  if (shortStrike == null) return { points: null, expectedMovePct: null };
   const points =
-    candidate.strategy === "put-credit-spread"
+    strategy === "put-credit-spread"
       ? spot - shortStrike
-      : candidate.strategy === "call-credit-spread"
+      : strategy === "call-credit-spread"
         ? shortStrike - spot
         : Math.abs(spot - shortStrike);
   return {
@@ -1869,6 +2044,79 @@ export function makeExecutionSetupKey(
   return `${strategy}:${legs
     .map((leg) => `${leg.action[0]}${leg.optionType[0]}${leg.strike.toFixed(2)}`)
     .join("-")}`;
+}
+
+function buildShortLegQuoteReads(
+  rows: ZeroDteChainRow[],
+  legs: ExecutionLeg[],
+): ExecutionShortLegQuoteRead[] {
+  return legs
+    .filter((leg) => leg.action === "sell")
+    .map((leg) => {
+      const quote = optionQuote(rows, leg.strike, leg.optionType);
+      return {
+        optionType: leg.optionType,
+        strike: leg.strike,
+        bid: quote?.bid ?? null,
+        ask: quote?.ask ?? null,
+        mid: quote?.mid ?? null,
+      };
+    });
+}
+
+function buildShortLegRiskReads(
+  position: ExecutionPositionMemory | null,
+  quotes: ExecutionShortLegQuoteRead[],
+): ExecutionShortLegRiskRead[] {
+  if (!position) return [];
+  const entries = position.entryShortLegs ?? [];
+  return position.legs
+    .filter((leg) => leg.action === "sell")
+    .map((leg) => {
+      const entry = entries.find(
+        (item) =>
+          item.optionType === leg.optionType &&
+          Math.abs(item.strike - leg.strike) < 0.01,
+      );
+      const quote = quotes.find(
+        (item) =>
+          item.optionType === leg.optionType &&
+          Math.abs(item.strike - leg.strike) < 0.01,
+      );
+      const sellPrice = entry?.sellPrice ?? null;
+      const currentAsk = quote?.ask ?? null;
+      const multiple =
+        sellPrice !== null && sellPrice > 0 && currentAsk !== null
+          ? currentAsk / sellPrice
+          : null;
+      return {
+        optionType: leg.optionType,
+        strike: leg.strike,
+        sellPrice,
+        source: entry?.source ?? "unknown",
+        currentAsk,
+        multiple,
+      };
+    });
+}
+
+function strategyQuoteStatus(
+  rows: ZeroDteChainRow[],
+  legs: ExecutionLeg[],
+): "LIVE" | "DEGRADED" | "WAITING_FOR_QUOTES" {
+  if (!legs.length) return "WAITING_FOR_QUOTES";
+  let complete = 0;
+  let present = 0;
+  for (const leg of legs) {
+    const quote = optionQuote(rows, leg.strike, leg.optionType);
+    if (!quote) continue;
+    present += 1;
+    if (quote.bid !== null && quote.ask !== null && quote.mid !== null) {
+      complete += 1;
+    }
+  }
+  if (complete === legs.length) return "LIVE";
+  return present > 0 ? "DEGRADED" : "WAITING_FOR_QUOTES";
 }
 
 function optionQuote(

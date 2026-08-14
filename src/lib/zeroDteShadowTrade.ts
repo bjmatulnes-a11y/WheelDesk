@@ -122,6 +122,12 @@ export function shadowTradeToExecutionPosition(
         : Math.min(100, trade.shortDeltaAbs * 200),
     entryRangeConsumptionPct: trade.rangeConsumptionPct,
     entryEventRisk: trade.eventRisk,
+    entryShortLegs: trade.entryShortLegs.map((leg) => ({
+      optionType: leg.optionType,
+      strike: leg.strike,
+      sellPrice: leg.sellPrice,
+      source: "live-bid" as const,
+    })),
   };
 }
 

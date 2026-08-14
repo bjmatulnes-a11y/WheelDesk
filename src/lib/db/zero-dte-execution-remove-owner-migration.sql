@@ -24,14 +24,17 @@ ALTER TABLE zero_dte_execution_exits DROP COLUMN IF EXISTS user_id CASCADE;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_zero_dte_execution_trade_day
   ON zero_dte_execution_trade_days(trade_date, symbol);
 
--- Only one open execution position per trade day.
-CREATE UNIQUE INDEX IF NOT EXISTS uq_zero_dte_execution_one_open_position
-  ON zero_dte_execution_positions(trade_day_id)
-  WHERE state = 'open';
+-- Current portfolio model permits multiple open positions/lots per trade day.
+DROP INDEX IF EXISTS uq_zero_dte_execution_one_open_position;
+DROP INDEX IF EXISTS uq_zero_dte_execution_open_setup;
+CREATE INDEX IF NOT EXISTS idx_zero_dte_execution_positions_open_setup
+  ON zero_dte_execution_positions(trade_day_id, setup_key, entry_time)
+  WHERE state = 'open' AND setup_key IS NOT NULL;
 
--- One score sample per trade day and timestamp.
-CREATE UNIQUE INDEX IF NOT EXISTS uq_zero_dte_execution_score_sample
-  ON zero_dte_execution_score_history(trade_day_id, sampled_at);
+-- Current score history is unique per setup and timestamp, not globally per day.
+DROP INDEX IF EXISTS uq_zero_dte_execution_score_sample;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_zero_dte_execution_history_setup_time
+  ON zero_dte_execution_score_history(trade_day_id, setup_key, sampled_at);
 
 CREATE INDEX IF NOT EXISTS idx_zero_dte_execution_days_date
   ON zero_dte_execution_trade_days(trade_date DESC);

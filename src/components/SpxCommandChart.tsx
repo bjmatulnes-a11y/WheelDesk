@@ -45,6 +45,7 @@ import {
 } from "../lib/zeroDteExecutionRepository";
 import { ZeroDteExecutionIntelligencePanel } from "./ZeroDteExecutionIntelligencePanel";
 import { buildZeroDteLeastResistancePath } from "../lib/zeroDteLeastResistancePath";
+import { buildPremiumCrestRead } from "../lib/zeroDtePremiumCrestEngine";
 import {
   isOpeningMapCaptureOnTime,
   lockOpeningMap,
@@ -64,6 +65,7 @@ import {
 } from "../lib/execution/useExecutionSignalPaint";
 import { useStableExecutionCandidates } from "../lib/execution/useStableExecutionCandidates";
 import { useExecutionPremiumTape } from "../lib/execution/useExecutionPremiumTape";
+import { useExecutionSignalFunnel } from "../lib/execution/useExecutionSignalFunnel";
 import { buildZeroDtePortfolioRead } from "../lib/zeroDtePortfolioEngine";
 import { buildZeroDtePriceActionContext } from "../lib/zeroDteTimeRegime";
 import {
@@ -259,6 +261,8 @@ export default function SpxCommandChart() {
   const [shadowError, setShadowError] = useState<string | null>(null);
   const shadowOpeningSignalIdsRef = useRef<Set<string>>(new Set());
   const shadowSampleKeyRef = useRef<string | null>(null);
+  const [premiumBaselineReadySetupKeys, setPremiumBaselineReadySetupKeys] =
+    useState<string[]>([]);
 
   useEffect(() => {
     saveZeroDteRiskPolicy(riskPolicy);
@@ -367,8 +371,9 @@ export default function SpxCommandChart() {
       recommendation,
       generatedAt: harvest.generatedAt,
       candleFrequencyMinutes: 1,
+      structuralMap: controllingMap,
     });
-  }, [harvest?.generatedAt, recommendation]);
+  }, [controllingMap, harvest?.generatedAt, recommendation]);
 
   useEffect(() => {
     if (
@@ -563,6 +568,7 @@ export default function SpxCommandChart() {
     openSetupKeys: (executionMemory?.positions ?? []).map(
       (position) => position.setupKey,
     ),
+    premiumBaselineReadySetupKeys,
   });
   const executionCandidates = useMemo<
     Partial<Record<ExecutionStrategy, ExecutionCandidate | null>>
@@ -602,6 +608,40 @@ export default function SpxCommandChart() {
       : `live:${harvest?.spx?.expirationDate ?? "0dte"}`,
     enabled: !manualChainResearch,
   });
+
+  useEffect(() => {
+    if (!harvest?.generatedAt || manualChainResearch) {
+      setPremiumBaselineReadySetupKeys([]);
+      return;
+    }
+    const ready = (
+      ["iron-fly", "put-credit-spread", "call-credit-spread"] as ExecutionStrategy[]
+    ).flatMap((strategy) => {
+      const candidate = stableCandidateTracker.tracks[strategy]?.candidate ?? null;
+      if (!candidate?.setupKey) return [];
+      const samples = premiumTape.points.filter(
+        (point) => point.setupKey === candidate.setupKey,
+      );
+      const currentCredit =
+        calculateStrategyPackageQuote(spxRows, candidate.legs)?.markCredit ?? null;
+      const crest = buildPremiumCrestRead({
+        samples,
+        generatedAt: harvest.generatedAt,
+        currentCredit,
+      });
+      return crest.completedMinuteCount >= 3 ? [candidate.setupKey] : [];
+    });
+    const next = [...new Set(ready)].sort();
+    setPremiumBaselineReadySetupKeys((current) =>
+      current.join("|") === next.join("|") ? current : next,
+    );
+  }, [
+    harvest?.generatedAt,
+    manualChainResearch,
+    premiumTape.points,
+    spxRows,
+    stableCandidateTracker.tracks,
+  ]);
 
   const priceAction = useMemo(
     () => buildZeroDtePriceActionContext(officialSignalCandles),
@@ -676,14 +716,10 @@ export default function SpxCommandChart() {
       .sort((a, b) => b.strike - a.strike);
   }, [recommendation]);
 
-  const leastResistancePath = useMemo(() => {
-    if (!recommendation || !harvest?.generatedAt) return null;
-    return buildZeroDteLeastResistancePath({
-      recommendation,
-      generatedAt: harvest.generatedAt,
-      candleFrequencyMinutes: frequency,
-    });
-  }, [frequency, harvest?.generatedAt, recommendation]);
+  // Display and decision logic share one canonical 1-minute LRP derived from
+  // the confirmed controlling map. Changing chart candle frequency must not
+  // silently change the path used by execution.
+  const leastResistancePath = decisionLeastResistancePath;
 
   const commandRead = useMemo(() => {
     if (!recommendation) return null;
@@ -1275,7 +1311,6 @@ export default function SpxCommandChart() {
       !recommendation ||
       !harvest?.tradeDate ||
       !harvest.generatedAt ||
-      !mapAwareTradeSelection ||
       !mapManager.state ||
       !executionReadMemory
     ) {
@@ -1288,7 +1323,7 @@ export default function SpxCommandChart() {
       recommendation,
       spxRows,
       strikeFlow,
-      tradeSelection: mapAwareTradeSelection,
+      tradeSelection: null,
       mapState: mapManager.state,
       memory: executionReadMemory,
       candidateOverride:
@@ -1340,7 +1375,6 @@ export default function SpxCommandChart() {
       !recommendation ||
       !tradeDate ||
       !generatedAt ||
-      !mapAwareTradeSelection ||
       !mapState ||
       !executionMemory
     ) {
@@ -1356,12 +1390,12 @@ export default function SpxCommandChart() {
           recommendation,
           spxRows,
           strikeFlow,
-          tradeSelection: mapAwareTradeSelection,
+          tradeSelection: null,
           mapState,
           memory: executionMemory,
-          candidateOverride: executionCandidates[position.strategy] ?? null,
+          candidateOverride: null,
           positionOverride: position,
-          tracking: stableCandidateTracker.tracks[position.strategy],
+          tracking: null,
           portfolio: portfolioRead,
           priceAction,
           premiumTape: premiumTape.points,
@@ -1415,7 +1449,6 @@ export default function SpxCommandChart() {
       !recommendation ||
       !tradeDate ||
       !generatedAt ||
-      !mapAwareTradeSelection ||
       !mapState ||
       !executionMemory
     ) {
@@ -1436,7 +1469,7 @@ export default function SpxCommandChart() {
           recommendation,
           spxRows,
           strikeFlow,
-          tradeSelection: mapAwareTradeSelection,
+          tradeSelection: null,
           mapState,
           memory: executionMemory,
           candidateOverride: candidate,
@@ -1494,6 +1527,13 @@ export default function SpxCommandChart() {
     reads: executionReadsForPaint,
   });
 
+  const signalFunnel = useExecutionSignalFunnel({
+    tradeDate: manualChainResearch ? null : harvest?.tradeDate,
+    reads: executionReadsForPaint,
+    signals: signalPaint.signals,
+    shadowTrades,
+  });
+
   const shadowExecutionReads = useMemo(() => {
     const tradeDate = harvest?.tradeDate;
     const generatedAt = harvest?.generatedAt;
@@ -1503,7 +1543,6 @@ export default function SpxCommandChart() {
       !tradeDate ||
       !generatedAt ||
       !recommendation ||
-      !mapAwareTradeSelection ||
       !mapState ||
       !executionMemory
     ) {
@@ -1520,7 +1559,7 @@ export default function SpxCommandChart() {
         recommendation,
         spxRows,
         strikeFlow,
-        tradeSelection: mapAwareTradeSelection,
+        tradeSelection: null,
         mapState,
         memory: executionMemory,
         candidateOverride: null,
@@ -1567,6 +1606,9 @@ export default function SpxCommandChart() {
     if (!sellSignals.length) return;
 
     const existingSignalIds = new Set(shadowTrades.map((trade) => trade.signalId));
+    for (const signalId of existingSignalIds) {
+      shadowOpeningSignalIdsRef.current.delete(signalId);
+    }
     const pending = sellSignals.filter(
       (signal) =>
         !existingSignalIds.has(signal.id) &&
@@ -1578,34 +1620,51 @@ export default function SpxCommandChart() {
       shadowOpeningSignalIdsRef.current.add(signal.id);
     }
 
-    Promise.all(
+    Promise.allSettled(
       pending.map((signal) =>
         openZeroDteShadowTrade({
           signal,
           spxRows,
         }),
       ),
-    )
-      .then((opened) => {
-        const valid = opened.filter(
-          (trade): trade is ZeroDteShadowTrade => Boolean(trade),
-        );
-        if (valid.length) {
-          setShadowTrades((current) => {
-            const byId = new Map(current.map((trade) => [trade.id, trade]));
-            for (const trade of valid) byId.set(trade.id, trade);
-            return [...byId.values()];
-          });
+    ).then((results) => {
+      const opened: ZeroDteShadowTrade[] = [];
+      const failures: string[] = [];
+
+      results.forEach((result, index) => {
+        const signal = pending[index];
+        if (!signal) return;
+        if (result.status === "fulfilled" && result.value) {
+          opened.push(result.value);
+          return;
         }
-        setShadowError(null);
-      })
-      .catch((shadowOpenError) => {
-        setShadowError(
-          shadowOpenError instanceof Error
-            ? shadowOpenError.message
-            : "Shadow trade creation failed.",
-        );
+
+        // A transient API/DB/quote failure must not blacklist a valid SELL
+        // signal for the rest of the session. Release only failed/null attempts
+        // so the next live refresh can retry them.
+        shadowOpeningSignalIdsRef.current.delete(signal.id);
+        if (result.status === "rejected") {
+          failures.push(
+            result.reason instanceof Error
+              ? result.reason.message
+              : "Shadow trade creation failed.",
+          );
+        } else {
+          failures.push(
+            `${signal.label}: exact-leg quotes were not complete enough to paper-enter; retrying while the SELL signal remains valid.`,
+          );
+        }
       });
+
+      if (opened.length) {
+        setShadowTrades((current) => {
+          const byId = new Map(current.map((trade) => [trade.id, trade]));
+          for (const trade of opened) byId.set(trade.id, trade);
+          return [...byId.values()];
+        });
+      }
+      setShadowError(failures.length ? failures.join(" ") : null);
+    });
   }, [shadowTrades, signalPaint.signals, spxRows]);
 
   useEffect(() => {
@@ -1727,7 +1786,6 @@ export default function SpxCommandChart() {
   useEffect(() => {
     if (
       !executionReadsForPaint.length ||
-      !openingMap ||
       !recommendation ||
       !harvest?.tradeDate ||
       !harvest.generatedAt ||
@@ -1949,6 +2007,43 @@ export default function SpxCommandChart() {
         </button>
       </div>
 
+      {!manualChainResearch ? (
+        <div style={styles.signalFunnel}>
+          <div style={styles.signalFunnelHeader}>
+            <div>
+              <strong>Today's Signal Funnel</strong>
+              <span>Unique setup keys · highest stage reached</span>
+            </div>
+            <em>SELL → Shadow gap {signalFunnel.losses.shadowOpen}</em>
+          </div>
+          <div style={styles.signalFunnelGrid}>
+            {[
+              ["Observed", signalFunnel.counts.OBSERVED],
+              ["3-Bar Base", signalFunnel.counts.BASELINE],
+              ["Expanded", signalFunnel.counts.EXPANDED],
+              ["Rollover", signalFunnel.counts.ROLLOVER],
+              ["Rejection", signalFunnel.counts.REJECTION],
+              ["Score", signalFunnel.counts.SCORE],
+              ["SELL", signalFunnel.counts.SELL],
+              ["Shadow", signalFunnel.counts.SHADOW],
+            ].map(([label, value]) => (
+              <div key={String(label)} style={styles.signalFunnelCell}>
+                <span>{label}</span>
+                <strong>{value}</strong>
+              </div>
+            ))}
+          </div>
+          <div style={styles.signalFunnelLosses}>
+            <span>Baseline wait {signalFunnel.losses.baseline}</span>
+            <span>No expansion {signalFunnel.losses.expansion}</span>
+            <span>No rollover {signalFunnel.losses.rollover}</span>
+            <span>No rejection {signalFunnel.losses.rejection}</span>
+            <span>Score short {signalFunnel.losses.score}</span>
+            <span>Final gate {signalFunnel.losses.finalGate}</span>
+          </div>
+        </div>
+      ) : null}
+
       {error ? <div style={styles.error}>{error}</div> : null}
       {expirationError ? (
         <div style={styles.qualityWarning}>
@@ -2056,6 +2151,7 @@ export default function SpxCommandChart() {
             read={entryExecutionRead}
             portfolio={portfolioRead}
             positionReads={manualChainResearch ? {} : positionExecutionReads}
+            executionPositions={manualChainResearch ? [] : executionMemory?.positions ?? []}
             candidates={executionCandidates}
             tracks={manualChainResearch ? null : stableCandidateTracker.tracks}
             riskPolicy={riskPolicy}
@@ -2076,7 +2172,6 @@ export default function SpxCommandChart() {
                 !harvest?.tradeDate ||
                 !harvest.generatedAt ||
                 !recommendation ||
-                !mapAwareTradeSelection ||
                 !mapManager.state ||
                 !executionReadMemory
               ) {
@@ -2101,7 +2196,7 @@ export default function SpxCommandChart() {
                 recommendation,
                 spxRows,
                 strikeFlow,
-                tradeSelection: mapAwareTradeSelection,
+                tradeSelection: null,
                 mapState: mapManager.state,
                 memory: executionReadMemory,
                 candidateOverride: candidate,
@@ -2125,20 +2220,30 @@ export default function SpxCommandChart() {
               setupSource,
               engineClearedAtEntry,
               overrideReason,
+              entryShortLegs,
             }) => {
               if (manualChainResearch) {
                 setExecutionDbError("Research chain is read-only. Live position entry is disabled.");
                 return;
               }
-              if (entryDataHealthBlockers.length > 0) {
+              if (
+                setupSource !== "manual" &&
+                entryDataHealthBlockers.length > 0
+              ) {
                 setExecutionDbError(
-                  `New entry is locked by the live-data safety gate: ${entryDataHealthBlockers.join(" ")}`,
+                  `New engine entry is locked by the live-data safety gate: ${entryDataHealthBlockers.join(" ")}`,
                 );
                 return;
               }
-              if (!harvest?.tradeDate || !harvest.spx?.expirationDate || !executionMemory) {
+              if (!harvest?.tradeDate || !harvest.spx?.expirationDate) {
                 setExecutionDbError(
-                  "Live execution persistence is still initializing. Try the entry again after the next refresh.",
+                  "The live trade date / expiration is not available yet.",
+                );
+                return;
+              }
+              if (setupSource !== "manual" && !executionMemory) {
+                setExecutionDbError(
+                  "Live execution persistence is still initializing. Try the engine entry again after the next refresh.",
                 );
                 return;
               }
@@ -2146,7 +2251,6 @@ export default function SpxCommandChart() {
                 setupSource !== "manual" &&
                 (!recommendation ||
                   !openingMap ||
-                  !mapAwareTradeSelection ||
                   !mapManager.state)
               ) {
                 setExecutionDbError(
@@ -2155,17 +2259,28 @@ export default function SpxCommandChart() {
                 return;
               }
 
+              const resolvedEntryShortLegs = entryShortLegs.map((entry) => {
+                if (entry.sellPrice !== null && entry.sellPrice > 0) return entry;
+                const row = spxRows.find(
+                  (item) =>
+                    item.optionType === entry.optionType &&
+                    Math.abs(item.strike - entry.strike) < 0.01,
+                );
+                const liveBid =
+                  row && Number.isFinite(row.bid) && Number(row.bid) > 0
+                    ? Number(row.bid)
+                    : null;
+                return liveBid === null
+                  ? entry
+                  : { ...entry, sellPrice: liveBid, source: "live-bid" as const };
+              });
+
               setExecutionBusy(true);
               try {
                 if (setupSource === "manual") {
-                  if (!executionMemory?.tradeDayId) {
-                    throw new Error(
-                      "The execution trade day is not initialized yet. Wait for one normal execution sample, then track the manual position.",
-                    );
-                  }
-
                   const memory = await openManualExecutionPositionDb({
                     tradeDate: harvest.tradeDate,
+                    expirationDate: harvest.spx.expirationDate,
                     entryTime: new Date().toISOString(),
                     entryCredit,
                     contracts: quantity,
@@ -2177,6 +2292,7 @@ export default function SpxCommandChart() {
                     entryTouchRiskProxyPct: null,
                     entryRangeConsumptionPct: volContext?.rangeConsumptionPct ?? null,
                     entryEventRisk: riskPolicy.eventRisk,
+                    entryShortLegs: resolvedEntryShortLegs,
                   });
                   setExecutionMemory(memory);
                   setSelectedExecutionStrategy(candidate.strategy);
@@ -2190,8 +2306,8 @@ export default function SpxCommandChart() {
                 if (
                   !recommendation ||
                   !openingMap ||
-                  !mapAwareTradeSelection ||
-                  !mapManager.state
+                  !mapManager.state ||
+                  !executionMemory
                 ) {
                   throw new Error(
                     "Live session context is still building. Try the engine entry again after the next refresh.",
@@ -2218,7 +2334,7 @@ export default function SpxCommandChart() {
                   recommendation,
                   spxRows,
                   strikeFlow,
-                  tradeSelection: mapAwareTradeSelection,
+                  tradeSelection: null,
                   mapState: mapManager.state,
                   memory: executionMemory,
                   candidateOverride: candidate,
@@ -2278,6 +2394,7 @@ export default function SpxCommandChart() {
                   entryTouchRiskProxyPct: openRead.touchRiskProxyPct,
                   entryRangeConsumptionPct: openRead.volContext?.rangeConsumptionPct ?? null,
                   entryEventRisk: riskPolicy.eventRisk,
+                  entryShortLegs: resolvedEntryShortLegs,
                 });
                 setExecutionMemory(memory);
                 setSelectedExecutionStrategy(candidate.strategy);
@@ -2897,6 +3014,44 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "7px 9px",
     fontSize: 9,
     cursor: "pointer",
+  },
+  signalFunnel: {
+    display: "grid",
+    gap: 8,
+    marginBottom: 12,
+    background: "#08131d",
+    border: "1px solid #19344a",
+    borderRadius: 10,
+    padding: "9px 10px",
+  },
+  signalFunnelHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10,
+    color: "#dce9f4",
+    fontSize: 10,
+  },
+  signalFunnelGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(82px, 1fr))",
+    gap: 6,
+  },
+  signalFunnelCell: {
+    display: "grid",
+    gap: 2,
+    border: "1px solid #173047",
+    borderRadius: 8,
+    padding: "6px 8px",
+    color: "#7991a5",
+    fontSize: 9,
+  },
+  signalFunnelLosses: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 10,
+    color: "#7890a4",
+    fontSize: 9,
   },
   qualityWarning: {
     background: "rgba(245,197,66,.07)",
