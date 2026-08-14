@@ -73,7 +73,6 @@ export function ZeroDteShadowTradePanel({
         <div style={styles.list}>
           {[...trades]
             .sort((a, b) => Date.parse(b.signalTime) - Date.parse(a.signalTime))
-            .slice(0, 8)
             .map((trade) => (
               <div key={trade.id} style={styles.row}>
                 <div>
@@ -217,6 +216,10 @@ const styles: Record<string, React.CSSProperties> = {
     display: "grid",
     gap: 6,
     marginTop: 10,
+    maxHeight: 430,
+    overflowY: "auto",
+    paddingRight: 4,
+    overscrollBehavior: "contain",
   },
   row: {
     display: "flex",
