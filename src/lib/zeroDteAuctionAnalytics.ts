@@ -720,13 +720,7 @@ export function evaluateAuctionConfluence(
   const timing: AuctionConfluenceTiming = isLate ? "LATE" : "CONCURRENT";
 
   let tier: AuctionConfluenceTier = "NEUTRAL";
-  // The own-vs-opposite score is itself directional evidence. A materially
-  // negative edge cannot be called NEUTRAL merely because no discrete state
-  // cleared its gate. This fixes cases such as CALL 44 vs PUT 67 (edge -23).
-  if (edge <= -15) tier = "CONFLICT";
-  else if (edge <= -8 && opposingWeight >= 8) tier = "CONFLICT";
-  else if (edge <= -8) tier = "MIXED";
-  else if (hasOpposingState && opposingWeight > alignedWeight + 4) tier = "CONFLICT";
+  if (hasOpposingState && opposingWeight > alignedWeight + 4) tier = "CONFLICT";
   else if (alignedWeight >= 14 && opposingWeight >= 14) tier = "MIXED";
   else if (opposingWeight >= 20 && edge <= 0) tier = "CONFLICT";
   else if (
@@ -782,41 +776,38 @@ function buildConfluenceSummary(
   opposing: Evidence[],
   independentFamilies: number,
 ) {
-  const lead = aligned.slice(0, 3).map((item) => item.label).join(" · ");
+  // Show at least one item from each represented family rather than the raw first
+  // three, so a 2/2 row does not display three SHAPE items and hide the VOLUME
+  // evidence that actually earned the second family.
+  const shape = aligned.filter((item) => item.family === "SHAPE");
+  const volume = aligned.filter((item) => item.family === "VOLUME");
+  const lead = [
+    ...shape.slice(0, volume.length ? 2 : 3),
+    ...volume.slice(0, shape.length ? 2 : 3),
+  ]
+    .map((item) => item.label)
+    .join(" · ");
+
   const conflict = opposing.slice(0, 2).map((item) => item.label).join(" · ");
   if (tier === "CONFLICT") return conflict ? `Opposing: ${conflict}` : "Opposing auction evidence dominates.";
   if (tier === "MIXED") return `Aligned: ${lead || "none"} | Opposing: ${conflict || "none"}`;
   if (tier === "INSUFFICIENT") return "Not enough auction evidence either way.";
-  const familyNote = independentFamilies >= 2 ? " (shape + volume)" : " (shape only)";
+
+  // Name the family that is actually present. The prior version hard-coded
+  // "(shape only)" for every single-family row, which mislabelled VOLUME-only
+  // evidence — e.g. a POC STALLED row reported itself as shape-derived.
+  const familyNote =
+    independentFamilies >= 2
+      ? " (shape + volume)"
+      : volume.length && !shape.length
+        ? " (volume only)"
+        : shape.length && !volume.length
+          ? " (shape only)"
+          : "";
+
   return lead ? `${lead}${familyNote}` : "No decisive directional auction evidence.";
 }
 
-/**
- * Research-safe timestamp matcher. Returns only information that existed at or
- * before the signal timestamp; it never reaches into the following ES minute.
- */
-export function latestAuctionMinuteAtOrBefore(
-  minutes: HistoricalAuctionMinute[],
-  epochSeconds: number,
-  toleranceSeconds = 90,
-) {
-  let best: HistoricalAuctionMinute | null = null;
-  let bestLag = Number.POSITIVE_INFINITY;
-  for (const minute of minutes) {
-    if (minute.time > epochSeconds) continue;
-    const lag = epochSeconds - minute.time;
-    if (lag < bestLag) {
-      best = minute;
-      bestLag = lag;
-    }
-  }
-  return best && bestLag <= toleranceSeconds ? best : null;
-}
-
-/**
- * Kept for compatibility with older research callers. Do not use this helper
- * for causal/backtest attribution because it may choose a future minute.
- */
 export function nearestAuctionMinute(
   minutes: HistoricalAuctionMinute[],
   epochSeconds: number,
@@ -998,20 +989,13 @@ function classifyNode(
   poc: number,
 ): AuctionProfileNode {
   if (price === poc) return "POC";
+  const levels = [...profile.values()].sort((a, b) => b.totalVolume - a.totalVolume);
+  if (!levels.length) return "NORMAL";
   const cell = profile.get(price);
   if (!cell) return "LVN";
-  const totalLevels = profile.size;
-  if (totalLevels <= 1) return "NORMAL";
-
-  // O(N) percentile rank. The prior implementation sorted the entire profile on
-  // every minute (O(N log N)) only to discover this cell's rank. Counting levels
-  // with strictly greater reconstructed volume produces the same useful percentile
-  // classification without the repeated sort cost.
-  let greater = 0;
-  for (const level of profile.values()) {
-    if (level.totalVolume > cell.totalVolume) greater += 1;
-  }
-  const pct = (greater / (totalLevels - 1)) * 100;
+  const rank = levels.findIndex((level) => level.price === price);
+  if (rank < 0) return "NORMAL";
+  const pct = levels.length <= 1 ? 0 : (rank / (levels.length - 1)) * 100;
   if (pct <= 20) return "HVN";
   if (pct >= 80) return "LVN";
   return "NORMAL";
