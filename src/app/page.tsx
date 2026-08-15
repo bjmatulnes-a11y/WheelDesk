@@ -1,13 +1,9 @@
 import Link from "next/link";
-import { WHEELDESK_PLANS } from "../lib/billing/plans";
 import HeroProductFrame from "../components/marketing/HeroProductFrame";
 
-export default function LandingPage({ searchParams }: { searchParams?: { joined?: string; error?: string; email?: string } }) {
-  const joined = searchParams?.joined;
-  const error = searchParams?.error;
-
+export default function LandingPage() {
   return (
-    <main className="wd-landing">
+    <main className="wd-landing wd-landing-minimal">
       <div className="wd-landing-glow wd-landing-glow-one" />
       <div className="wd-landing-glow wd-landing-glow-two" />
 
@@ -21,187 +17,108 @@ export default function LandingPage({ searchParams }: { searchParams?: { joined?
         </Link>
 
         <nav className="wd-landing-links" aria-label="Primary landing navigation">
-          <a href="#product">Product</a>
-          <a href="#validation">Validation</a>
-          <a href="#daily-loop">Daily Loop</a>
-          <Link href="/demo">Demo</Link>
+          <a href="#platform">Platform</a>
           <Link href="/pricing">Pricing</Link>
-          <Link href="/faq">FAQ</Link>
           <Link href="/about">About</Link>
-          <Link href="/login">Login</Link>
-          <Link href="/signup">Create Account</Link>
+          <Link href="/login">Log in</Link>
+          <Link href="/signup" className="wd-nav-cta">Get started</Link>
         </nav>
       </header>
 
-      <section className="wd-hero" id="product">
+      <section className="wd-hero" id="platform">
         <div className="wd-hero-copy">
-          <div className="wd-eyebrow">Built for premium sellers and OI-driven operators</div>
-          <h1>Turn option-chain chaos into a daily trading control center.</h1>
+          <div className="wd-eyebrow">Options market structure for active premium sellers</div>
+          <h1>See the structure. Trade the decision.</h1>
           <p>
-            WheelDesk combines portfolio exposure, OI surface snapshots, IV bands, dealer pressure,
-            wall migration, and validation into one cockpit for disciplined wheel and covered-call management.
+            WheelDesk turns options positioning, dealer pressure, premium behavior, and portfolio context
+            into a clearer operating picture — from SPX 0DTE execution to wheel management.
           </p>
 
-          <form action="/api/waitlist" method="post" className="wd-email-capture" aria-label="Join the WheelDesk early access list">
-            <input type="hidden" name="source" value="landing-hero" />
-            <label htmlFor="waitlist-email">Get build updates and early access notes while WheelDesk is being finalized.</label>
-            <div>
-              <input id="waitlist-email" name="email" type="email" placeholder="you@example.com" required />
-              <button type="submit">Join Early Access</button>
-            </div>
-            {joined ? (
-              <p className="wd-capture-success">{joined === "already" ? "You are already on the list." : "You are on the list. Check your inbox for the WheelDesk note."}</p>
-            ) : null}
-            {error ? <p className="wd-capture-error">Please enter a valid email and try again.</p> : null}
-          </form>
-
           <div className="wd-hero-actions">
-            <Link href="/pricing" className="wd-primary-cta">View Plans</Link>
-            <Link href="/login" className="wd-secondary-cta">Log In</Link>
+            <Link href="/signup" className="wd-primary-cta">Get started</Link>
+            <Link href="/pricing" className="wd-secondary-cta">View pricing</Link>
           </div>
 
-          <div className="wd-proof-grid" aria-label="WheelDesk product highlights">
-            <div><span>Database</span><strong>Supabase-first</strong></div>
-            <div><span>Signal layer</span><strong>OI + IV + flow</strong></div>
-            <div><span>Phone access</span><strong>PWA install ready</strong></div>
+          <div className="wd-hero-points" aria-label="WheelDesk focus areas">
+            <span>Market structure</span>
+            <span>Execution timing</span>
+            <span>Validation</span>
           </div>
         </div>
 
         <HeroProductFrame />
       </section>
 
-      <section className="wd-feature-band" aria-label="WheelDesk product pillars">
-        <FeatureCard number="01" title="Harvest" detail="Capture option-chain surfaces and candles into Supabase so the app is not trapped in browser storage." />
-        <FeatureCard number="02" title="Control" detail="Translate OI walls, IV bands, dealer pressure, and price context into a daily action state." />
-        <FeatureCard number="03" title="Validate" detail="Measure the projected OI path against actual candles so the edge earns trust with receipts." />
+      <section className="wd-value-band" aria-label="WheelDesk product pillars">
+        <article>
+          <span>01</span>
+          <h2>Find the structure</h2>
+          <p>Surface the levels, pressure, positioning, and path that matter without living inside the raw option chain.</p>
+        </article>
+        <article>
+          <span>02</span>
+          <h2>Wait for the trade</h2>
+          <p>Use premium behavior and execution context to separate a setup from a trade that is actually ready.</p>
+        </article>
+        <article>
+          <span>03</span>
+          <h2>Keep the receipts</h2>
+          <p>Compare prior reads with realized price action so confidence comes from evidence, not another black-box signal.</p>
+        </article>
       </section>
 
-      <section className="wd-section wd-split-section" id="validation">
+      <section className="wd-horizon-section">
+        <div className="wd-horizon-heading">
+          <div className="wd-eyebrow">One platform · two horizons</div>
+          <h2>Built for the decisions before, during, and after the trade.</h2>
+        </div>
+
+        <div className="wd-horizon-grid">
+          <article className="wd-horizon-card">
+            <div>
+              <span className="wd-horizon-kicker">Intraday</span>
+              <h3>0DTE Command</h3>
+              <p>
+                Read pressure, premium, exhaustion, and execution readiness as the session develops.
+              </p>
+            </div>
+            <Link href="/zero-dte/chart">Explore 0DTE →</Link>
+          </article>
+
+          <article className="wd-horizon-card">
+            <div>
+              <span className="wd-horizon-kicker">Portfolio</span>
+              <h3>Wheel + Control Center</h3>
+              <p>
+                Put OI structure, forecast context, basis, Greeks, and position risk around covered calls and cash-secured puts.
+              </p>
+            </div>
+            <Link href="/about">Explore the platform →</Link>
+          </article>
+        </div>
+      </section>
+
+      <section className="wd-final-cta wd-final-cta-minimal">
         <div>
-          <div className="wd-eyebrow">Why traders care</div>
-          <h2>WheelDesk is not another watchlist. It is a decision layer.</h2>
-          <p>
-            The product is being shaped around one question: should the trader sell, repair, roll, wait,
-            or stand down? The Control Center is the front end; the Validation page is where the product proves it.
-          </p>
+          <div className="wd-eyebrow">WheelDesk</div>
+          <h2>A quieter screen. A clearer decision.</h2>
+          <p>Bring the market structure and the position into the same operating picture.</p>
         </div>
-
-        <div className="wd-signal-stack">
-          <SignalRow label="OI Surface" value="Walls, magnets, path, and chain context" />
-          <SignalRow label="Dealer Pressure" value="Pin risk, unlock zones, and neutralization pressure" />
-          <SignalRow label="Portfolio" value="Theo value, mark value, delta/theta, cash capacity" />
-          <SignalRow label="Validation" value="Projected path versus realized price behavior" />
+        <div className="wd-hero-actions">
+          <Link href="/signup" className="wd-primary-cta">Create account</Link>
+          <Link href="/login" className="wd-secondary-cta">Log in</Link>
         </div>
-      </section>
-
-
-      <section className="wd-section wd-split-section" id="daily-loop">
-        <div>
-          <div className="wd-eyebrow">Sticky by design</div>
-          <h2>The daily edge loop gives traders a reason to come back.</h2>
-          <p>
-            WheelDesk is built around a repeatable trading routine: check what changed, read the current structure,
-            compare the signal to validation receipts, then decide whether to sell premium, repair, roll, or wait.
-          </p>
-        </div>
-
-        <div className="wd-signal-stack">
-          <SignalRow label="Morning read" value="Saved tickers surface today’s bias, walls, pressure, and risk state" />
-          <SignalRow label="What changed" value="Call walls, put supports, IV bands, and dealer pressure versus yesterday" />
-          <SignalRow label="Signal receipts" value="Validation tracks whether prior projected paths actually worked" />
-          <SignalRow label="Portfolio fit" value="Position risk and wheel basis keep the action map grounded" />
-        </div>
-      </section>
-
-      <section className="wd-section wd-mobile-section" id="mobile">
-        <div>
-          <div className="wd-eyebrow">Mobile-first access</div>
-          <h2>Install WheelDesk from Safari while the native app roadmap develops.</h2>
-          <p>
-            The current product is a PWA: deploy it, open it on iPhone, tap Share, then Add to Home Screen.
-            That gives users an app icon and standalone launch while the native iPhone app and billing layer are finalized.
-          </p>
-        </div>
-        <div className="wd-phone-card">
-          <span className="wd-phone-notch" />
-          <strong>WheelDesk</strong>
-          <p>Control Center, Portfolio, Scanner, Wheel, and Validation in a phone-ready shell.</p>
-          <Link href="/pricing">View plans</Link>
-        </div>
-      </section>
-
-      <section className="wd-section" id="pricing">
-        <div className="wd-pricing-heading">
-          <div className="wd-eyebrow">Pricing</div>
-          <h2>Choose the control level that matches your trading workflow.</h2>
-          <p>
-            Account creation is free, but the trading console is gated by subscription once billing is enabled.
-            This keeps users from bypassing checkout and makes Stripe the source of truth for plan access.
-          </p>
-        </div>
-
-        <div className="wd-pricing-grid">
-          {WHEELDESK_PLANS.map((plan) => (
-            <article key={plan.id} className={plan.highlight ? "wd-price-card wd-price-card-highlight" : "wd-price-card"}>
-              <div>
-                <h3>{plan.name}</h3>
-                <p>{plan.description}</p>
-              </div>
-              <div className="wd-price">
-                <strong>{plan.priceLabel}</strong>
-                <span>{plan.note}</span>
-              </div>
-              <ul>
-                {plan.features.slice(0, 5).map((feature) => (
-                  <li key={feature}>{feature}</li>
-                ))}
-              </ul>
-              <Link href={`/pricing?plan=${plan.id}`}>Choose {plan.name}</Link>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <section className="wd-final-cta">
-        <div>
-          <div className="wd-eyebrow">Early access</div>
-          <h2>Join the WheelDesk build list while the validation engine matures.</h2>
-          <p>
-            Get build updates, feature releases, and early access notes as WheelDesk continues hardening the OI path,
-            Trader Edge, News Pulse, and validation workflow.
-          </p>
-        </div>
-        <form action="/api/waitlist" method="post" className="wd-footer-capture" aria-label="Join the WheelDesk waitlist">
-          <input type="hidden" name="source" value="landing-final-cta" />
-          <input name="email" type="email" placeholder="you@example.com" required />
-          <button type="submit">Join the List</button>
-        </form>
       </section>
 
       <footer className="wd-landing-footer">
         <span>WheelDesk · thewheeldesk.com</span>
-        <span>Control Center · Validation · Portfolio · Pricing · Mobile · FAQ · About</span>
+        <span className="wd-footer-links">
+          <Link href="/pricing">Pricing</Link>
+          <Link href="/faq">FAQ</Link>
+          <Link href="/about">About</Link>
+          <Link href="/contact">Contact</Link>
+        </span>
       </footer>
     </main>
-  );
-}
-
-
-function FeatureCard({ number, title, detail }: { number: string; title: string; detail: string }) {
-  return (
-    <article className="wd-feature-card">
-      <span>{number}</span>
-      <h3>{title}</h3>
-      <p>{detail}</p>
-    </article>
-  );
-}
-
-function SignalRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="wd-signal-row">
-      <strong>{label}</strong>
-      <span>{value}</span>
-    </div>
   );
 }

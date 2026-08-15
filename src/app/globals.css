@@ -2054,3 +2054,253 @@ canvas {
     width: 100%;
   }
 }
+
+/* Minimal landing refresh ------------------------------------------------------ */
+.wd-landing-minimal .wd-landing-nav {
+  min-height: 84px;
+}
+
+.wd-nav-cta {
+  padding: 10px 14px;
+  border: 1px solid rgba(34, 211, 238, 0.42);
+  border-radius: 10px;
+  background: rgba(13, 58, 73, 0.64);
+  color: #eaffff !important;
+}
+
+.wd-landing-minimal .wd-hero {
+  min-height: 620px;
+  padding-top: 72px;
+  padding-bottom: 72px;
+}
+
+.wd-landing-minimal .wd-hero-copy {
+  gap: 24px;
+}
+
+.wd-landing-minimal .wd-hero h1 {
+  max-width: 620px;
+  font-size: clamp(48px, 6.5vw, 82px);
+  line-height: 0.91;
+}
+
+.wd-landing-minimal .wd-hero-copy > p {
+  max-width: 650px;
+  font-size: 18px;
+}
+
+.wd-hero-points {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 22px;
+  color: #8fb8d1;
+  font-size: 12px;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.wd-hero-points span {
+  position: relative;
+}
+
+.wd-hero-points span:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: -13px;
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: #22d3ee;
+  transform: translateY(-50%);
+}
+
+.wd-value-band,
+.wd-horizon-section {
+  position: relative;
+  z-index: 1;
+  width: min(1180px, calc(100% - 40px));
+  margin-inline: auto;
+}
+
+.wd-value-band {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-top: 1px solid rgba(80, 120, 153, 0.22);
+  border-bottom: 1px solid rgba(80, 120, 153, 0.22);
+}
+
+.wd-value-band article {
+  min-height: 250px;
+  padding: 34px 30px 38px;
+}
+
+.wd-value-band article + article {
+  border-left: 1px solid rgba(80, 120, 153, 0.22);
+}
+
+.wd-value-band article > span,
+.wd-horizon-kicker {
+  color: #22d3ee;
+  font-size: 11px;
+  font-weight: 950;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.wd-value-band h2 {
+  margin: 48px 0 10px;
+  color: #f8fbff;
+  font-size: 27px;
+  letter-spacing: -0.045em;
+}
+
+.wd-value-band p,
+.wd-horizon-card p {
+  margin: 0;
+  color: #9fb8cc;
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.wd-horizon-section {
+  padding: 96px 0 88px;
+}
+
+.wd-horizon-heading {
+  max-width: 720px;
+  margin-bottom: 32px;
+}
+
+.wd-horizon-heading h2 {
+  margin: 10px 0 0;
+  color: #f8fbff;
+  font-size: clamp(34px, 4.5vw, 56px);
+  line-height: 0.98;
+  letter-spacing: -0.065em;
+}
+
+.wd-horizon-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.wd-horizon-card {
+  min-height: 300px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 34px;
+  padding: 30px;
+  border: 1px solid rgba(80, 120, 153, 0.30);
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(8, 26, 42, 0.88), rgba(4, 15, 26, 0.88));
+}
+
+.wd-horizon-card h3 {
+  margin: 12px 0 10px;
+  color: #ffffff;
+  font-size: 32px;
+  letter-spacing: -0.05em;
+}
+
+.wd-horizon-card a {
+  width: fit-content;
+  color: #67e8f9;
+  font-size: 14px;
+  font-weight: 900;
+  text-decoration: none;
+}
+
+.wd-final-cta-minimal {
+  margin-top: 0;
+  margin-bottom: 26px;
+}
+
+.wd-final-cta-minimal .wd-hero-actions {
+  flex-shrink: 0;
+}
+
+.wd-footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 18px;
+}
+
+.wd-footer-links a {
+  text-decoration: none;
+}
+
+@media (max-width: 900px), (max-device-width: 900px) {
+  .wd-value-band,
+  .wd-horizon-section {
+    width: min(100% - 28px, 1180px);
+  }
+
+  .wd-landing-minimal .wd-landing-links {
+    align-items: center;
+  }
+
+  .wd-landing-minimal .wd-hero {
+    min-height: auto;
+    padding-top: 44px;
+    padding-bottom: 58px;
+  }
+
+  .wd-value-band,
+  .wd-horizon-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .wd-value-band article {
+    min-height: 0;
+  }
+
+  .wd-value-band article + article {
+    border-left: 0;
+    border-top: 1px solid rgba(80, 120, 153, 0.22);
+  }
+
+  .wd-value-band h2 {
+    margin-top: 30px;
+  }
+
+  .wd-horizon-section {
+    padding: 72px 0 64px;
+  }
+
+  .wd-horizon-card {
+    min-height: 250px;
+  }
+
+  .wd-footer-links {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 520px), (max-device-width: 520px) {
+  .wd-landing-minimal .wd-hero h1 {
+    font-size: 48px;
+  }
+
+  .wd-hero-points {
+    display: grid;
+    gap: 8px;
+  }
+
+  .wd-hero-points span::after {
+    display: none;
+  }
+
+  .wd-value-band article,
+  .wd-horizon-card {
+    padding: 24px 20px;
+  }
+
+  .wd-horizon-card {
+    min-height: 230px;
+  }
+}
