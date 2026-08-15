@@ -49,7 +49,7 @@ const ES_TICK = 0.25;
 export function buildHistoricalFootprintStudy(args: {
   candles: HistoricalEsCandle[];
   date: string;
-  aggregationMinutes?: 5 | 15 | 30;
+  aggregationMinutes?: 1 | 5 | 15 | 30;
   session?: "RTH" | "FULL";
 }): HistoricalFootprintStudy {
   const aggregationMinutes = args.aggregationMinutes ?? 30;

@@ -27,13 +27,13 @@ type ApiResponse = {
   failures?: string[];
 };
 
-type Aggregation = 5 | 15 | 30;
+type Aggregation = 1 | 5 | 15 | 30;
 type SessionMode = "RTH" | "FULL";
 
 export default function EsHistoricalFootprintLab() {
   const [date, setDate] = useState("2026-08-14");
   const [symbol, setSymbol] = useState("");
-  const [aggregation, setAggregation] = useState<Aggregation>(30);
+  const [aggregation, setAggregation] = useState<Aggregation>(1);
   const [session, setSession] = useState<SessionMode>("RTH");
   const [response, setResponse] = useState<ApiResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -116,6 +116,7 @@ export default function EsHistoricalFootprintLab() {
             onChange={(event) => setAggregation(Number(event.target.value) as Aggregation)}
             style={styles.input}
           >
+            <option value={1}>1 minute</option>
             <option value={5}>5 minute</option>
             <option value={15}>15 minute</option>
             <option value={30}>30 minute</option>
@@ -226,7 +227,8 @@ function FootprintMatrix({
     ...study.buckets.flatMap((bucket) => bucket.cells.map((cell) => cell.totalVolume)),
   );
   const maxProfile = Math.max(1, ...study.profile.map((level) => level.totalVolume));
-  const columns = `72px repeat(${study.buckets.length}, minmax(116px, 1fr)) 160px`;
+  const bucketWidth = study.buckets.length > 150 ? 92 : 116;
+  const columns = `72px repeat(${study.buckets.length}, ${bucketWidth}px) 160px`;
 
   return (
     <div style={styles.matrixFrame}>
