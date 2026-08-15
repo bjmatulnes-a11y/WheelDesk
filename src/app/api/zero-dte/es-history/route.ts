@@ -5,6 +5,15 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
+type HistoricalCandle = {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+};
+
 export async function GET(request: NextRequest) {
   const date = request.nextUrl.searchParams.get("date")?.trim() || previousWeekdayDate();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -23,41 +32,29 @@ export async function GET(request: NextRequest) {
 
   for (const symbol of candidates) {
     try {
-      const params = new URLSearchParams({
-        symbol,
-        periodType: "day",
-        frequencyType: "minute",
-        frequency: "1",
-        startDate: String(startDate),
-        endDate: String(endDate),
-        needExtendedHoursData: "true",
-        needPreviousClose: "true",
-      });
-      const result = await schwabFetch<SchwabPriceHistoryResponse>(
-        `/pricehistory?${params.toString()}`,
-      );
-      const candles = (result.candles ?? [])
-        .filter(
-          (candle) =>
-            Number.isFinite(candle.datetime) &&
-            Number.isFinite(candle.open) &&
-            Number.isFinite(candle.high) &&
-            Number.isFinite(candle.low) &&
-            Number.isFinite(candle.close) &&
-            Number.isFinite(candle.volume),
-        )
-        .map((candle) => ({
-          time: Math.floor(candle.datetime / 1000),
-          open: candle.open,
-          high: candle.high,
-          low: candle.low,
-          close: candle.close,
-          volume: Number(candle.volume ?? 0),
-        }));
-
-      if (!candles.length) {
+      const es = await fetchHistory(symbol, startDate, endDate, true);
+      if (!es.candles.length) {
         failures.push(`${symbol}: Schwab returned no candles`);
         continue;
+      }
+
+      const resolvedEsSymbol = es.symbol ?? symbol;
+      const spxSymbol = process.env.SCHWAB_SPX_SYMBOL?.trim() || "$SPX";
+      const basisInstrumentCompatible = resolvedEsSymbol.toUpperCase().includes("/ES");
+      let spxCandles: HistoricalCandle[] = [];
+      let spxPreviousClose: number | null = null;
+      let basisFailure: string | null = basisInstrumentCompatible
+        ? null
+        : `Basis disabled for ${resolvedEsSymbol}; ES→SPX projection requires an ES futures symbol.`;
+      if (basisInstrumentCompatible) {
+        try {
+          const spx = await fetchHistory(spxSymbol, startDate, endDate, false);
+          spxCandles = spx.candles;
+          spxPreviousClose = spx.previousClose;
+          if (!spxCandles.length) basisFailure = `${spxSymbol}: Schwab returned no SPX candles`;
+        } catch (error) {
+          basisFailure = `${spxSymbol}: ${message(error)}`;
+        }
       }
 
       return NextResponse.json(
@@ -66,19 +63,25 @@ export async function GET(request: NextRequest) {
           provider: "schwab-pricehistory-experiment",
           date,
           requestedSymbol: requested,
-          symbol: result.symbol ?? symbol,
+          symbol: resolvedEsSymbol,
           contractCandidate: contract,
-          previousClose: result.previousClose ?? null,
-          candleCount: candles.length,
-          candles,
+          previousClose: es.previousClose,
+          candleCount: es.candles.length,
+          candles: es.candles,
+          spxSymbol,
+          spxPreviousClose,
+          spxCandleCount: spxCandles.length,
+          spxCandles,
+          basisFailure,
           limitations: {
             trueTimeAndSales: false,
             historicalBidAskVolume: false,
             fullDepth: false,
-            reconstruction: "OHLCV_PROXY",
+            reconstruction: "OHLCV_AUCTION_STRUCTURE",
+            esSpxBasis: spxCandles.length > 0,
           },
           note:
-            "This endpoint experimentally asks Schwab pricehistory for ES futures. If Schwab returns candles, the lab reconstructs volume-at-price from 1-minute OHLCV only. It is not historical bid/ask Time & Sales.",
+            "ES history is 1-minute OHLCV. The lab derives auction/profile structure from price and volume; synthetic bid/ask splits are not treated as true order flow. SPX history is returned separately so ES auction levels can be projected onto the SPX scale with a contemporaneous basis.",
         },
         { headers: { "Cache-Control": "no-store, no-cache, must-revalidate" } },
       );
@@ -100,6 +103,7 @@ export async function GET(request: NextRequest) {
         trueTimeAndSales: false,
         historicalBidAskVolume: false,
         fullDepth: false,
+        esSpxBasis: false,
       },
     },
     {
@@ -107,6 +111,53 @@ export async function GET(request: NextRequest) {
       headers: { "Cache-Control": "no-store, no-cache, must-revalidate" },
     },
   );
+}
+
+async function fetchHistory(
+  symbol: string,
+  startDate: number,
+  endDate: number,
+  extendedHours: boolean,
+) {
+  const params = new URLSearchParams({
+    symbol,
+    periodType: "day",
+    frequencyType: "minute",
+    frequency: "1",
+    startDate: String(startDate),
+    endDate: String(endDate),
+    needExtendedHoursData: extendedHours ? "true" : "false",
+    needPreviousClose: "true",
+  });
+  const result = await schwabFetch<SchwabPriceHistoryResponse>(
+    `/pricehistory?${params.toString()}`,
+  );
+  return {
+    symbol: result.symbol ?? symbol,
+    previousClose: result.previousClose ?? null,
+    candles: normalizeCandles(result),
+  };
+}
+
+function normalizeCandles(result: SchwabPriceHistoryResponse): HistoricalCandle[] {
+  return (result.candles ?? [])
+    .filter(
+      (candle) =>
+        Number.isFinite(candle.datetime) &&
+        Number.isFinite(candle.open) &&
+        Number.isFinite(candle.high) &&
+        Number.isFinite(candle.low) &&
+        Number.isFinite(candle.close) &&
+        Number.isFinite(candle.volume),
+    )
+    .map((candle) => ({
+      time: Math.floor(candle.datetime / 1000),
+      open: candle.open,
+      high: candle.high,
+      low: candle.low,
+      close: candle.close,
+      volume: Number(candle.volume ?? 0),
+    }));
 }
 
 function frontEsContractSymbol(date: Date) {

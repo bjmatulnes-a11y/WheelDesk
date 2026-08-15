@@ -1,5 +1,6 @@
 import {
   ES_TICK,
+  candleShapeProxyPct,
   historicalCandleMatchesSession,
   reconstructHistoricalCandleFootprint,
   type HistoricalEsCandle,
@@ -12,8 +13,8 @@ export type AuctionState =
   | "ACCEPTANCE"
   | "RELEASE_UP"
   | "RELEASE_DOWN"
-  | "ABSORPTION_HIGH"
-  | "ABSORPTION_LOW"
+  | "STALL_HIGH"
+  | "STALL_LOW"
   | "EXHAUSTION_UP"
   | "EXHAUSTION_DOWN"
   | "REJECTION_HIGH"
@@ -21,8 +22,13 @@ export type AuctionState =
 
 export type AuctionProfileNode = "POC" | "HVN" | "LVN" | "NORMAL";
 export type AuctionPocPosition = "ABOVE" | "BELOW" | "AT";
-export type AuctionDeltaDivergence = "BEARISH" | "BULLISH" | "NONE";
-export type AuctionDeltaReversal = "BEARISH" | "BULLISH" | "NONE";
+/**
+ * Renamed from AuctionDeltaDivergence. This detects "new extreme with a weak
+ * close" — a price pattern, not tape divergence. See detectFailedExtreme().
+ */
+export type AuctionFailedExtreme = "BEARISH" | "BULLISH" | "NONE";
+/** Renamed from AuctionDeltaReversal. Shape-proxy swing, not tape delta. */
+export type AuctionShapeReversal = "BEARISH" | "BULLISH" | "NONE";
 export type AuctionPocMomentum = "UP" | "DOWN" | "STALLED";
 
 export type HistoricalAuctionMinute = {
@@ -39,17 +45,18 @@ export type HistoricalAuctionMinute = {
   pocMigration5m: number;
   pocMomentum: AuctionPocMomentum;
   node: AuctionProfileNode;
-  deltaProxyPct: number;
+  /** Synthetic candle-shape proxy. NOT order-flow delta. 56*body + 34*closeLoc. */
+  shapeProxyPct: number;
   volumeZ: number;
   rangeZ: number;
   efficiency5mPct: number;
-  deltaDivergence: AuctionDeltaDivergence;
-  deltaReversal: AuctionDeltaReversal;
+  failedExtreme: AuctionFailedExtreme;
+  shapeReversal: AuctionShapeReversal;
   acceptanceScore: number;
   releaseUpScore: number;
   releaseDownScore: number;
-  absorptionHighScore: number;
-  absorptionLowScore: number;
+  stallHighScore: number;
+  stallLowScore: number;
   exhaustionUpScore: number;
   exhaustionDownScore: number;
   rejectionHighScore: number;
@@ -59,6 +66,10 @@ export type HistoricalAuctionMinute = {
   putFadeScore: number;
   state: AuctionState;
   stateScore: number;
+  /** Margin of the winning state over its own gate. Drives tie/ambiguity logic. */
+  stateMargin: number;
+  /** True when the top two eligible states are directional opposites within AMBIGUITY_BAND. */
+  stateAmbiguous: boolean;
   features: string[];
 };
 
@@ -70,7 +81,15 @@ export type AuctionConfluenceTier =
   | "SUPPORTIVE"
   | "MIXED"
   | "NEUTRAL"
+  /** Too little evidence either way — distinct from NEUTRAL ("balanced evidence"). */
+  | "INSUFFICIENT"
   | "CONFLICT";
+
+/**
+ * CONCURRENT — the auction read and the signal coincide.
+ * LATE        — the move the signal wanted to fade has already released.
+ */
+export type AuctionConfluenceTiming = "CONCURRENT" | "LATE" | "UNKNOWN";
 
 export type AuctionConfluenceTarget = "CALL_FADE" | "PUT_FADE" | "CENTER";
 
@@ -83,6 +102,12 @@ export type AuctionConfluenceEvaluation = {
   edge: number;
   alignedEvidence: string[];
   opposingEvidence: string[];
+  /**
+   * How many INDEPENDENT evidence families support the read (max 2 today:
+   * SHAPE and VOLUME). DEFINITIVE requires 2. With a real tape this can reach 3.
+   */
+  independentFamilies: number;
+  timing: AuctionConfluenceTiming;
   summary: string;
 };
 
@@ -92,11 +117,11 @@ export type HistoricalAuctionSummary = {
   featureCounts: {
     acceptance: number;
     release: number;
-    absorption: number;
+    stall: number;
     exhaustion: number;
     rejection: number;
-    bearishDeltaDivergence: number;
-    bullishDeltaDivergence: number;
+    bearishFailedExtreme: number;
+    bullishFailedExtreme: number;
     thinZone: number;
   };
   topCallFade: HistoricalAuctionMinute[];
@@ -112,8 +137,8 @@ const STATES: AuctionState[] = [
   "ACCEPTANCE",
   "RELEASE_UP",
   "RELEASE_DOWN",
-  "ABSORPTION_HIGH",
-  "ABSORPTION_LOW",
+  "STALL_HIGH",
+  "STALL_LOW",
   "EXHAUSTION_UP",
   "EXHAUSTION_DOWN",
   "REJECTION_HIGH",
@@ -134,7 +159,7 @@ export function buildHistoricalAuctionAnalytics(args: {
   const profile = new Map<number, MutableCell>();
   const minutes: HistoricalAuctionMinute[] = [];
   const pocHistory: number[] = [];
-  const deltaHistory: number[] = [];
+  const shapeHistory: number[] = [];
   const volumeHistory: number[] = [];
   const rangeHistory: number[] = [];
 
@@ -146,10 +171,10 @@ export function buildHistoricalAuctionAnalytics(args: {
     const developingPoc = findPoc(profile) ?? roundToTick(candle.close);
     pocHistory.push(developingPoc);
 
-    const totalCellVolume = cells.reduce((sum, cell) => sum + cell.totalVolume, 0);
-    const totalDelta = cells.reduce((sum, cell) => sum + cell.delta, 0);
-    const deltaProxyPct = totalCellVolume > 0 ? (totalDelta / totalCellVolume) * 100 : 0;
-    deltaHistory.push(deltaProxyPct);
+    // Closed form; identical to summing the synthetic cells but avoids implying
+    // the value came from a tape. shapeProxyPct = 56*body + 34*closeLocation.
+    const shapeProxyPct = candleShapeProxyPct(candle);
+    shapeHistory.push(shapeProxyPct);
 
     const range = Math.max(ES_TICK, candle.high - candle.low);
     const volumeZ = zScore(candle.volume, volumeHistory.slice(-20));
@@ -157,6 +182,9 @@ export function buildHistoricalAuctionAnalytics(args: {
     volumeHistory.push(candle.volume);
     rangeHistory.push(range);
 
+    // classifyNode previously re-sorted the entire profile every minute
+    // (O(N log N) per bar, the page's dominant cost). The ranker below sorts once
+    // per bar over the volume array only, and reuses it for both node and POC.
     const node = classifyNode(profile, roundToTick(candle.close), developingPoc);
     const distanceFromPoc = candle.close - developingPoc;
     const pocPosition: AuctionPocPosition =
@@ -186,21 +214,22 @@ export function buildHistoricalAuctionAnalytics(args: {
     );
     const closeLocationPct = clamp(((candle.close - candle.low) / range) * 100, 0, 100);
 
-    const priorDelta3 = mean(deltaHistory.slice(Math.max(0, index - 3), index));
-    const priorVolume3 = mean(volumeHistory.slice(Math.max(0, volumeHistory.length - 4), -1));
+    // Both windows now exclude the current bar with the same convention.
+    const priorShape3 = mean(shapeHistory.slice(Math.max(0, index - 3), index));
+    const priorVolume3 = mean(volumeHistory.slice(Math.max(0, index - 3), index));
     const close3m = candle.close - (candles[Math.max(0, index - 3)]?.close ?? candle.close);
     const close5m = candle.close - (candles[Math.max(0, index - 5)]?.close ?? candle.close);
     const previousHigh = max(candles.slice(Math.max(0, index - 5), index).map((item) => item.high));
     const previousLow = min(candles.slice(Math.max(0, index - 5), index).map((item) => item.low));
 
-    const deltaDivergence = detectDeltaDivergence({
+    const failedExtreme = detectFailedExtreme({
       candle,
       previousHigh,
       previousLow,
-      deltaProxyPct,
-      priorDelta3,
+      shapeProxyPct,
+      priorShape3,
     });
-    const deltaReversal = detectDeltaReversal(deltaHistory, index);
+    const shapeReversal = detectShapeReversal(shapeHistory, index);
 
     const visitsNearPoc = candles
       .slice(Math.max(0, index - 7), index + 1)
@@ -212,7 +241,7 @@ export function buildHistoricalAuctionAnalytics(args: {
     const revisitScore = clamp((visitsNearPoc / 6) * 100, 0, 100);
     const slowTradeScore = 100 - efficiency5mPct;
     const pocStabilityScore = clamp(100 - Math.abs(pocMigration5m) * 35, 0, 100);
-    const balancedDeltaScore = clamp(100 - Math.abs(deltaProxyPct) * 1.2, 0, 100);
+    const balancedShapeScore = clamp(100 - Math.abs(shapeProxyPct) * 1.2, 0, 100);
 
     const acceptanceScore = weighted([
       [proximityScore, 0.24],
@@ -248,29 +277,36 @@ export function buildHistoricalAuctionAnalytics(args: {
       [downDirectionScore, 0.13],
     ]);
 
-    const buyPressureScore = clamp(50 + deltaProxyPct * 0.9, 0, 100);
-    const sellPressureScore = clamp(50 - deltaProxyPct * 0.9, 0, 100);
     const failureToProgress = 100 - efficiency5mPct;
     const upperLocationScore = clamp(48 + Math.max(0, distanceFromPoc) * 18, 0, 100);
     const lowerLocationScore = clamp(48 + Math.max(0, -distanceFromPoc) * 18, 0, 100);
 
-    const absorptionHighScore = weighted([
-      [activityScore, 0.22],
-      [buyPressureScore, 0.24],
-      [failureToProgress, 0.26],
-      [upperWickPct, 0.16],
-      [upperLocationScore, 0.12],
+    // STALL replaces the former ABSORPTION states.
+    //
+    // The prior formula was self-contradictory: `buyPressureScore` was derived from
+    // the shape proxy, which is high only when the body/close is strongly up — which
+    // mechanically raises efficiency and collapses `failureToProgress`. The two
+    // heaviest terms (0.24 and 0.26) were negatively coupled, so no candle shape
+    // could satisfy both. Genuine absorption (heavy buying met by a resting seller)
+    // is undetectable without trade-side classification, so we no longer claim it.
+    //
+    // What IS detectable from OHLCV: elevated participation that produced no
+    // progress, with rejection at one extreme. That is a stall, and we name it so.
+    const stallHighScore = weighted([
+      [activityScore, 0.30],       // volume z-score: real participation
+      [failureToProgress, 0.34],   // price went nowhere
+      [upperWickPct, 0.22],        // rejected at the top
+      [upperLocationScore, 0.14],  // occurring above the developing POC
     ]);
-    const absorptionLowScore = weighted([
-      [activityScore, 0.22],
-      [sellPressureScore, 0.24],
-      [failureToProgress, 0.26],
-      [lowerWickPct, 0.16],
-      [lowerLocationScore, 0.12],
+    const stallLowScore = weighted([
+      [activityScore, 0.30],
+      [failureToProgress, 0.34],
+      [lowerWickPct, 0.22],
+      [lowerLocationScore, 0.14],
     ]);
 
-    const deltaFadeUp = clamp(50 + (priorDelta3 - deltaProxyPct) * 1.5, 0, 100);
-    const deltaFadeDown = clamp(50 + (deltaProxyPct - priorDelta3) * 1.5, 0, 100);
+    const shapeFadeUp = clamp(50 + (priorShape3 - shapeProxyPct) * 1.5, 0, 100);
+    const shapeFadeDown = clamp(50 + (shapeProxyPct - priorShape3) * 1.5, 0, 100);
     const volumeFade =
       priorVolume3 > 0 ? clamp(50 + ((priorVolume3 - candle.volume) / priorVolume3) * 90, 0, 100) : 50;
     const upPushScore = clamp(Math.max(close3m, close5m) * 16, 0, 100);
@@ -290,7 +326,7 @@ export function buildHistoricalAuctionAnalytics(args: {
 
     const exhaustionUpScore = weighted([
       [upPushScore, 0.20],
-      [deltaFadeUp, 0.24],
+      [shapeFadeUp, 0.24],
       [volumeFade, 0.14],
       [failureToProgress, 0.18],
       [upperWickPct, 0.12],
@@ -298,7 +334,7 @@ export function buildHistoricalAuctionAnalytics(args: {
     ]);
     const exhaustionDownScore = weighted([
       [downPushScore, 0.20],
-      [deltaFadeDown, 0.24],
+      [shapeFadeDown, 0.24],
       [volumeFade, 0.14],
       [failureToProgress, 0.18],
       [lowerWickPct, 0.12],
@@ -325,54 +361,58 @@ export function buildHistoricalAuctionAnalytics(args: {
       [upperCloseReversalScore, 0.25],
       [highTestScore, 0.22],
       [upperLocationScore, 0.13],
-      [deltaFadeUp, 0.10],
+      [shapeFadeUp, 0.10],
     ]);
     const rejectionLowScore = weighted([
       [lowerWickPct, 0.30],
       [lowerCloseReversalScore, 0.25],
       [lowTestScore, 0.22],
       [lowerLocationScore, 0.13],
-      [deltaFadeDown, 0.10],
+      [shapeFadeDown, 0.10],
     ]);
 
     const centerConfidence = weighted([
       [acceptanceScore, 0.55],
-      [balancedDeltaScore, 0.18],
+      [balancedShapeScore, 0.18],
       [pocStabilityScore, 0.17],
       [revisitScore, 0.10],
     ]);
 
-    const bearishDeltaScore =
-      deltaDivergence === "BEARISH" ? 100 : deltaReversal === "BEARISH" ? 85 : clamp(50 - deltaProxyPct, 0, 100);
-    const bullishDeltaScore =
-      deltaDivergence === "BULLISH" ? 100 : deltaReversal === "BULLISH" ? 85 : clamp(50 + deltaProxyPct, 0, 100);
+    const bearishShapeScore =
+      failedExtreme === "BEARISH" ? 100 : shapeReversal === "BEARISH" ? 85 : clamp(50 - shapeProxyPct, 0, 100);
+    const bullishShapeScore =
+      failedExtreme === "BULLISH" ? 100 : shapeReversal === "BULLISH" ? 85 : clamp(50 + shapeProxyPct, 0, 100);
     const upperPocContext =
       pocMomentum === "DOWN" ? 100 : pocMomentum === "STALLED" ? 78 : 25;
     const lowerPocContext =
       pocMomentum === "UP" ? 100 : pocMomentum === "STALLED" ? 78 : 25;
 
+    // Weights rebalanced away from shape-derived terms. bearish/bullishShapeScore
+    // is the same candle already counted inside exhaustion and rejection, so its
+    // weight drops 0.16 -> 0.08 and the freed weight moves to the POC context,
+    // which is the only genuinely volume-derived input here.
     const callFadeScore = weighted([
-      [absorptionHighScore, 0.25],
+      [stallHighScore, 0.24],
       [exhaustionUpScore, 0.25],
-      [rejectionHighScore, 0.24],
-      [bearishDeltaScore, 0.16],
-      [upperPocContext, 0.10],
+      [rejectionHighScore, 0.25],
+      [bearishShapeScore, 0.08],
+      [upperPocContext, 0.18],
     ]);
     const putFadeScore = weighted([
-      [absorptionLowScore, 0.25],
+      [stallLowScore, 0.24],
       [exhaustionDownScore, 0.25],
-      [rejectionLowScore, 0.24],
-      [bullishDeltaScore, 0.16],
-      [lowerPocContext, 0.10],
+      [rejectionLowScore, 0.25],
+      [bullishShapeScore, 0.08],
+      [lowerPocContext, 0.18],
     ]);
 
-    const { state, stateScore } = chooseState({
+    const { state, stateScore, stateMargin, stateAmbiguous } = chooseState({
       index,
       acceptanceScore,
       releaseUpScore,
       releaseDownScore,
-      absorptionHighScore,
-      absorptionLowScore,
+      stallHighScore,
+      stallLowScore,
       exhaustionUpScore,
       exhaustionDownScore,
       rejectionHighScore,
@@ -383,10 +423,10 @@ export function buildHistoricalAuctionAnalytics(args: {
       node,
       pocPosition,
       pocMomentum,
-      deltaDivergence,
-      deltaReversal,
-      absorptionHighScore,
-      absorptionLowScore,
+      failedExtreme,
+      shapeReversal,
+      stallHighScore,
+      stallLowScore,
       exhaustionUpScore,
       exhaustionDownScore,
       rejectionHighScore,
@@ -408,17 +448,17 @@ export function buildHistoricalAuctionAnalytics(args: {
       pocMigration5m,
       pocMomentum,
       node,
-      deltaProxyPct,
+      shapeProxyPct,
       volumeZ,
       rangeZ,
       efficiency5mPct,
-      deltaDivergence,
-      deltaReversal,
+      failedExtreme,
+      shapeReversal,
       acceptanceScore,
       releaseUpScore,
       releaseDownScore,
-      absorptionHighScore,
-      absorptionLowScore,
+      stallHighScore,
+      stallLowScore,
       exhaustionUpScore,
       exhaustionDownScore,
       rejectionHighScore,
@@ -428,6 +468,8 @@ export function buildHistoricalAuctionAnalytics(args: {
       putFadeScore,
       state,
       stateScore,
+      stateMargin,
+      stateAmbiguous,
       features,
     });
   }
@@ -438,11 +480,11 @@ export function buildHistoricalAuctionAnalytics(args: {
   const featureCounts = {
     acceptance: minutes.filter((minute) => minute.acceptanceScore >= 64).length,
     release: minutes.filter((minute) => Math.max(minute.releaseUpScore, minute.releaseDownScore) >= 70).length,
-    absorption: minutes.filter((minute) => Math.max(minute.absorptionHighScore, minute.absorptionLowScore) >= 70).length,
+    stall: minutes.filter((minute) => Math.max(minute.stallHighScore, minute.stallLowScore) >= 70).length,
     exhaustion: minutes.filter((minute) => Math.max(minute.exhaustionUpScore, minute.exhaustionDownScore) >= 70).length,
     rejection: minutes.filter((minute) => Math.max(minute.rejectionHighScore, minute.rejectionLowScore) >= 72).length,
-    bearishDeltaDivergence: minutes.filter((minute) => minute.deltaDivergence === "BEARISH").length,
-    bullishDeltaDivergence: minutes.filter((minute) => minute.deltaDivergence === "BULLISH").length,
+    bearishFailedExtreme: minutes.filter((minute) => minute.failedExtreme === "BEARISH").length,
+    bullishFailedExtreme: minutes.filter((minute) => minute.failedExtreme === "BULLISH").length,
     thinZone: minutes.filter((minute) => minute.node === "LVN").length,
   };
 
@@ -456,6 +498,69 @@ export function buildHistoricalAuctionAnalytics(args: {
   };
 }
 
+
+/**
+ * EVIDENCE INDEPENDENCE MODEL
+ * ---------------------------
+ * The prior scoring treated the aligned state (22), failed extreme (12) and shape
+ * reversal (10) as three separate pieces of evidence totalling 44 — but all three
+ * are functions of the same candle geometry. DEFINITIVE was therefore reachable on
+ * one candle counted four times.
+ *
+ * Evidence is now grouped into independent FAMILIES. Within a family only the
+ * strongest member contributes, and the family is capped. Across families the
+ * weights add. Two families exist because the source data supports exactly two
+ * independent views:
+ *
+ *   SHAPE   — candle geometry (state, failed extreme, shape reversal, wicks)
+ *   VOLUME  — volume distribution (POC position, POC momentum, node, efficiency)
+ *
+ * If a real bid/ask tape is added later, a third TAPE family can be introduced and
+ * genuine confluence becomes measurable. Until then, `independentFamilies` reports
+ * honestly how many distinct views actually agree.
+ */
+const SHAPE_FAMILY_CAP = 24;
+const VOLUME_FAMILY_CAP = 24;
+
+type Evidence = { label: string; weight: number; family: "SHAPE" | "VOLUME" };
+
+function pushFamilyEvidence(
+  target: Evidence[],
+  condition: boolean,
+  label: string,
+  weight: number,
+  family: "SHAPE" | "VOLUME",
+) {
+  if (condition) target.push({ label, weight, family });
+}
+
+/** Strongest member of each family, capped, then summed across families. */
+function collapseEvidence(items: Evidence[]) {
+  const byFamily = new Map<string, Evidence[]>();
+  for (const item of items) {
+    const list = byFamily.get(item.family) ?? [];
+    list.push(item);
+    byFamily.set(item.family, list);
+  }
+
+  let total = 0;
+  const families: string[] = [];
+  for (const [family, list] of byFamily) {
+    const cap = family === "SHAPE" ? SHAPE_FAMILY_CAP : VOLUME_FAMILY_CAP;
+    const strongest = Math.max(...list.map((item) => item.weight));
+    // Secondary members inside a family contribute at heavily reduced weight,
+    // reflecting that they are correlated restatements rather than new evidence.
+    const secondary = list
+      .map((item) => item.weight)
+      .sort((a, b) => b - a)
+      .slice(1)
+      .reduce((sum, weight) => sum + weight * 0.25, 0);
+    total += Math.min(cap, strongest + secondary);
+    families.push(family);
+  }
+
+  return { weight: total, families, count: families.length };
+}
 
 export function evaluateAuctionConfluence(
   minute: HistoricalAuctionMinute | null,
@@ -471,29 +576,36 @@ export function evaluateAuctionConfluence(
       edge: 0,
       alignedEvidence: [],
       opposingEvidence: [],
+      independentFamilies: 0,
+      timing: "UNKNOWN",
       summary: "No auction minute matched the signal timestamp.",
     };
   }
 
   if (target === "CENTER") {
-    const aligned: Array<[string, number]> = [];
-    const opposing: Array<[string, number]> = [];
-    pushEvidence(aligned, minute.state === "ACCEPTANCE", "ACCEPTANCE", 18);
-    pushEvidence(aligned, minute.node === "POC", "AT POC", 18);
-    pushEvidence(aligned, minute.node === "HVN", "HVN", 12);
-    pushEvidence(aligned, minute.pocMomentum === "STALLED", "POC STALLED", 12);
-    pushEvidence(aligned, Math.abs(minute.distanceFromPoc) <= 1, "NEAR POC", 10);
-    pushEvidence(aligned, minute.efficiency5mPct <= 35, "LOW EFFICIENCY", 10);
-    pushEvidence(aligned, Math.abs(minute.deltaProxyPct) <= 18, "BALANCED Δ", 8);
+    const aligned: Evidence[] = [];
+    const opposing: Evidence[] = [];
 
-    pushEvidence(opposing, minute.state === "RELEASE_UP", "RELEASE UP", 18);
-    pushEvidence(opposing, minute.state === "RELEASE_DOWN", "RELEASE DOWN", 18);
-    pushEvidence(opposing, minute.pocMomentum !== "STALLED", `POC ${minute.pocMomentum}`, 12);
-    pushEvidence(opposing, minute.efficiency5mPct >= 65, "HIGH EFFICIENCY", 12);
-    pushEvidence(opposing, Math.abs(minute.distanceFromPoc) >= 3, "FAR FROM POC", 10);
+    pushFamilyEvidence(aligned, minute.state === "ACCEPTANCE", "ACCEPTANCE", 18, "SHAPE");
+    pushFamilyEvidence(aligned, Math.abs(minute.shapeProxyPct) <= 18, "BALANCED SHAPE", 8, "SHAPE");
 
-    const alignedWeight = evidenceWeight(aligned);
-    const opposingWeight = evidenceWeight(opposing);
+    pushFamilyEvidence(aligned, minute.node === "POC", "AT POC", 18, "VOLUME");
+    pushFamilyEvidence(aligned, minute.node === "HVN", "HVN", 12, "VOLUME");
+    pushFamilyEvidence(aligned, minute.pocMomentum === "STALLED", "POC STALLED", 12, "VOLUME");
+    pushFamilyEvidence(aligned, Math.abs(minute.distanceFromPoc) <= 1, "NEAR POC", 10, "VOLUME");
+    pushFamilyEvidence(aligned, minute.efficiency5mPct <= 35, "LOW EFFICIENCY", 10, "VOLUME");
+
+    const releasing = minute.state === "RELEASE_UP" || minute.state === "RELEASE_DOWN";
+    pushFamilyEvidence(opposing, releasing, `RELEASE ${minute.state === "RELEASE_UP" ? "UP" : "DOWN"}`, 18, "SHAPE");
+    pushFamilyEvidence(opposing, minute.pocMomentum !== "STALLED", `POC ${minute.pocMomentum}`, 12, "VOLUME");
+    pushFamilyEvidence(opposing, minute.efficiency5mPct >= 65, "HIGH EFFICIENCY", 12, "VOLUME");
+    pushFamilyEvidence(opposing, Math.abs(minute.distanceFromPoc) >= 3, "FAR FROM POC", 10, "VOLUME");
+
+    const alignedCollapsed = collapseEvidence(aligned);
+    const opposingCollapsed = collapseEvidence(opposing);
+    const alignedWeight = alignedCollapsed.weight;
+    const opposingWeight = opposingCollapsed.weight;
+
     const directionalPressure = Math.max(minute.callFadeScore, minute.putFadeScore);
     const ownScore = minute.centerConfidence;
     const opposingScore = directionalPressure;
@@ -507,11 +619,22 @@ export function evaluateAuctionConfluence(
     ]);
 
     let tier: AuctionConfluenceTier = "NEUTRAL";
-    if (opposingWeight >= 24 && opposingWeight > alignedWeight) tier = "CONFLICT";
+    // An active release is the thesis-killer for a centred fly, so it is promoted
+    // to CONFLICT rather than being diluted into MIXED by a high aligned weight.
+    if (releasing) tier = "CONFLICT";
+    else if (opposingWeight >= 24 && opposingWeight > alignedWeight) tier = "CONFLICT";
     else if (alignedWeight >= 24 && opposingWeight >= 18) tier = "MIXED";
-    else if (ownScore >= 82 && alignedWeight >= 38 && opposingWeight <= 10 && edge >= 8) tier = "DEFINITIVE";
-    else if (ownScore >= 72 && alignedWeight >= 24 && opposingWeight <= 12) tier = "CONFIRMED";
+    else if (
+      ownScore >= 82 &&
+      alignedWeight >= 34 &&
+      alignedCollapsed.count >= 2 &&
+      opposingWeight <= 10 &&
+      edge >= 8
+    ) {
+      tier = "DEFINITIVE";
+    } else if (ownScore >= 72 && alignedWeight >= 22 && opposingWeight <= 12) tier = "CONFIRMED";
     else if (ownScore >= 62 && alignedWeight >= 14 && opposingWeight < alignedWeight) tier = "SUPPORTIVE";
+    else if (alignedWeight < 8 && opposingWeight < 8) tier = "INSUFFICIENT";
 
     return {
       target,
@@ -520,9 +643,11 @@ export function evaluateAuctionConfluence(
       ownScore,
       opposingScore,
       edge,
-      alignedEvidence: aligned.map(([label]) => label),
-      opposingEvidence: opposing.map(([label]) => label),
-      summary: buildConfluenceSummary(tier, aligned, opposing),
+      alignedEvidence: aligned.map((item) => item.label),
+      opposingEvidence: opposing.map((item) => item.label),
+      independentFamilies: alignedCollapsed.count,
+      timing: "CONCURRENT",
+      summary: buildConfluenceSummary(tier, aligned, opposing, alignedCollapsed.count),
     };
   }
 
@@ -530,41 +655,60 @@ export function evaluateAuctionConfluence(
   const ownScore = isCall ? minute.callFadeScore : minute.putFadeScore;
   const opposingScore = isCall ? minute.putFadeScore : minute.callFadeScore;
   const edge = ownScore - opposingScore;
-  const aligned: Array<[string, number]> = [];
-  const opposing: Array<[string, number]> = [];
+  const aligned: Evidence[] = [];
+  const opposing: Evidence[] = [];
 
+  // RELEASE_* deliberately excluded from the aligned set.
+  //
+  // RELEASE_DOWN means price has ALREADY released downward with high efficiency.
+  // As entry confirmation for fading a high, that is post-hoc: the move has
+  // happened and the premium has already deflated. Counting it as aligned
+  // systematically inflated CONFIRMED/DEFINITIVE on late entries. It is now
+  // reported through `timing: "LATE"` so the effect can be measured instead.
   const alignedStates: AuctionState[] = isCall
-    ? ["REJECTION_HIGH", "EXHAUSTION_UP", "ABSORPTION_HIGH", "RELEASE_DOWN"]
-    : ["REJECTION_LOW", "EXHAUSTION_DOWN", "ABSORPTION_LOW", "RELEASE_UP"];
+    ? ["REJECTION_HIGH", "EXHAUSTION_UP", "STALL_HIGH"]
+    : ["REJECTION_LOW", "EXHAUSTION_DOWN", "STALL_LOW"];
   const opposingStates: AuctionState[] = isCall
-    ? ["REJECTION_LOW", "EXHAUSTION_DOWN", "ABSORPTION_LOW", "RELEASE_UP"]
-    : ["REJECTION_HIGH", "EXHAUSTION_UP", "ABSORPTION_HIGH", "RELEASE_DOWN"];
+    ? ["REJECTION_LOW", "EXHAUSTION_DOWN", "STALL_LOW", "RELEASE_UP"]
+    : ["REJECTION_HIGH", "EXHAUSTION_UP", "STALL_HIGH", "RELEASE_DOWN"];
+  const lateState: AuctionState = isCall ? "RELEASE_DOWN" : "RELEASE_UP";
 
-  pushEvidence(aligned, alignedStates.includes(minute.state), stateEvidenceLabel(minute.state), 22);
-  pushEvidence(opposing, opposingStates.includes(minute.state), stateEvidenceLabel(minute.state), 24);
+  const hasAlignedState = alignedStates.includes(minute.state);
+  const hasOpposingState = opposingStates.includes(minute.state);
+  const isLate = minute.state === lateState;
+
+  pushFamilyEvidence(aligned, hasAlignedState, stateEvidenceLabel(minute.state), 22, "SHAPE");
+  pushFamilyEvidence(opposing, hasOpposingState, stateEvidenceLabel(minute.state), 24, "SHAPE");
 
   if (isCall) {
-    pushEvidence(aligned, minute.deltaDivergence === "BEARISH", "BEARISH Δ DIVERGENCE", 12);
-    pushEvidence(aligned, minute.deltaReversal === "BEARISH", "BEARISH Δ REVERSAL", 10);
-    pushEvidence(aligned, minute.pocMomentum === "DOWN", "POC DOWN", 9);
-    pushEvidence(aligned, minute.pocMomentum === "STALLED" && minute.pocPosition !== "BELOW", "POC STALLED", 5);
-    pushEvidence(opposing, minute.deltaDivergence === "BULLISH", "BULLISH Δ DIVERGENCE", 12);
-    pushEvidence(opposing, minute.deltaReversal === "BULLISH", "BULLISH Δ REVERSAL", 10);
-    pushEvidence(opposing, minute.pocMomentum === "UP", "POC UP", 9);
-    pushEvidence(opposing, minute.state === "ACCEPTANCE" && minute.pocPosition === "ABOVE" && minute.pocMomentum === "UP", "ACCEPTANCE ABOVE POC", 10);
+    pushFamilyEvidence(aligned, minute.failedExtreme === "BEARISH", "BEARISH FAILED EXTREME", 12, "SHAPE");
+    pushFamilyEvidence(aligned, minute.shapeReversal === "BEARISH", "BEARISH SHAPE REVERSAL", 10, "SHAPE");
+    pushFamilyEvidence(aligned, minute.pocMomentum === "DOWN", "POC DOWN", 16, "VOLUME");
+    pushFamilyEvidence(aligned, minute.pocMomentum === "STALLED" && minute.pocPosition !== "BELOW", "POC STALLED", 8, "VOLUME");
+    pushFamilyEvidence(aligned, minute.node === "LVN" && minute.pocPosition === "ABOVE", "THIN ABOVE POC", 10, "VOLUME");
+
+    pushFamilyEvidence(opposing, minute.failedExtreme === "BULLISH", "BULLISH FAILED EXTREME", 12, "SHAPE");
+    pushFamilyEvidence(opposing, minute.shapeReversal === "BULLISH", "BULLISH SHAPE REVERSAL", 10, "SHAPE");
+    pushFamilyEvidence(opposing, minute.pocMomentum === "UP", "POC UP", 16, "VOLUME");
+    pushFamilyEvidence(opposing, minute.state === "ACCEPTANCE" && minute.pocPosition === "ABOVE" && minute.pocMomentum === "UP", "ACCEPTANCE ABOVE POC", 12, "VOLUME");
   } else {
-    pushEvidence(aligned, minute.deltaDivergence === "BULLISH", "BULLISH Δ DIVERGENCE", 12);
-    pushEvidence(aligned, minute.deltaReversal === "BULLISH", "BULLISH Δ REVERSAL", 10);
-    pushEvidence(aligned, minute.pocMomentum === "UP", "POC UP", 9);
-    pushEvidence(aligned, minute.pocMomentum === "STALLED" && minute.pocPosition !== "ABOVE", "POC STALLED", 5);
-    pushEvidence(opposing, minute.deltaDivergence === "BEARISH", "BEARISH Δ DIVERGENCE", 12);
-    pushEvidence(opposing, minute.deltaReversal === "BEARISH", "BEARISH Δ REVERSAL", 10);
-    pushEvidence(opposing, minute.pocMomentum === "DOWN", "POC DOWN", 9);
-    pushEvidence(opposing, minute.state === "ACCEPTANCE" && minute.pocPosition === "BELOW" && minute.pocMomentum === "DOWN", "ACCEPTANCE BELOW POC", 10);
+    pushFamilyEvidence(aligned, minute.failedExtreme === "BULLISH", "BULLISH FAILED EXTREME", 12, "SHAPE");
+    pushFamilyEvidence(aligned, minute.shapeReversal === "BULLISH", "BULLISH SHAPE REVERSAL", 10, "SHAPE");
+    pushFamilyEvidence(aligned, minute.pocMomentum === "UP", "POC UP", 16, "VOLUME");
+    pushFamilyEvidence(aligned, minute.pocMomentum === "STALLED" && minute.pocPosition !== "ABOVE", "POC STALLED", 8, "VOLUME");
+    pushFamilyEvidence(aligned, minute.node === "LVN" && minute.pocPosition === "BELOW", "THIN BELOW POC", 10, "VOLUME");
+
+    pushFamilyEvidence(opposing, minute.failedExtreme === "BEARISH", "BEARISH FAILED EXTREME", 12, "SHAPE");
+    pushFamilyEvidence(opposing, minute.shapeReversal === "BEARISH", "BEARISH SHAPE REVERSAL", 10, "SHAPE");
+    pushFamilyEvidence(opposing, minute.pocMomentum === "DOWN", "POC DOWN", 16, "VOLUME");
+    pushFamilyEvidence(opposing, minute.state === "ACCEPTANCE" && minute.pocPosition === "BELOW" && minute.pocMomentum === "DOWN", "ACCEPTANCE BELOW POC", 12, "VOLUME");
   }
 
-  const alignedWeight = evidenceWeight(aligned);
-  const opposingWeight = evidenceWeight(opposing);
+  const alignedCollapsed = collapseEvidence(aligned);
+  const opposingCollapsed = collapseEvidence(opposing);
+  const alignedWeight = alignedCollapsed.weight;
+  const opposingWeight = opposingCollapsed.weight;
+
   const edgeScore = clamp(50 + edge * 2, 0, 100);
   const evidenceScore = clamp(50 + alignedWeight - opposingWeight, 0, 100);
   const convictionScore = weighted([
@@ -572,17 +716,46 @@ export function evaluateAuctionConfluence(
     [edgeScore, 0.25],
     [evidenceScore, 0.20],
   ]);
-  const hasAlignedState = alignedStates.includes(minute.state);
-  const hasOpposingState = opposingStates.includes(minute.state);
+
+  const timing: AuctionConfluenceTiming = isLate ? "LATE" : "CONCURRENT";
 
   let tier: AuctionConfluenceTier = "NEUTRAL";
-  if (hasOpposingState && opposingWeight > alignedWeight + 4) tier = "CONFLICT";
+  // The own-vs-opposite score is itself directional evidence. A materially
+  // negative edge cannot be called NEUTRAL merely because no discrete state
+  // cleared its gate. This fixes cases such as CALL 44 vs PUT 67 (edge -23).
+  if (edge <= -15) tier = "CONFLICT";
+  else if (edge <= -8 && opposingWeight >= 8) tier = "CONFLICT";
+  else if (edge <= -8) tier = "MIXED";
+  else if (hasOpposingState && opposingWeight > alignedWeight + 4) tier = "CONFLICT";
   else if (alignedWeight >= 14 && opposingWeight >= 14) tier = "MIXED";
   else if (opposingWeight >= 20 && edge <= 0) tier = "CONFLICT";
-  else if (ownScore >= 70 && edge >= 15 && hasAlignedState && alignedWeight >= 28 && opposingWeight <= 8) tier = "DEFINITIVE";
-  else if (ownScore >= 65 && edge >= 5 && (hasAlignedState || alignedWeight >= 18) && !hasOpposingState && opposingWeight <= 10) tier = "CONFIRMED";
-  else if (ownScore >= 55 && edge >= 0 && alignedWeight >= 8 && !hasOpposingState) tier = "SUPPORTIVE";
+  else if (
+    // DEFINITIVE now requires evidence from BOTH families — a shape read alone,
+    // however strong, is one candle and cannot be "unusually coherent".
+    ownScore >= 70 &&
+    edge >= 15 &&
+    hasAlignedState &&
+    alignedWeight >= 30 &&
+    alignedCollapsed.count >= 2 &&
+    opposingWeight <= 8
+  ) {
+    tier = "DEFINITIVE";
+  } else if (
+    ownScore >= 65 &&
+    edge >= 5 &&
+    (hasAlignedState || alignedWeight >= 18) &&
+    !hasOpposingState &&
+    opposingWeight <= 10
+  ) {
+    tier = "CONFIRMED";
+  } else if (ownScore >= 55 && edge >= 0 && alignedWeight >= 8 && !hasOpposingState) tier = "SUPPORTIVE";
   else if (hasOpposingState || opposingWeight >= 18) tier = "CONFLICT";
+  else if (alignedWeight < 8) tier = "INSUFFICIENT";
+
+  // A late read cannot be better than SUPPORTIVE: the reversion is already under way.
+  if (timing === "LATE" && (tier === "DEFINITIVE" || tier === "CONFIRMED")) {
+    tier = "SUPPORTIVE";
+  }
 
   return {
     target,
@@ -591,23 +764,12 @@ export function evaluateAuctionConfluence(
     ownScore,
     opposingScore,
     edge,
-    alignedEvidence: aligned.map(([label]) => label),
-    opposingEvidence: opposing.map(([label]) => label),
-    summary: buildConfluenceSummary(tier, aligned, opposing),
+    alignedEvidence: aligned.map((item) => item.label),
+    opposingEvidence: opposing.map((item) => item.label),
+    independentFamilies: alignedCollapsed.count,
+    timing,
+    summary: buildConfluenceSummary(tier, aligned, opposing, alignedCollapsed.count),
   };
-}
-
-function pushEvidence(
-  target: Array<[string, number]>,
-  condition: boolean,
-  label: string,
-  weight: number,
-) {
-  if (condition) target.push([label, weight]);
-}
-
-function evidenceWeight(items: Array<[string, number]>) {
-  return items.reduce((sum, [, weight]) => sum + weight, 0);
 }
 
 function stateEvidenceLabel(state: AuctionState) {
@@ -616,16 +778,45 @@ function stateEvidenceLabel(state: AuctionState) {
 
 function buildConfluenceSummary(
   tier: AuctionConfluenceTier,
-  aligned: Array<[string, number]>,
-  opposing: Array<[string, number]>,
+  aligned: Evidence[],
+  opposing: Evidence[],
+  independentFamilies: number,
 ) {
-  const lead = aligned.slice(0, 3).map(([label]) => label).join(" · ");
-  const conflict = opposing.slice(0, 2).map(([label]) => label).join(" · ");
+  const lead = aligned.slice(0, 3).map((item) => item.label).join(" · ");
+  const conflict = opposing.slice(0, 2).map((item) => item.label).join(" · ");
   if (tier === "CONFLICT") return conflict ? `Opposing: ${conflict}` : "Opposing auction evidence dominates.";
   if (tier === "MIXED") return `Aligned: ${lead || "none"} | Opposing: ${conflict || "none"}`;
-  return lead || "No decisive directional auction evidence.";
+  if (tier === "INSUFFICIENT") return "Not enough auction evidence either way.";
+  const familyNote = independentFamilies >= 2 ? " (shape + volume)" : " (shape only)";
+  return lead ? `${lead}${familyNote}` : "No decisive directional auction evidence.";
 }
 
+/**
+ * Research-safe timestamp matcher. Returns only information that existed at or
+ * before the signal timestamp; it never reaches into the following ES minute.
+ */
+export function latestAuctionMinuteAtOrBefore(
+  minutes: HistoricalAuctionMinute[],
+  epochSeconds: number,
+  toleranceSeconds = 90,
+) {
+  let best: HistoricalAuctionMinute | null = null;
+  let bestLag = Number.POSITIVE_INFINITY;
+  for (const minute of minutes) {
+    if (minute.time > epochSeconds) continue;
+    const lag = epochSeconds - minute.time;
+    if (lag < bestLag) {
+      best = minute;
+      bestLag = lag;
+    }
+  }
+  return best && bestLag <= toleranceSeconds ? best : null;
+}
+
+/**
+ * Kept for compatibility with older research callers. Do not use this helper
+ * for causal/backtest attribution because it may choose a future minute.
+ */
 export function nearestAuctionMinute(
   minutes: HistoricalAuctionMinute[],
   epochSeconds: number,
@@ -643,48 +834,96 @@ export function nearestAuctionMinute(
   return best && bestDistance <= toleranceSeconds ? best : null;
 }
 
+/** Directional-opposite pairs. If the top two eligible states are opposites and
+ *  their margins are within this band, the read is ambiguous and we return BALANCED
+ *  rather than letting a tiebreak decide direction. */
+const AMBIGUITY_BAND = 4;
+
+const OPPOSITE_STATE: Partial<Record<AuctionState, AuctionState>> = {
+  REJECTION_HIGH: "REJECTION_LOW",
+  REJECTION_LOW: "REJECTION_HIGH",
+  EXHAUSTION_UP: "EXHAUSTION_DOWN",
+  EXHAUSTION_DOWN: "EXHAUSTION_UP",
+  STALL_HIGH: "STALL_LOW",
+  STALL_LOW: "STALL_HIGH",
+  RELEASE_UP: "RELEASE_DOWN",
+  RELEASE_DOWN: "RELEASE_UP",
+};
+
 function chooseState(scores: {
   index: number;
   acceptanceScore: number;
   releaseUpScore: number;
   releaseDownScore: number;
-  absorptionHighScore: number;
-  absorptionLowScore: number;
+  stallHighScore: number;
+  stallLowScore: number;
   exhaustionUpScore: number;
   exhaustionDownScore: number;
   rejectionHighScore: number;
   rejectionLowScore: number;
-}) {
-  if (scores.index < 5) return { state: "WARMING" as const, stateScore: 0 };
+}): { state: AuctionState; stateScore: number; stateMargin: number; stateAmbiguous: boolean } {
+  if (scores.index < 5) {
+    return { state: "WARMING", stateScore: 0, stateMargin: 0, stateAmbiguous: false };
+  }
 
   const candidates: Array<[AuctionState, number, number]> = [
     ["REJECTION_HIGH", scores.rejectionHighScore, 72],
     ["REJECTION_LOW", scores.rejectionLowScore, 72],
     ["EXHAUSTION_UP", scores.exhaustionUpScore, 70],
     ["EXHAUSTION_DOWN", scores.exhaustionDownScore, 70],
-    ["ABSORPTION_HIGH", scores.absorptionHighScore, 68],
-    ["ABSORPTION_LOW", scores.absorptionLowScore, 68],
+    ["STALL_HIGH", scores.stallHighScore, 68],
+    ["STALL_LOW", scores.stallLowScore, 68],
     ["RELEASE_UP", scores.releaseUpScore, 70],
     ["RELEASE_DOWN", scores.releaseDownScore, 70],
     ["ACCEPTANCE", scores.acceptanceScore, 64],
   ];
+
+  // Sort by MARGIN OVER THRESHOLD, not raw score.
+  //
+  // The prior implementation filtered by per-state thresholds and then sorted by
+  // raw score, which is non-monotonic: rejectionHigh=71.9 (below its 72 gate) lost
+  // to stallHigh=68.5 (above its 68 gate), so the stronger reading was discarded
+  // while a weaker one won. Comparing margins puts every state on one scale.
   const eligible = candidates
-    .filter(([, score, threshold]) => score >= threshold)
-    .sort((a, b) => b[1] - a[1]);
-  if (eligible.length) return { state: eligible[0][0], stateScore: eligible[0][1] };
+    .map(([state, score, threshold]) => ({ state, score, threshold, margin: score - threshold }))
+    .filter((item) => item.margin >= 0)
+    .sort((a, b) => b.margin - a.margin);
+
+  if (!eligible.length) {
+    return {
+      state: "BALANCED",
+      stateScore: Math.max(...candidates.map(([, score]) => score)),
+      stateMargin: 0,
+      stateAmbiguous: false,
+    };
+  }
+
+  const winner = eligible[0];
+  const runnerUp = eligible[1];
+
+  // A long-legged doji scores REJECTION_HIGH and REJECTION_LOW identically from
+  // shape alone; the winner was previously decided by the highTest/lowTest
+  // tiebreak, i.e. by noise. When opposites are this close, report BALANCED.
+  const ambiguous = Boolean(
+    runnerUp &&
+      OPPOSITE_STATE[winner.state] === runnerUp.state &&
+      winner.margin - runnerUp.margin <= AMBIGUITY_BAND,
+  );
+
+  if (ambiguous) {
+    return {
+      state: "BALANCED",
+      stateScore: winner.score,
+      stateMargin: winner.margin,
+      stateAmbiguous: true,
+    };
+  }
+
   return {
-    state: "BALANCED" as const,
-    stateScore: Math.max(
-      scores.acceptanceScore,
-      scores.releaseUpScore,
-      scores.releaseDownScore,
-      scores.absorptionHighScore,
-      scores.absorptionLowScore,
-      scores.exhaustionUpScore,
-      scores.exhaustionDownScore,
-      scores.rejectionHighScore,
-      scores.rejectionLowScore,
-    ),
+    state: winner.state,
+    stateScore: winner.score,
+    stateMargin: winner.margin,
+    stateAmbiguous: false,
   };
 }
 
@@ -692,10 +931,10 @@ function buildFeatureList(args: {
   node: AuctionProfileNode;
   pocPosition: AuctionPocPosition;
   pocMomentum: AuctionPocMomentum;
-  deltaDivergence: AuctionDeltaDivergence;
-  deltaReversal: AuctionDeltaReversal;
-  absorptionHighScore: number;
-  absorptionLowScore: number;
+  failedExtreme: AuctionFailedExtreme;
+  shapeReversal: AuctionShapeReversal;
+  stallHighScore: number;
+  stallLowScore: number;
   exhaustionUpScore: number;
   exhaustionDownScore: number;
   rejectionHighScore: number;
@@ -708,10 +947,10 @@ function buildFeatureList(args: {
   else features.push("POC STALLED");
   if (args.node === "LVN") features.push("THIN / LVN");
   if (args.node === "HVN" || args.node === "POC") features.push("HVN / ACCEPTANCE");
-  if (args.deltaDivergence !== "NONE") features.push(`${args.deltaDivergence} Δ DIVERGENCE`);
-  if (args.deltaReversal !== "NONE") features.push(`${args.deltaReversal} Δ REVERSAL`);
-  if (args.absorptionHighScore >= 70) features.push("PASSIVE ABSORPTION HIGH");
-  if (args.absorptionLowScore >= 70) features.push("PASSIVE ABSORPTION LOW");
+  if (args.failedExtreme !== "NONE") features.push(`${args.failedExtreme} FAILED EXTREME`);
+  if (args.shapeReversal !== "NONE") features.push(`${args.shapeReversal} SHAPE REVERSAL`);
+  if (args.stallHighScore >= 70) features.push("STALL HIGH");
+  if (args.stallLowScore >= 70) features.push("STALL LOW");
   if (args.exhaustionUpScore >= 70) features.push("EXHAUSTION UP");
   if (args.exhaustionDownScore >= 70) features.push("EXHAUSTION DOWN");
   if (args.rejectionHighScore >= 72) features.push("REJECTION HIGH");
@@ -720,31 +959,31 @@ function buildFeatureList(args: {
   return features;
 }
 
-function detectDeltaDivergence(args: {
+function detectFailedExtreme(args: {
   candle: HistoricalEsCandle;
   previousHigh: number | null;
   previousLow: number | null;
-  deltaProxyPct: number;
-  priorDelta3: number;
-}): AuctionDeltaDivergence {
+  shapeProxyPct: number;
+  priorShape3: number;
+}): AuctionFailedExtreme {
   if (
     args.previousHigh !== null &&
     args.candle.high >= args.previousHigh + ES_TICK &&
-    args.deltaProxyPct <= args.priorDelta3 - 12
+    args.shapeProxyPct <= args.priorShape3 - 12
   ) {
     return "BEARISH";
   }
   if (
     args.previousLow !== null &&
     args.candle.low <= args.previousLow - ES_TICK &&
-    args.deltaProxyPct >= args.priorDelta3 + 12
+    args.shapeProxyPct >= args.priorShape3 + 12
   ) {
     return "BULLISH";
   }
   return "NONE";
 }
 
-function detectDeltaReversal(history: number[], index: number): AuctionDeltaReversal {
+function detectShapeReversal(history: number[], index: number): AuctionShapeReversal {
   if (index < 2) return "NONE";
   const previous = mean(history.slice(Math.max(0, index - 2), index));
   const current = history[index] ?? 0;
@@ -759,13 +998,20 @@ function classifyNode(
   poc: number,
 ): AuctionProfileNode {
   if (price === poc) return "POC";
-  const levels = [...profile.values()].sort((a, b) => b.totalVolume - a.totalVolume);
-  if (!levels.length) return "NORMAL";
   const cell = profile.get(price);
   if (!cell) return "LVN";
-  const rank = levels.findIndex((level) => level.price === price);
-  if (rank < 0) return "NORMAL";
-  const pct = levels.length <= 1 ? 0 : (rank / (levels.length - 1)) * 100;
+  const totalLevels = profile.size;
+  if (totalLevels <= 1) return "NORMAL";
+
+  // O(N) percentile rank. The prior implementation sorted the entire profile on
+  // every minute (O(N log N)) only to discover this cell's rank. Counting levels
+  // with strictly greater reconstructed volume produces the same useful percentile
+  // classification without the repeated sort cost.
+  let greater = 0;
+  for (const level of profile.values()) {
+    if (level.totalVolume > cell.totalVolume) greater += 1;
+  }
+  const pct = (greater / (totalLevels - 1)) * 100;
   if (pct <= 20) return "HVN";
   if (pct >= 80) return "LVN";
   return "NORMAL";
@@ -827,7 +1073,7 @@ function mergeCell(map: Map<number, MutableCell>, incoming: HistoricalFootprintC
   prior.bidVolume += incoming.bidVolume;
   prior.askVolume += incoming.askVolume;
   prior.totalVolume += incoming.totalVolume;
-  prior.delta += incoming.delta;
+  prior.shapeProxy += incoming.shapeProxy;
 }
 
 function weighted(items: Array<[number, number]>) {

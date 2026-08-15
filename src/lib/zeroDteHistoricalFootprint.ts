@@ -7,12 +7,37 @@ export type HistoricalEsCandle = {
   volume: number;
 };
 
+/**
+ * PROVENANCE NOTICE
+ * -----------------
+ * These cells are NOT reconstructed from a bid/ask tape. There is no trade-side
+ * classification in the source data — only OHLCV bars. `askVolume`/`bidVolume`
+ * are SYNTHESISED from candle geometry, and `shapeProxy` reduces algebraically to:
+ *
+ *     shapeProxy = 56 * body + 34 * closeLocation
+ *
+ * Volume cancels out entirely (it appears in both numerator and denominator of
+ * delta/totalVolume). The field therefore carries ZERO information beyond OHLC.
+ *
+ * It must never be scored as evidence independent of candle shape. See
+ * `zeroDteAuctionAnalytics.ts` → `shapeEvidenceWeight()` for the collapse rule.
+ */
+export const FOOTPRINT_PROVENANCE = "SYNTHETIC_FROM_OHLCV" as const;
+export type FootprintProvenance = typeof FOOTPRINT_PROVENANCE | "TRUE_TAPE";
+
 export type HistoricalFootprintCell = {
   price: number;
+  /** Synthetic. Derived from candle geometry, not from a tape. */
   bidVolume: number;
+  /** Synthetic. Derived from candle geometry, not from a tape. */
   askVolume: number;
   totalVolume: number;
-  delta: number;
+  /**
+   * Synthetic shape proxy, NOT order-flow delta.
+   * Renamed from `delta` to prevent it being read as tape-derived.
+   */
+  shapeProxy: number;
+  provenance: FootprintProvenance;
 };
 
 export type HistoricalFootprintBucket = {
@@ -45,6 +70,10 @@ export type HistoricalFootprintStudy = {
 };
 
 export const ES_TICK = 0.25;
+
+/** ES equity-index regular trading hours, Chicago local minutes-of-day. */
+export const ES_RTH_OPEN_MINUTE = 8 * 60 + 30; // 08:30 CT
+export const ES_RTH_CLOSE_MINUTE = 15 * 60 + 15; // 15:15 CT futures close
 
 export function buildHistoricalFootprintStudy(args: {
   candles: HistoricalEsCandle[];
@@ -172,30 +201,72 @@ export function reconstructHistoricalCandleFootprint(candle: HistoricalEsCandle)
       bidVolume,
       askVolume,
       totalVolume: allocated,
-      delta: askVolume - bidVolume,
+      shapeProxy: askVolume - bidVolume,
+      provenance: FOOTPRINT_PROVENANCE,
     };
   });
 }
 
+/**
+ * Closed-form equivalent of the per-candle shape proxy, expressed as a percentage
+ * of that candle's volume. Exposed so callers can reason about it directly rather
+ * than rediscovering it by summing synthetic cells.
+ *
+ *   shapeProxyPct = 56 * body + 34 * closeLocation   (range ±84, clamped)
+ */
+export function candleShapeProxyPct(candle: HistoricalEsCandle): number {
+  const range = Math.max(ES_TICK, candle.high - candle.low);
+  const body = clamp((candle.close - candle.open) / range, -1, 1);
+  const closeLocation = clamp(((candle.close - candle.low) / range) * 2 - 1, -1, 1);
+  const askShare = clamp(0.5 + body * 0.28 + closeLocation * 0.17, 0.08, 0.92);
+  return (askShare - (1 - askShare)) * 100;
+}
+
+/**
+ * Standard volume value area: start at POC and expand CONTIGUOUSLY, at each step
+ * taking whichever adjacent side (above or below) contributes more volume, until
+ * 70% of session volume is enclosed.
+ *
+ * The prior implementation took the globally highest-volume levels and returned
+ * their bounding box. That admitted low-volume prices that were never in the real
+ * value area, and on a two-distribution day it reported a single VA spanning both
+ * distributions instead of revealing the split.
+ */
 function calculateValueArea(
   profile: HistoricalSessionProfileLevel[],
   totalVolume: number,
   poc: number | null,
 ) {
   if (!profile.length || totalVolume <= 0 || poc == null) return { low: null, high: null };
+
+  // profile arrives sorted by price DESC; walk it ascending for index arithmetic.
+  const ascending = [...profile].sort((a, b) => a.price - b.price);
+  const pocIndex = ascending.findIndex((level) => level.price === poc);
+  if (pocIndex < 0) return { low: null, high: null };
+
   const target = totalVolume * 0.7;
-  const sorted = [...profile].sort((a, b) => b.totalVolume - a.totalVolume);
-  let accumulated = 0;
-  const included: number[] = [];
-  for (const level of sorted) {
-    accumulated += level.totalVolume;
-    included.push(level.price);
-    if (accumulated >= target) break;
+  let accumulated = ascending[pocIndex].totalVolume;
+  let lowIndex = pocIndex;
+  let highIndex = pocIndex;
+
+  while (accumulated < target && (lowIndex > 0 || highIndex < ascending.length - 1)) {
+    // Standard practice pairs levels on each side; single-level steps are used
+    // here because ES tick granularity already makes each step small.
+    const below = lowIndex > 0 ? ascending[lowIndex - 1].totalVolume : -1;
+    const above = highIndex < ascending.length - 1 ? ascending[highIndex + 1].totalVolume : -1;
+
+    if (above > below) {
+      highIndex += 1;
+      accumulated += ascending[highIndex].totalVolume;
+    } else if (below >= 0) {
+      lowIndex -= 1;
+      accumulated += ascending[lowIndex].totalVolume;
+    } else {
+      break;
+    }
   }
-  return {
-    low: included.length ? Math.min(...included) : null,
-    high: included.length ? Math.max(...included) : null,
-  };
+
+  return { low: ascending[lowIndex].price, high: ascending[highIndex].price };
 }
 
 function mergeCell(map: Map<number, HistoricalFootprintCell>, incoming: HistoricalFootprintCell) {
@@ -207,7 +278,7 @@ function mergeCell(map: Map<number, HistoricalFootprintCell>, incoming: Historic
   prior.bidVolume += incoming.bidVolume;
   prior.askVolume += incoming.askVolume;
   prior.totalVolume += incoming.totalVolume;
-  prior.delta += incoming.delta;
+  prior.shapeProxy += incoming.shapeProxy;
 }
 
 function bucketForCandle(candle: HistoricalEsCandle, aggregationMinutes: number) {
@@ -235,7 +306,14 @@ export function historicalCandleMatchesSession(
   const parts = chicagoParts(candle.time * 1000);
   const minuteOfDay = parts.hour * 60 + parts.minute;
   if (session === "RTH") {
-    return parts.date === requestedDate && minuteOfDay >= 8 * 60 + 30 && minuteOfDay <= 15 * 60;
+    // ES equity-index RTH runs 08:30–15:15 CT. The prior 15:00 cutoff dropped the
+    // final 15 minutes, which is among the most informative window for a 0DTE
+    // exhaustion study (SPX settles 15:00; futures keep trading to 15:15).
+    return (
+      parts.date === requestedDate &&
+      minuteOfDay >= ES_RTH_OPEN_MINUTE &&
+      minuteOfDay <= ES_RTH_CLOSE_MINUTE
+    );
   }
 
   if (parts.date === requestedDate && minuteOfDay <= 16 * 60) return true;

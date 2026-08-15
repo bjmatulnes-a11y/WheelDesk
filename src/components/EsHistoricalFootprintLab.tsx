@@ -8,7 +8,7 @@ import {
 import {
   buildHistoricalAuctionAnalytics,
   evaluateAuctionConfluence,
-  nearestAuctionMinute,
+  latestAuctionMinuteAtOrBefore,
   type AuctionConfluenceEvaluation,
   type AuctionConfluenceTier,
   type HistoricalAuctionMinute,
@@ -27,11 +27,17 @@ type ApiResponse = {
   previousClose?: number | null;
   candleCount?: number;
   candles?: HistoricalEsCandle[];
+  spxSymbol?: string;
+  spxPreviousClose?: number | null;
+  spxCandleCount?: number;
+  spxCandles?: HistoricalEsCandle[];
+  basisFailure?: string | null;
   limitations?: {
     trueTimeAndSales?: boolean;
     historicalBidAskVolume?: boolean;
     fullDepth?: boolean;
     reconstruction?: string;
+    esSpxBasis?: boolean;
   };
   note?: string;
   error?: string;
@@ -116,7 +122,7 @@ export default function EsHistoricalFootprintLab() {
           <div style={styles.eyebrow}>Experimental · historical reconstruction</div>
           <h1 style={styles.title}>ES Historical Footprint Lab</h1>
           <p style={styles.subtitle}>
-            Requests Schwab 1-minute history and reconstructs a footprint-style volume-at-price matrix. Bid/ask cells are estimates from OHLCV, not historical Time &amp; Sales.
+            Requests Schwab 1-minute ES/SPX history and reconstructs auction structure from OHLCV. The matrix is a reconstructed volume-at-price study; it does not claim historical bid/ask Time &amp; Sales.
           </p>
         </div>
         <div style={styles.badge}>NO EXECUTION WIRING</div>
@@ -178,6 +184,8 @@ export default function EsHistoricalFootprintLab() {
           <SignalConfluencePanel
             auction={auction}
             trades={shadowTrades}
+            spxCandles={response?.spxCandles ?? []}
+            basisFailure={response?.basisFailure ?? null}
             error={shadowError}
           />
         </>
@@ -206,7 +214,7 @@ export default function EsHistoricalFootprintLab() {
       {study?.buckets.length ? (
         <>
           <div style={styles.legendRow}>
-            <span><b>Cell:</b> estimated bid × ask</span>
+            <span><b>Cell:</b> reconstructed volume-at-price; tint = candle-shape proxy</span>
             <span><b>POC:</b> highest reconstructed volume price</span>
             <span><b>HVN:</b> top 20% profile levels</span>
             <span><b>LVN:</b> bottom 20% visited profile levels</span>
@@ -214,7 +222,7 @@ export default function EsHistoricalFootprintLab() {
           </div>
           <FootprintMatrix study={study} auction={auction} />
           <div style={styles.disclaimer}>
-            Reconstruction method: each 1-minute Schwab OHLCV candle is distributed across the 0.25-point ES prices it traversed, weighted toward the candle body/close. Estimated aggressor share uses candle direction and close location. This can reveal acceptance/HVN/LVN structure, but it cannot reproduce true historical bid×ask footprint cells without trade-by-trade data.
+            Reconstruction method: each 1-minute Schwab OHLCV candle is distributed across the 0.25-point ES prices it traversed, weighted toward the candle body/close. Cell tint is a candle-shape proxy only. This can study POC/HVN/LVN, value migration, acceptance, stall, rejection and path efficiency, but it cannot reproduce historical trade-side order flow without a tape.
           </div>
         </>
       ) : !loading && response?.ok ? (
@@ -233,13 +241,16 @@ function DiagnosticStrip({
   study: ReturnType<typeof buildHistoricalFootprintStudy> | null;
   loading: boolean;
 }) {
+  const basis = buildBasisSummary(response?.candles ?? [], response?.spxCandles ?? []);
   const metrics = [
     ["Source", loading ? "testing" : response?.provider ?? "—"],
-    ["Symbol", response?.symbol ?? response?.contractCandidate ?? "—"],
-    ["1m candles", response?.candleCount == null ? "—" : integer(response.candleCount)],
+    ["ES symbol", response?.symbol ?? response?.contractCandidate ?? "—"],
+    ["ES 1m", response?.candleCount == null ? "—" : integer(response.candleCount)],
+    ["SPX 1m", response?.spxCandleCount == null ? "—" : integer(response.spxCandleCount)],
     ["Session candles", study ? integer(study.candleCount) : "—"],
-    ["Footprint columns", study ? integer(study.buckets.length) : "—"],
     ["POC proxy", study?.poc == null ? "—" : study.poc.toFixed(2)],
+    ["ES-SPX basis", basis.median == null ? "—" : `${signed(basis.median, 2)} pts`],
+    ["Basis coverage", basis.coveragePct == null ? "—" : `${basis.coveragePct.toFixed(0)}%`],
     ["Value area", study?.valueAreaLow == null || study?.valueAreaHigh == null ? "—" : `${study.valueAreaLow.toFixed(2)}–${study.valueAreaHigh.toFixed(2)}`],
     ["Historical T&S", response?.limitations?.trueTimeAndSales ? "YES" : "NO"],
   ];
@@ -261,7 +272,7 @@ function AuctionEnginePanel({ auction }: { auction: HistoricalAuctionSummary }) 
     (minute) => minute.state !== "WARMING" && minute.state !== "BALANCED",
   );
   const releaseCount = auction.featureCounts.release;
-  const absorptionCount = auction.featureCounts.absorption;
+  const stallCount = auction.featureCounts.stall;
   const exhaustionCount = auction.featureCounts.exhaustion;
   const rejectionCount = auction.featureCounts.rejection;
   const bestCall = auction.topCallFade[0] ?? null;
@@ -281,7 +292,7 @@ function AuctionEnginePanel({ auction }: { auction: HistoricalAuctionSummary }) 
       <div style={styles.auctionMetrics}>
         <AuctionMetric label="Acceptance" value={auction.featureCounts.acceptance} />
         <AuctionMetric label="Release" value={releaseCount} />
-        <AuctionMetric label="Absorption" value={absorptionCount} />
+        <AuctionMetric label="Stall" value={stallCount} />
         <AuctionMetric label="Exhaustion" value={exhaustionCount} />
         <AuctionMetric label="Rejection" value={rejectionCount} />
         <AuctionMetric
@@ -299,12 +310,21 @@ function AuctionEnginePanel({ auction }: { auction: HistoricalAuctionSummary }) 
       </div>
 
       <div style={styles.engineFormula}>
-        <b>Derived features:</b> developing POC + POC migration · HVN/LVN · above/below POC · Δ proxy/divergence/reversal · volume/range σ · 5m price efficiency · passive absorption · exhaustion · rejection · center acceptance. The Δ/footprint terms remain reconstructed proxies until true trade-by-trade aggressor data is available.
+        <b style={{ color: "#ffb454" }}>Data provenance:</b> this study is built from OHLCV bars only. There is no bid/ask tape.
+        The &ldquo;footprint&rdquo; cells are synthesised from candle geometry, and the shape proxy reduces exactly to
+        <code style={{ margin: "0 4px" }}>56 &times; body + 34 &times; closeLocation</code> &mdash; volume cancels out, so it carries
+        no information beyond OHLC. It is <b>not</b> order-flow delta and is never scored as evidence independent of candle shape.
+        <br />
+        <b>Volume-derived (independent):</b> developing POC · POC migration · HVN/LVN nodes · above/below POC · volume/range &sigma; · 5m path efficiency.
+        <br />
+        <b>Shape-derived (one family):</b> shape proxy · failed extreme · shape reversal · wicks · stall · exhaustion · rejection · acceptance.
+        <br />
+        True absorption requires trade-side classification and is not claimed here; the former ABSORPTION states are now named STALL.
       </div>
 
       <div style={styles.timelineFrame}>
         <div style={styles.timelineHeaderRow}>
-          <span>Time</span><span>State</span><span>Px / POC</span><span>Node</span><span>Δ proxy</span><span>Vol σ</span><span>Eff</span><span>Call fade</span><span>Put fade</span><span>Center</span><span>Features</span>
+          <span>Time</span><span>State</span><span>Px / POC</span><span>Node</span><span>Shape</span><span>Vol σ</span><span>Eff</span><span>Call fade</span><span>Put fade</span><span>Center</span><span>Features</span>
         </div>
         <div style={styles.timelineScroller}>
           {significant.length ? significant.map((minute) => (
@@ -313,7 +333,7 @@ function AuctionEnginePanel({ auction }: { auction: HistoricalAuctionSummary }) 
               <span style={auctionStateStyle(minute.state)}>{shortAuctionState(minute.state)} {Math.round(minute.stateScore)}</span>
               <span>{minute.close.toFixed(2)} / {minute.developingPoc.toFixed(2)}</span>
               <span>{minute.node}</span>
-              <span>{signed(minute.deltaProxyPct, 0)}%</span>
+              <span title="Synthetic shape proxy, not order-flow delta">{signed(minute.shapeProxyPct, 0)}%</span>
               <span>{signed(minute.volumeZ, 1)}σ</span>
               <span>{Math.round(minute.efficiency5mPct)}%</span>
               <strong>{Math.round(minute.callFadeScore)}</strong>
@@ -340,27 +360,42 @@ function AuctionMetric({ label, value }: { label: string; value: string | number
 function SignalConfluencePanel({
   auction,
   trades,
+  spxCandles,
+  basisFailure,
   error,
 }: {
   auction: HistoricalAuctionSummary;
   trades: ZeroDteShadowTrade[];
+  spxCandles: HistoricalEsCandle[];
+  basisFailure: string | null;
   error: string | null;
 }) {
   const matches = trades.map((trade) => {
     const epoch = trade.signalCandleTime > 0
       ? trade.signalCandleTime
       : Math.max(0, Math.floor(Date.parse(trade.signalTime) / 1000) - 60);
-    const minute = nearestAuctionMinute(auction.minutes, epoch, 90);
+    // Causal attribution only: never use an ES minute after SELL_READY.
+    const minute = latestAuctionMinuteAtOrBefore(auction.minutes, epoch, 90);
     const target = trade.strategy === "call-credit-spread"
       ? "CALL_FADE" as const
       : trade.strategy === "put-credit-spread"
         ? "PUT_FADE" as const
         : "CENTER" as const;
     const confluence = evaluateAuctionConfluence(minute, target);
-    return { trade, minute, confluence };
+    const spxMinute = minute
+      ? latestHistoricalCandleAtOrBefore(spxCandles, minute.time, 90)
+      : null;
+    const basis = minute && spxMinute ? minute.close - spxMinute.close : null;
+    const projectedPoc = minute && basis != null ? minute.developingPoc - basis : null;
+    const referenceStrike = tradeReferenceStrike(trade);
+    const pocDistance = projectedPoc != null && referenceStrike != null
+      ? referenceStrike - projectedPoc
+      : null;
+    return { trade, minute, confluence, basis, projectedPoc, referenceStrike, pocDistance };
   });
 
   const tierStats = buildTierStats(matches);
+  const episodes = buildAuctionEpisodes(matches);
 
   return (
     <div style={styles.confluenceCard}>
@@ -373,8 +408,16 @@ function SignalConfluencePanel({
       </div>
 
       <div style={styles.confluenceExplainer}>
-        Confluence now compares the trade-side auction score against the opposite-side score, measures the directional edge, and checks the actual auction state / delta / POC narrative. <b>DEFINITIVE</b> means unusually coherent evidence; it is a research conviction tier, not automatic position sizing or execution wiring.
+        Confluence compares the trade-side auction score against the opposite side, measures the directional edge, and checks
+        the auction state / shape / POC narrative. Evidence is grouped into two <b>independent families</b> &mdash; SHAPE (candle
+        geometry) and VOLUME (POC and node distribution) &mdash; and correlated members inside a family are collapsed rather than
+        summed, so one candle cannot be counted three times. <b>DEFINITIVE requires both families to agree.</b>
+        <b style={{ color: "#ffb454" }}> LATE</b> marks a read where the move being faded has already released; those are capped at
+        SUPPORTIVE. Historical matching is <b>causal</b>: only the latest completed ES minute at or before SELL_READY may be used.
+        When Schwab SPX history is available, ES POC is projected onto the SPX scale using the contemporaneous ES-SPX basis.
+        This is a research conviction tier, not position sizing or execution wiring.
       </div>
+      {basisFailure ? <div style={styles.confluenceNote}>ES→SPX basis unavailable: {basisFailure}. State correlation remains valid; level-distance analysis is disabled.</div> : null}
 
       {tierStats.length ? (
         <div style={styles.tierSummaryGrid}>
@@ -383,7 +426,20 @@ function SignalConfluencePanel({
               <span style={confluenceStyle(stat.tier)}>{stat.tier.replaceAll("_", " ")}</span>
               <strong>{stat.count} signal{stat.count === 1 ? "" : "s"}</strong>
               <small>{stat.closed ? `${stat.closed} closed · ${money(stat.pnl)}` : "no closed result"}</small>
+              {stat.closed ? <small>MAE {money(stat.avgMae)} · MFE {money(stat.avgMfe)} · peak {stat.avgPeakCapture.toFixed(0)}%</small> : null}
             </div>
+          ))}
+        </div>
+      ) : null}
+
+      {episodes.length ? (
+        <div style={styles.episodeStrip}>
+          <strong>{episodes.length} auction episode{episodes.length === 1 ? "" : "s"}</strong>
+          <span>{trades.length} signal rows are grouped so repeated entries around the same structure are not mistaken for independent evidence.</span>
+          {episodes.slice(0, 8).map((episode) => (
+            <small key={episode.key}>
+              {episode.label}: {episode.count} signal{episode.count === 1 ? "" : "s"} · peak {episode.peakTier} {Math.round(episode.peakConviction)}
+            </small>
           ))}
         </div>
       ) : null}
@@ -395,7 +451,7 @@ function SignalConfluencePanel({
       {matches.length ? (
         <div style={styles.signalGridScroller}>
           <div style={styles.signalGrid}>
-            {matches.map(({ trade, minute, confluence }) => (
+            {matches.map(({ trade, minute, confluence, basis, projectedPoc, pocDistance }) => (
               <div key={trade.id} style={styles.signalRow}>
                 <div>
                   <strong>{trade.strategy === "call-credit-spread" ? "CALL CREDIT" : trade.strategy === "put-credit-spread" ? "PUT CREDIT" : "IRON FLY"}</strong>
@@ -426,8 +482,29 @@ function SignalConfluencePanel({
                   <strong>{minute ? shortAuctionState(minute.state) : "—"}</strong>
                 </div>
                 <div>
+                  <span>Families</span>
+                  <strong title="Independent evidence families agreeing (max 2 without a tape)">
+                    {confluence.independentFamilies}/2
+                  </strong>
+                </div>
+                <div style={styles.confluenceStat}>
+                  <span>Timing</span>
+                  <strong style={confluence.timing === "LATE" ? { color: "#ffb454", fontWeight: 800 } : undefined}>
+                    {confluence.timing}
+                  </strong>
+                </div>
+                <div style={styles.confluenceStat}>
                   <span>Confluence</span>
                   <strong style={confluenceStyle(confluence.tier)}>{confluence.tier.replaceAll("_", " ")}</strong>
+                </div>
+                <div>
+                  <span>Basis</span>
+                  <strong>{basis == null ? "—" : signed(basis, 2)}</strong>
+                </div>
+                <div>
+                  <span>SPX POC</span>
+                  <strong>{projectedPoc == null ? "—" : projectedPoc.toFixed(2)}</strong>
+                  {pocDistance == null ? null : <small>{signed(pocDistance, 1)} from ref</small>}
                 </div>
                 <div>
                   <span>Result</span>
@@ -458,6 +535,7 @@ function buildTierStats(
     "SUPPORTIVE",
     "MIXED",
     "NEUTRAL",
+    "INSUFFICIENT",
     "CONFLICT",
     "NO_MATCH",
   ];
@@ -465,11 +543,17 @@ function buildTierStats(
     const rows = matches.filter((match) => match.confluence.tier === tier);
     if (!rows.length) return [];
     const closed = rows.filter((row) => row.trade.pnlConservativeDollars != null);
+    const peakCaptureRows = closed
+      .map((row) => peakCapturePct(row.trade))
+      .filter((value): value is number => value != null);
     return [{
       tier,
       count: rows.length,
       closed: closed.length,
       pnl: closed.reduce((sum, row) => sum + (row.trade.pnlConservativeDollars ?? 0), 0),
+      avgMae: average(closed.map((row) => -Math.abs(row.trade.maxAdverseExcursionDollars))),
+      avgMfe: average(closed.map((row) => Math.max(0, row.trade.maxFavorableExcursionDollars))),
+      avgPeakCapture: average(peakCaptureRows),
     }];
   });
 }
@@ -574,14 +658,14 @@ function FootprintCell({
   maxCell,
   poc,
 }: {
-  cell?: { bidVolume: number; askVolume: number; totalVolume: number; delta: number };
+  cell?: { totalVolume: number; shapeProxy: number };
   maxCell: number;
   poc: boolean;
 }) {
   if (!cell || cell.totalVolume <= 0) return <div style={styles.blankCell}>·</div>;
   const strength = Math.min(1, cell.totalVolume / maxCell);
-  const deltaPct = cell.totalVolume > 0 ? cell.delta / cell.totalVolume : 0;
-  const positive = deltaPct >= 0;
+  const shapePct = cell.totalVolume > 0 ? cell.shapeProxy / cell.totalVolume : 0;
+  const positive = shapePct >= 0;
   const alpha = 0.08 + strength * 0.62;
   const background = positive
     ? `rgba(28, 182, 126, ${alpha.toFixed(3)})`
@@ -593,11 +677,10 @@ function FootprintCell({
         background,
         ...(poc ? styles.pocCell : {}),
       }}
-      title={`Estimated bid ${Math.round(cell.bidVolume)} · ask ${Math.round(cell.askVolume)} · delta ${Math.round(cell.delta)}`}
+      title={`Reconstructed volume ${Math.round(cell.totalVolume)} · candle-shape proxy ${signed(shapePct * 100, 0)}% · NOT trade-side volume`}
     >
-      <span>{compact(cell.bidVolume)}</span>
-      <b>×</b>
-      <span>{compact(cell.askVolume)}</span>
+      <strong>{compact(cell.totalVolume)}</strong>
+      <small>S {signed(shapePct * 100, 0)}%</small>
     </div>
   );
 }
@@ -624,8 +707,8 @@ function shortAuctionState(state: HistoricalAuctionMinute["state"]) {
   switch (state) {
     case "RELEASE_UP": return "REL ↑";
     case "RELEASE_DOWN": return "REL ↓";
-    case "ABSORPTION_HIGH": return "ABS HIGH";
-    case "ABSORPTION_LOW": return "ABS LOW";
+    case "STALL_HIGH": return "STALL HI";
+    case "STALL_LOW": return "STALL LO";
     case "EXHAUSTION_UP": return "EXH ↑";
     case "EXHAUSTION_DOWN": return "EXH ↓";
     case "REJECTION_HIGH": return "REJ HIGH";
@@ -637,8 +720,8 @@ function shortAuctionState(state: HistoricalAuctionMinute["state"]) {
 }
 
 function auctionStateStyle(state: HistoricalAuctionMinute["state"]): React.CSSProperties {
-  if (state === "REJECTION_HIGH" || state === "EXHAUSTION_UP" || state === "ABSORPTION_HIGH") return { color: "#ff9b8e", fontWeight: 800 };
-  if (state === "REJECTION_LOW" || state === "EXHAUSTION_DOWN" || state === "ABSORPTION_LOW") return { color: "#72e6bf", fontWeight: 800 };
+  if (state === "REJECTION_HIGH" || state === "EXHAUSTION_UP" || state === "STALL_HIGH") return { color: "#ff9b8e", fontWeight: 800 };
+  if (state === "REJECTION_LOW" || state === "EXHAUSTION_DOWN" || state === "STALL_LOW") return { color: "#72e6bf", fontWeight: 800 };
   if (state === "RELEASE_UP" || state === "RELEASE_DOWN") return { color: "#68c8ff", fontWeight: 800 };
   if (state === "ACCEPTANCE") return { color: "#ffd166", fontWeight: 800 };
   return { color: "#879bb0", fontWeight: 700 };
@@ -650,6 +733,7 @@ function confluenceStyle(value: string): React.CSSProperties {
   if (value === "SUPPORTIVE") return { color: "#ffd166", fontWeight: 800 };
   if (value === "MIXED") return { color: "#f0a7ff", fontWeight: 800 };
   if (value === "CONFLICT") return { color: "#ff837b", fontWeight: 900 };
+  if (value === "INSUFFICIENT") return { color: "#6f8296", fontStyle: "italic" };
   return { color: "#91a4b8" };
 }
 
@@ -667,6 +751,102 @@ function formatTradeLegs(trade: ZeroDteShadowTrade) {
     return center == null ? trade.label : `center ${center} · wings ${bought.sort((a, b) => a - b).join("/")}`;
   }
   return [...sold, ...bought].filter((value) => Number.isFinite(value)).join("/") || trade.label;
+}
+
+function latestHistoricalCandleAtOrBefore(
+  candles: HistoricalEsCandle[],
+  epochSeconds: number,
+  toleranceSeconds = 90,
+) {
+  let best: HistoricalEsCandle | null = null;
+  let bestLag = Number.POSITIVE_INFINITY;
+  for (const candle of candles) {
+    if (candle.time > epochSeconds) continue;
+    const lag = epochSeconds - candle.time;
+    if (lag < bestLag) {
+      best = candle;
+      bestLag = lag;
+    }
+  }
+  return best && bestLag <= toleranceSeconds ? best : null;
+}
+
+function buildBasisSummary(esCandles: HistoricalEsCandle[], spxCandles: HistoricalEsCandle[]) {
+  if (!esCandles.length || !spxCandles.length) {
+    return { median: null as number | null, coveragePct: null as number | null };
+  }
+  const orderedSpx = [...spxCandles].sort((a, b) => a.time - b.time);
+  const firstSpx = orderedSpx[0]?.time ?? 0;
+  const lastSpx = orderedSpx.at(-1)?.time ?? 0;
+  const eligibleEs = esCandles.filter((candle) => candle.time >= firstSpx && candle.time <= lastSpx);
+  const values: number[] = [];
+  for (const es of eligibleEs) {
+    const spx = latestHistoricalCandleAtOrBefore(orderedSpx, es.time, 90);
+    if (spx) values.push(es.close - spx.close);
+  }
+  if (!values.length) return { median: null, coveragePct: 0 };
+  values.sort((a, b) => a - b);
+  const middle = Math.floor(values.length / 2);
+  const median = values.length % 2
+    ? values[middle]
+    : (values[middle - 1] + values[middle]) / 2;
+  return { median, coveragePct: eligibleEs.length ? (values.length / eligibleEs.length) * 100 : 0 };
+}
+
+function tradeReferenceStrike(trade: ZeroDteShadowTrade) {
+  if (trade.strategy === "iron-fly") return Number.isFinite(trade.entryMapCenter) ? trade.entryMapCenter : null;
+  const optionType = trade.strategy === "call-credit-spread" ? "call" : "put";
+  const short = trade.entryShortLegs.find((leg) => leg.optionType === optionType);
+  if (short && Number.isFinite(short.strike)) return short.strike;
+  const sellLeg = trade.legs.find((leg) => leg.action === "sell" && leg.optionType === optionType);
+  return sellLeg && Number.isFinite(sellLeg.strike) ? sellLeg.strike : null;
+}
+
+function peakCapturePct(trade: ZeroDteShadowTrade) {
+  if (!(trade.entrySellableCredit > 0) || trade.minBuybackDebit == null) return null;
+  return Math.max(0, Math.min(100, ((trade.entrySellableCredit - trade.minBuybackDebit) / trade.entrySellableCredit) * 100));
+}
+
+function average(values: number[]) {
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+}
+
+type EpisodeMatch = {
+  trade: ZeroDteShadowTrade;
+  confluence: AuctionConfluenceEvaluation;
+  referenceStrike: number | null;
+};
+
+function buildAuctionEpisodes(matches: EpisodeMatch[]) {
+  const tierRank: Record<AuctionConfluenceTier, number> = {
+    NO_MATCH: 0, INSUFFICIENT: 1, CONFLICT: 2, NEUTRAL: 3, MIXED: 4, SUPPORTIVE: 5, CONFIRMED: 6, DEFINITIVE: 7,
+  };
+  const rows = [...matches].sort((a, b) => a.trade.signalCandleTime - b.trade.signalCandleTime);
+  const episodes: Array<{ key: string; label: string; count: number; lastTime: number; peakTier: AuctionConfluenceTier; peakConviction: number }> = [];
+  for (const row of rows) {
+    const ref = row.referenceStrike == null ? "na" : row.referenceStrike.toFixed(2);
+    const family = `${row.trade.strategy}:${ref}`;
+    const time = row.trade.signalCandleTime || Math.floor(Date.parse(row.trade.signalTime) / 1000);
+    const prior = [...episodes]
+      .reverse()
+      .find((episode) => episode.key.startsWith(`${family}:`) && time - episode.lastTime <= 20 * 60);
+    if (prior) {
+      prior.count += 1;
+      prior.lastTime = time;
+      if (tierRank[row.confluence.tier] > tierRank[prior.peakTier]) prior.peakTier = row.confluence.tier;
+      prior.peakConviction = Math.max(prior.peakConviction, row.confluence.convictionScore);
+      continue;
+    }
+    episodes.push({
+      key: `${family}:${time}`,
+      label: row.trade.strategy === "iron-fly" ? `IF ${ref}` : `${row.trade.strategy === "call-credit-spread" ? "CALL" : "PUT"} ${ref}`,
+      count: 1,
+      lastTime: time,
+      peakTier: row.confluence.tier,
+      peakConviction: row.confluence.convictionScore,
+    });
+  }
+  return episodes;
 }
 
 function signed(value: number, digits: number) {
@@ -713,7 +893,7 @@ const styles: Record<string, React.CSSProperties> = {
   control: { display: "grid", gap: 5, color: "#8297ad", fontSize: 11, minWidth: 160 },
   input: { height: 38, borderRadius: 9, border: "1px solid #29435d", background: "#0b1927", color: "#eef6ff", padding: "0 10px", outline: "none" },
   button: { height: 38, borderRadius: 9, border: "1px solid #2f7894", background: "#0b3141", color: "#5de5ff", padding: "0 15px", fontWeight: 800, cursor: "pointer" },
-  metrics: { display: "grid", gridTemplateColumns: "repeat(8, minmax(105px, 1fr))", gap: 8, marginBottom: 14 },
+  metrics: { display: "grid", gridTemplateColumns: "repeat(10, minmax(105px, 1fr))", gap: 8, marginBottom: 14 },
   metric: { border: "1px solid #1f344a", borderRadius: 10, padding: "9px 10px", background: "#091725", display: "grid", gap: 3 },
   failureCard: { border: "1px solid #6f4933", borderRadius: 12, padding: 14, background: "#1a120e", color: "#ffd0aa", marginBottom: 14 },
   failureText: { marginTop: 6, color: "#d6a987", fontSize: 12 },
@@ -738,10 +918,11 @@ const styles: Record<string, React.CSSProperties> = {
   confluenceNote: { border: "1px solid #273b51", borderRadius: 8, padding: 9, color: "#8196ab", fontSize: 10 },
   confluenceExplainer: { border: "1px solid #20384f", borderRadius: 9, padding: "8px 10px", color: "#8ea3b8", fontSize: 10, lineHeight: 1.45, marginBottom: 9, background: "#07131f" },
   tierSummaryGrid: { display: "grid", gridTemplateColumns: "repeat(7, minmax(105px, 1fr))", gap: 6, marginBottom: 9 },
-  tierSummaryCard: { border: "1px solid #20364c", borderRadius: 9, padding: "7px 8px", background: "#07131f", display: "grid", gap: 2, minHeight: 50, fontSize: 9 },
+  tierSummaryCard: { border: "1px solid #20364c", borderRadius: 9, padding: "7px 8px", background: "#07131f", display: "grid", gap: 2, minHeight: 58, fontSize: 9 },
+  episodeStrip: { border: "1px solid #20364c", borderRadius: 9, padding: "8px 10px", background: "#07131f", display: "flex", flexWrap: "wrap", gap: "5px 12px", alignItems: "center", marginBottom: 9, color: "#8ea3b8", fontSize: 9 },
   signalGridScroller: { overflowX: "auto" },
-  signalGrid: { display: "grid", gap: 6, minWidth: 1240 },
-  signalRow: { display: "grid", gridTemplateColumns: "minmax(175px, 1.35fr) 62px 54px 62px 50px 62px 78px 88px 60px minmax(285px, 1.9fr)", gap: 8, alignItems: "center", border: "1px solid #1d3349", borderRadius: 9, background: "#07131f", padding: "7px 8px", fontSize: 9 },
+  signalGrid: { display: "grid", gap: 6, minWidth: 1560 },
+  signalRow: { display: "grid", gridTemplateColumns: "minmax(175px, 1.35fr) 62px 54px 62px 50px 62px 70px 55px 70px 82px 62px 86px 62px minmax(270px, 1.8fr)", gap: 8, alignItems: "center", border: "1px solid #1d3349", borderRadius: 9, background: "#07131f", padding: "7px 8px", fontSize: 9 },
   signalFeatureCell: { minWidth: 0, overflow: "hidden", display: "grid", gap: 2 },
   opposingText: { color: "#b98585", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   matrixFrame: { border: "1px solid #223951", borderRadius: 12, overflow: "hidden", background: "#050d16" },
@@ -754,7 +935,7 @@ const styles: Record<string, React.CSSProperties> = {
   priceCell: { minHeight: 29, padding: "4px 6px", display: "flex", gap: 5, alignItems: "center", justifyContent: "space-between", background: "#071421", borderRight: "1px solid #1b2b3e", borderBottom: "1px solid #132337", fontSize: 10 },
   pocPrice: { color: "#ffd166", boxShadow: "inset 3px 0 0 #ffd166" },
   valueAreaPrice: { background: "#0b1b2a" },
-  footprintCell: { minHeight: 29, padding: "4px 6px", display: "grid", gridTemplateColumns: "1fr auto 1fr", alignItems: "center", gap: 4, borderRight: "1px solid #102235", borderBottom: "1px solid #102235", fontSize: 9, color: "#edf7ff", textAlign: "right" },
+  footprintCell: { minHeight: 29, padding: "4px 6px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 5, borderRight: "1px solid #102235", borderBottom: "1px solid #102235", fontSize: 9, color: "#edf7ff", textAlign: "right" },
   pocCell: { outline: "1px solid rgba(255,209,102,.45)", outlineOffset: -1 },
   blankCell: { minHeight: 29, display: "grid", placeItems: "center", borderRight: "1px solid #102235", borderBottom: "1px solid #102235", color: "#1c3044", fontSize: 9 },
   profileCell: { minHeight: 29, position: "relative", display: "flex", alignItems: "center", gap: 6, padding: "3px 7px", borderBottom: "1px solid #102235", overflow: "hidden", fontSize: 9 },
