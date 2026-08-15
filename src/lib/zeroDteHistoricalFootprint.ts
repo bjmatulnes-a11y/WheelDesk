@@ -44,7 +44,7 @@ export type HistoricalFootprintStudy = {
   candleCount: number;
 };
 
-const ES_TICK = 0.25;
+export const ES_TICK = 0.25;
 
 export function buildHistoricalFootprintStudy(args: {
   candles: HistoricalEsCandle[];
@@ -56,7 +56,7 @@ export function buildHistoricalFootprintStudy(args: {
   const session = args.session ?? "RTH";
   const candles = args.candles
     .filter((candle) => isFiniteCandle(candle))
-    .filter((candle) => candleMatchesSession(candle, args.date, session))
+    .filter((candle) => historicalCandleMatchesSession(candle, args.date, session))
     .sort((a, b) => a.time - b.time);
 
   const bucketMap = new Map<string, HistoricalFootprintBucket>();
@@ -64,7 +64,7 @@ export function buildHistoricalFootprintStudy(args: {
 
   for (const candle of candles) {
     const bucketInfo = bucketForCandle(candle, aggregationMinutes);
-    const distributed = distributeCandle(candle);
+    const distributed = reconstructHistoricalCandleFootprint(candle);
     let bucket = bucketMap.get(bucketInfo.key);
     if (!bucket) {
       bucket = {
@@ -138,7 +138,7 @@ export function buildHistoricalFootprintStudy(args: {
   };
 }
 
-function distributeCandle(candle: HistoricalEsCandle): HistoricalFootprintCell[] {
+export function reconstructHistoricalCandleFootprint(candle: HistoricalEsCandle): HistoricalFootprintCell[] {
   const low = roundToTick(Math.min(candle.low, candle.high));
   const high = roundToTick(Math.max(candle.low, candle.high));
   const prices: number[] = [];
@@ -227,7 +227,7 @@ function bucketForCandle(candle: HistoricalEsCandle, aggregationMinutes: number)
   };
 }
 
-function candleMatchesSession(
+export function historicalCandleMatchesSession(
   candle: HistoricalEsCandle,
   requestedDate: string,
   session: "RTH" | "FULL",
