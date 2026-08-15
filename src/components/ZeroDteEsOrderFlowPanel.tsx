@@ -31,6 +31,20 @@ type Props = {
   enabled?: boolean;
 };
 
+type FootprintBucket = {
+  price: number;
+  buyVolume: number;
+  sellVolume: number;
+  unknownVolume: number;
+  totalVolume: number;
+  delta: number;
+  events: number;
+  firstAt: string;
+  lastAt: string;
+};
+
+const ES_TICK = 0.25;
+
 export function ZeroDteEsOrderFlowPanel({ enabled = true }: Props) {
   const [read, setRead] = useState<EsOrderFlowRead>(() => emptyEsOrderFlowRead());
   const [capabilities, setCapabilities] = useState<OrderFlowApiResponse["capabilities"] | null>(null);
@@ -38,7 +52,10 @@ export function ZeroDteEsOrderFlowPanel({ enabled = true }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [lastSuccessAt, setLastSuccessAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [sandboxOpen, setSandboxOpen] = useState(true);
+  const [footprintBuckets, setFootprintBuckets] = useState<Record<string, FootprintBucket>>({});
   const inFlightRef = useRef(false);
+  const processedFootprintTimestampRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!enabled) return;
@@ -87,6 +104,36 @@ export function ZeroDteEsOrderFlowPanel({ enabled = true }: Props) {
     return () => window.clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    const latestSample = read.latest;
+    if (!latestSample || latestSample.timestamp === processedFootprintTimestampRef.current) return;
+    processedFootprintTimestampRef.current = latestSample.timestamp;
+    const tradePrice = latestSample.last ?? latestSample.mid;
+    if (tradePrice == null || latestSample.volumeDelta <= 0) return;
+    const bucketPrice = Math.round(tradePrice / ES_TICK) * ES_TICK;
+    const key = bucketPrice.toFixed(2);
+    setFootprintBuckets((current) => {
+      const prior = current[key];
+      const buyVolume = (prior?.buyVolume ?? 0) + latestSample.aggressiveBuyVolume;
+      const sellVolume = (prior?.sellVolume ?? 0) + latestSample.aggressiveSellVolume;
+      const unknownVolume = (prior?.unknownVolume ?? 0) + latestSample.unknownVolume;
+      return {
+        ...current,
+        [key]: {
+          price: bucketPrice,
+          buyVolume,
+          sellVolume,
+          unknownVolume,
+          totalVolume: buyVolume + sellVolume + unknownVolume,
+          delta: buyVolume - sellVolume,
+          events: (prior?.events ?? 0) + 1,
+          firstAt: prior?.firstAt ?? latestSample.timestamp,
+          lastAt: latestSample.timestamp,
+        },
+      };
+    });
+  }, [read.latest]);
+
   const latest = read.latest;
   const staleSeconds = lastSuccessAt == null ? null : Math.max(0, (now - lastSuccessAt) / 1000);
   const stale = staleSeconds != null && staleSeconds > 4;
@@ -109,6 +156,13 @@ export function ZeroDteEsOrderFlowPanel({ enabled = true }: Props) {
             ) : (
               <span style={styles.proxyPill}>TOP OF BOOK</span>
             )}
+            <button
+              type="button"
+              onClick={() => setSandboxOpen((current) => !current)}
+              style={styles.sandboxToggle}
+            >
+              {sandboxOpen ? "HIDE FOOTPRINT SANDBOX" : "OPEN FOOTPRINT SANDBOX"}
+            </button>
           </div>
           <div style={styles.subtitle}>
             ES bid/ask pressure + aggregate trade-volume classification. Observational only until streamer validation.
@@ -158,6 +212,17 @@ export function ZeroDteEsOrderFlowPanel({ enabled = true }: Props) {
         </div>
       </div>
 
+      {sandboxOpen ? (
+        <FootprintSandbox
+          buckets={footprintBuckets}
+          samples={read.samples}
+          latest={latest}
+          capabilities={capabilities}
+          fieldNames={fieldNames}
+          onReset={() => setFootprintBuckets({})}
+        />
+      ) : null}
+
       {error ? <div style={styles.error}>{error}</div> : null}
       {read.warnings.length ? (
         <div style={styles.warning}>{read.warnings[0]}</div>
@@ -170,6 +235,164 @@ export function ZeroDteEsOrderFlowPanel({ enabled = true }: Props) {
       ) : null}
     </div>
   );
+}
+
+function FootprintSandbox({
+  buckets,
+  samples,
+  latest,
+  capabilities,
+  fieldNames,
+  onReset,
+}: {
+  buckets: Record<string, FootprintBucket>;
+  samples: EsOrderFlowRead["samples"];
+  latest: EsOrderFlowRead["latest"];
+  capabilities: OrderFlowApiResponse["capabilities"] | null;
+  fieldNames: string[];
+  onReset: () => void;
+}) {
+  const levels = Object.values(buckets).sort((a, b) => b.price - a.price);
+  const totalObserved = levels.reduce((total, level) => total + level.totalVolume, 0);
+  const classified = levels.reduce((total, level) => total + level.buyVolume + level.sellVolume, 0);
+  const classificationPct = totalObserved > 0 ? (classified / totalObserved) * 100 : 0;
+  const maxSideVolume = Math.max(
+    1,
+    ...levels.map((level) => Math.max(level.buyVolume, level.sellVolume, level.unknownVolume)),
+  );
+  const poc = levels.reduce<FootprintBucket | null>(
+    (best, level) => (best == null || level.totalVolume > best.totalVolume ? level : best),
+    null,
+  );
+  const distinctTradeTimes = new Set(
+    samples
+      .map((sample) => sample.sourceTradeTime)
+      .filter((value): value is number => value != null && Number.isFinite(value)),
+  ).size;
+  const distinctQuoteTimes = new Set(
+    samples
+      .map((sample) => sample.sourceQuoteTime)
+      .filter((value): value is number => value != null && Number.isFinite(value)),
+  ).size;
+  const currentPrice = latest?.last ?? latest?.mid ?? null;
+  const displayed = nearestFootprintLevels(levels, currentPrice, 32);
+
+  return (
+    <div style={styles.sandboxShell}>
+      <div style={styles.sandboxHeader}>
+        <div>
+          <div style={styles.eyebrow}>Experimental · no execution wiring</div>
+          <strong style={styles.sandboxTitle}>ES Footprint / Volume-at-Price Sandbox</strong>
+          <div style={styles.sandboxSubtitle}>
+            Buckets Schwab 1-second REST volume changes at the observed ES trade price. This tests whether the feed is rich enough to reveal acceptance, heavy-volume nodes, and absorption before we touch SELL_READY.
+          </div>
+        </div>
+        <button type="button" onClick={onReset} style={styles.resetButton}>RESET SANDBOX</button>
+      </div>
+
+      <div style={styles.sandboxMetricGrid}>
+        <SandboxMetric label="Volume observed" value={integer(totalObserved)} />
+        <SandboxMetric label="Classified" value={totalObserved > 0 ? `${classificationPct.toFixed(0)}%` : "warming"} />
+        <SandboxMetric label="Price levels" value={levels.length.toLocaleString()} />
+        <SandboxMetric label="POC proxy" value={poc ? poc.price.toFixed(2) : "warming"} />
+        <SandboxMetric label="Trade-time changes" value={distinctTradeTimes.toLocaleString()} />
+        <SandboxMetric label="Quote-time changes" value={distinctQuoteTimes.toLocaleString()} />
+        <SandboxMetric label="Last size field" value={latest?.sourceLastSize == null ? "missing" : integer(latest.sourceLastSize)} />
+        <SandboxMetric label="Total volume field" value={latest?.sourceTotalVolume == null ? "missing" : integer(latest.sourceTotalVolume)} />
+      </div>
+
+      <div style={styles.capabilityStrip}>
+        <span style={capabilityTone(capabilities?.topOfBook)}>Top book {capabilities?.topOfBook ? "YES" : "NO"}</span>
+        <span style={capabilityTone(capabilities?.bookSizes)}>Book sizes {capabilities?.bookSizes ? "YES" : "NO"}</span>
+        <span style={capabilityTone(capabilities?.tapeProxy)}>Volume/tape proxy {capabilities?.tapeProxy ? "YES" : "NO"}</span>
+        <span style={capabilityTone(capabilities?.trueTimeAndSales)}>True T&S {capabilities?.trueTimeAndSales ? "YES" : "NO"}</span>
+        <span style={capabilityTone(capabilities?.fullDepth)}>Full DOM {capabilities?.fullDepth ? "YES" : "NO"}</span>
+      </div>
+
+      <div style={styles.footprintTable}>
+        <div style={styles.footprintHeaderRow}>
+          <span>BID-SIDE PROXY</span>
+          <span>PRICE</span>
+          <span>ASK-SIDE PROXY</span>
+          <span>UNKNOWN</span>
+          <span>DELTA</span>
+          <span>TOTAL</span>
+        </div>
+        <div style={styles.footprintRows}>
+          {displayed.length ? displayed.map((level) => {
+            const isPoc = poc?.price === level.price;
+            const isCurrent = currentPrice != null && Math.abs(level.price - currentPrice) <= ES_TICK / 2;
+            const sellWidth = Math.max(2, (level.sellVolume / maxSideVolume) * 100);
+            const buyWidth = Math.max(2, (level.buyVolume / maxSideVolume) * 100);
+            return (
+              <div
+                key={level.price.toFixed(2)}
+                style={{
+                  ...styles.footprintRow,
+                  ...(isCurrent ? styles.currentFootprintRow : {}),
+                }}
+              >
+                <span style={styles.footprintSideCell}>
+                  <span style={{ ...styles.sellVolumeBar, width: `${sellWidth}%` }} />
+                  <b>{integer(level.sellVolume)}</b>
+                </span>
+                <strong style={styles.footprintPrice}>
+                  {level.price.toFixed(2)}
+                  {isPoc ? <em style={styles.pocBadge}>POC</em> : null}
+                  {isCurrent ? <em style={styles.lastBadge}>LAST</em> : null}
+                </strong>
+                <span style={styles.footprintSideCell}>
+                  <span style={{ ...styles.buyVolumeBar, width: `${buyWidth}%` }} />
+                  <b>{integer(level.buyVolume)}</b>
+                </span>
+                <span>{integer(level.unknownVolume)}</span>
+                <strong style={{ color: deltaTone(level.delta) }}>{signedInteger(level.delta)}</strong>
+                <strong>{integer(level.totalVolume)}</strong>
+              </div>
+            );
+          }) : (
+            <div style={styles.emptyFootprint}>Waiting for positive ES volume changes…</div>
+          )}
+        </div>
+      </div>
+
+      <div style={styles.sandboxFooter}>
+        <span>
+          Interpretation test: repeated heavy volume at a price with little displacement can become an HVN/absorption candidate; thin levels can become LVN/fast-travel candidates.
+        </span>
+        <span>
+          REST limitation: a 1-second volume increment may contain many CME trades, so the whole increment is assigned to the latest observed price/aggressor. Do not call this a true footprint unless Schwab exposes trade-by-trade streaming data.
+        </span>
+        {fieldNames.length ? <span>Detected Schwab quote fields: {fieldNames.join(", ")}.</span> : null}
+      </div>
+    </div>
+  );
+}
+
+function SandboxMetric({ label, value }: { label: string; value: string }) {
+  return <div style={styles.sandboxMetric}><span>{label}</span><strong>{value}</strong></div>;
+}
+
+function nearestFootprintLevels(levels: FootprintBucket[], currentPrice: number | null, maxRows: number) {
+  if (levels.length <= maxRows) return levels;
+  if (currentPrice == null) return levels.slice(0, maxRows);
+  return levels
+    .slice()
+    .sort((a, b) => Math.abs(a.price - currentPrice) - Math.abs(b.price - currentPrice))
+    .slice(0, maxRows)
+    .sort((a, b) => b.price - a.price);
+}
+
+function capabilityTone(active: boolean | undefined): React.CSSProperties {
+  return {
+    border: `1px solid ${active ? "#1f8f67" : "#5f4850"}`,
+    background: active ? "#0c2a23" : "#21171b",
+    color: active ? "#65e0b4" : "#b68b95",
+    borderRadius: 999,
+    padding: "4px 8px",
+    fontSize: 9,
+    fontWeight: 800,
+  };
 }
 
 function OrderFlowSvg({
@@ -351,6 +574,7 @@ const styles: Record<string, React.CSSProperties> = {
   modePill: { border: "1px solid #345270", color: "#7cc4ff", background: "#0d2234", borderRadius: 999, padding: "3px 7px", fontSize: 9, fontWeight: 900 },
   depthPill: { border: "1px solid #1f8f67", color: "#34d399", background: "#0c2a23", borderRadius: 999, padding: "3px 7px", fontSize: 9, fontWeight: 900 },
   proxyPill: { border: "1px solid #6e5930", color: "#f6c453", background: "#261f12", borderRadius: 999, padding: "3px 7px", fontSize: 9, fontWeight: 900 },
+  sandboxToggle: { border: "1px solid #62518c", color: "#c4a7ff", background: "#181429", borderRadius: 999, padding: "4px 8px", fontSize: 9, fontWeight: 900, cursor: "pointer" },
   freshness: { fontSize: 11, fontWeight: 800, paddingTop: 3 },
   metricGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(115px, 1fr))", gap: 8, marginTop: 12 },
   metric: { background: "#0e1928", border: "1px solid #1d2d43", borderRadius: 9, padding: "8px 9px", display: "flex", flexDirection: "column", gap: 3 },
@@ -372,6 +596,27 @@ const styles: Record<string, React.CSSProperties> = {
   lastTradeRow: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", alignItems: "center", textAlign: "center", color: "#7f91a8", fontSize: 9, borderTop: "1px solid #17263a", paddingTop: 7 },
   bookStats: { display: "grid", gridTemplateColumns: "1fr 1fr", borderTop: "1px solid #17263a" },
   bookStat: { display: "flex", flexDirection: "column", gap: 2, padding: 8, borderRight: "1px solid #17263a", borderBottom: "1px solid #17263a", fontSize: 9, color: "#74869e" },
+  sandboxShell: { marginTop: 12, border: "1px solid #493d6d", background: "#0b1020", borderRadius: 12, overflow: "hidden" },
+  sandboxHeader: { display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap", padding: 12, borderBottom: "1px solid #27223d" },
+  sandboxTitle: { display: "block", color: "#e9ddff", fontSize: 15, marginTop: 2 },
+  sandboxSubtitle: { color: "#8190aa", fontSize: 10, lineHeight: 1.45, marginTop: 4, maxWidth: 980 },
+  resetButton: { border: "1px solid #4f5d75", background: "#101a29", color: "#b8c5d8", borderRadius: 8, padding: "6px 9px", fontSize: 9, fontWeight: 800, cursor: "pointer" },
+  sandboxMetricGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 7, padding: 10 },
+  sandboxMetric: { display: "flex", flexDirection: "column", gap: 2, padding: "7px 8px", border: "1px solid #202c42", borderRadius: 8, background: "#0c1624", color: "#71839b", fontSize: 9 },
+  capabilityStrip: { display: "flex", gap: 6, flexWrap: "wrap", padding: "0 10px 10px" },
+  footprintTable: { margin: "0 10px 10px", border: "1px solid #202c42", borderRadius: 9, overflow: "hidden", background: "#08101c" },
+  footprintHeaderRow: { display: "grid", gridTemplateColumns: "1.4fr 120px 1.4fr 90px 90px 90px", gap: 8, alignItems: "center", padding: "7px 9px", color: "#667991", fontSize: 8, fontWeight: 900, letterSpacing: .4, borderBottom: "1px solid #1b283b", textAlign: "center" },
+  footprintRows: { maxHeight: 430, overflowY: "auto" },
+  footprintRow: { display: "grid", gridTemplateColumns: "1.4fr 120px 1.4fr 90px 90px 90px", gap: 8, alignItems: "center", minHeight: 29, padding: "3px 9px", borderBottom: "1px solid #132035", color: "#9aabc1", fontSize: 9, textAlign: "center" },
+  currentFootprintRow: { background: "#0c2530", boxShadow: "inset 3px 0 0 #4cc9f0" },
+  footprintSideCell: { position: "relative", minHeight: 21, display: "grid", placeItems: "center", overflow: "hidden", borderRadius: 4, background: "#0c1420" },
+  sellVolumeBar: { position: "absolute", right: 0, top: 0, bottom: 0, background: "#7f2f3a", opacity: .7 },
+  buyVolumeBar: { position: "absolute", left: 0, top: 0, bottom: 0, background: "#17684f", opacity: .72 },
+  footprintPrice: { color: "#f0f4f8", display: "flex", justifyContent: "center", gap: 5, alignItems: "center" },
+  pocBadge: { fontStyle: "normal", fontSize: 7, padding: "2px 4px", borderRadius: 999, background: "#46351b", color: "#f6c453", border: "1px solid #80652f" },
+  lastBadge: { fontStyle: "normal", fontSize: 7, padding: "2px 4px", borderRadius: 999, background: "#103045", color: "#74d4ff", border: "1px solid #2c6d8f" },
+  emptyFootprint: { minHeight: 130, display: "grid", placeItems: "center", color: "#667991", fontSize: 10 },
+  sandboxFooter: { display: "grid", gap: 4, padding: "9px 11px", borderTop: "1px solid #27223d", color: "#657891", fontSize: 9, lineHeight: 1.45 },
   error: { marginTop: 8, padding: "7px 9px", background: "#2b1418", border: "1px solid #713640", borderRadius: 8, color: "#ff8a8a", fontSize: 10 },
   warning: { marginTop: 8, padding: "7px 9px", background: "#261f12", border: "1px solid #6e5930", borderRadius: 8, color: "#e9c76b", fontSize: 10 },
   disclaimer: { marginTop: 8, color: "#62758e", fontSize: 9, lineHeight: 1.45 },

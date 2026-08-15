@@ -59,6 +59,8 @@ export type EsOrderFlowSample = {
   bidStacking: number | null;
   askStacking: number | null;
   sourceTotalVolume: number | null;
+  sourceLastSize: number | null;
+  sourceQuoteTime: number | null;
   sourceTradeTime: number | null;
   state: EsOrderFlowState;
 };
@@ -143,6 +145,8 @@ export function updateEsOrderFlow(
     bidStacking: samePriceDelta(snapshot.bid, snapshot.bidSize, prior?.bid, prior?.bidSize),
     askStacking: samePriceDelta(snapshot.ask, snapshot.askSize, prior?.ask, prior?.askSize),
     sourceTotalVolume: snapshot.totalVolume,
+    sourceLastSize: snapshot.lastSize,
+    sourceQuoteTime: snapshot.quoteTime,
     sourceTradeTime: snapshot.tradeTime,
     state: "WARMING",
   };
