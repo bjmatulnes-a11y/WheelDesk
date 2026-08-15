@@ -586,10 +586,9 @@ export function evaluateAuctionConfluence(
     const aligned: Evidence[] = [];
     const opposing: Evidence[] = [];
 
-    // ACCEPTANCE is primarily an auction-structure read (POC proximity, node,
-    // revisits, efficiency, and POC stability), not independent candle shape.
-    // Treating it as SHAPE could falsely create a second evidence family for IF
-    // center conviction from the same POC/profile inputs.
+    // ACCEPTANCE is primarily auction-structure/profile evidence (POC proximity,
+    // node, revisits, efficiency, POC stability). Treating it as SHAPE could let
+    // CENTER earn a fake 2/2 independent-family read from overlapping profile inputs.
     pushFamilyEvidence(aligned, minute.state === "ACCEPTANCE", "ACCEPTANCE", 18, "VOLUME");
     pushFamilyEvidence(aligned, Math.abs(minute.shapeProxyPct) <= 18, "BALANCED SHAPE", 8, "SHAPE");
 
@@ -724,9 +723,9 @@ export function evaluateAuctionConfluence(
   const timing: AuctionConfluenceTiming = isLate ? "LATE" : "CONCURRENT";
 
   let tier: AuctionConfluenceTier = "NEUTRAL";
-  // Own-vs-opposite score separation is itself directional evidence. A materially
-  // negative edge cannot be called NEUTRAL merely because no discrete opposing
-  // feature happened to clear its own threshold.
+  // The own-vs-opposite score is itself directional evidence. A materially
+  // negative edge cannot be called NEUTRAL merely because no discrete state
+  // cleared its gate. This fixes cases such as CALL 44 vs PUT 67 (edge -23).
   if (edge <= -15) tier = "CONFLICT";
   else if (edge <= -8 && opposingWeight >= 8) tier = "CONFLICT";
   else if (edge <= -8) tier = "MIXED";
@@ -786,9 +785,9 @@ function buildConfluenceSummary(
   opposing: Evidence[],
   independentFamilies: number,
 ) {
-  // Show at least one item from each represented family rather than the raw first
-  // three, so a 2/2 row does not display three SHAPE items and hide the VOLUME
-  // evidence that actually earned the second family.
+  // Surface at least one item from every represented family so a 2/2 row does not
+  // accidentally display only SHAPE evidence while hiding the VOLUME evidence that
+  // earned the second independent family.
   const shape = aligned.filter((item) => item.family === "SHAPE");
   const volume = aligned.filter((item) => item.family === "VOLUME");
   const lead = [
@@ -803,9 +802,6 @@ function buildConfluenceSummary(
   if (tier === "MIXED") return `Aligned: ${lead || "none"} | Opposing: ${conflict || "none"}`;
   if (tier === "INSUFFICIENT") return "Not enough auction evidence either way.";
 
-  // Name the family that is actually present. The prior version hard-coded
-  // "(shape only)" for every single-family row, which mislabelled VOLUME-only
-  // evidence — e.g. a POC STALLED row reported itself as shape-derived.
   const familyNote =
     independentFamilies >= 2
       ? " (shape + volume)"
@@ -819,11 +815,10 @@ function buildConfluenceSummary(
 }
 
 /**
- * Research-safe timestamp matcher. Despite the legacy function name, this now
- * returns only the latest auction minute at or before the signal timestamp. It
- * never reaches into the following ES minute, eliminating historical look-ahead.
+ * Research-safe timestamp matcher. Returns only information that existed at or
+ * before the signal timestamp; it never reaches into the following ES minute.
  */
-export function nearestAuctionMinute(
+export function latestAuctionMinuteAtOrBefore(
   minutes: HistoricalAuctionMinute[],
   epochSeconds: number,
   toleranceSeconds = 90,
@@ -839,6 +834,27 @@ export function nearestAuctionMinute(
     }
   }
   return best && bestLag <= toleranceSeconds ? best : null;
+}
+
+/**
+ * Kept for compatibility with older research callers. Do not use this helper
+ * for causal/backtest attribution because it may choose a future minute.
+ */
+export function nearestAuctionMinute(
+  minutes: HistoricalAuctionMinute[],
+  epochSeconds: number,
+  toleranceSeconds = 90,
+) {
+  let best: HistoricalAuctionMinute | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const minute of minutes) {
+    const distance = Math.abs(minute.time - epochSeconds);
+    if (distance < bestDistance) {
+      best = minute;
+      bestDistance = distance;
+    }
+  }
+  return best && bestDistance <= toleranceSeconds ? best : null;
 }
 
 /** Directional-opposite pairs. If the top two eligible states are opposites and
@@ -1007,18 +1023,18 @@ function classifyNode(
   if (price === poc) return "POC";
   const cell = profile.get(price);
   if (!cell) return "LVN";
+  const totalLevels = profile.size;
+  if (totalLevels <= 1) return "NORMAL";
 
-  // Percentile rank without re-sorting the full developing profile every minute.
-  // Count how many visited levels carry strictly more volume than this level.
-  // This preserves the intended HVN/LVN ranking while keeping the operation O(N).
+  // O(N) percentile rank. The prior implementation sorted the entire profile on
+  // every minute (O(N log N)) only to discover this cell's rank. Counting levels
+  // with strictly greater reconstructed volume produces the same useful percentile
+  // classification without the repeated sort cost.
   let greater = 0;
-  let levelCount = 0;
   for (const level of profile.values()) {
-    levelCount += 1;
     if (level.totalVolume > cell.totalVolume) greater += 1;
   }
-  if (levelCount <= 1) return "HVN";
-  const pct = (greater / (levelCount - 1)) * 100;
+  const pct = (greater / (totalLevels - 1)) * 100;
   if (pct <= 20) return "HVN";
   if (pct >= 80) return "LVN";
   return "NORMAL";
