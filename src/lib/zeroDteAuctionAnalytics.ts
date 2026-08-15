@@ -62,6 +62,30 @@ export type HistoricalAuctionMinute = {
   features: string[];
 };
 
+
+export type AuctionConfluenceTier =
+  | "NO_MATCH"
+  | "DEFINITIVE"
+  | "CONFIRMED"
+  | "SUPPORTIVE"
+  | "MIXED"
+  | "NEUTRAL"
+  | "CONFLICT";
+
+export type AuctionConfluenceTarget = "CALL_FADE" | "PUT_FADE" | "CENTER";
+
+export type AuctionConfluenceEvaluation = {
+  target: AuctionConfluenceTarget;
+  tier: AuctionConfluenceTier;
+  convictionScore: number;
+  ownScore: number;
+  opposingScore: number;
+  edge: number;
+  alignedEvidence: string[];
+  opposingEvidence: string[];
+  summary: string;
+};
+
 export type HistoricalAuctionSummary = {
   minutes: HistoricalAuctionMinute[];
   counts: Record<AuctionState, number>;
@@ -430,6 +454,176 @@ export function buildHistoricalAuctionAnalytics(args: {
     topPutFade: distinctTop(minutes, (minute) => minute.putFadeScore, 6),
     topCenters: distinctTop(minutes, (minute) => minute.centerConfidence, 6),
   };
+}
+
+
+export function evaluateAuctionConfluence(
+  minute: HistoricalAuctionMinute | null,
+  target: AuctionConfluenceTarget,
+): AuctionConfluenceEvaluation {
+  if (!minute) {
+    return {
+      target,
+      tier: "NO_MATCH",
+      convictionScore: 0,
+      ownScore: 0,
+      opposingScore: 0,
+      edge: 0,
+      alignedEvidence: [],
+      opposingEvidence: [],
+      summary: "No auction minute matched the signal timestamp.",
+    };
+  }
+
+  if (target === "CENTER") {
+    const aligned: Array<[string, number]> = [];
+    const opposing: Array<[string, number]> = [];
+    pushEvidence(aligned, minute.state === "ACCEPTANCE", "ACCEPTANCE", 18);
+    pushEvidence(aligned, minute.node === "POC", "AT POC", 18);
+    pushEvidence(aligned, minute.node === "HVN", "HVN", 12);
+    pushEvidence(aligned, minute.pocMomentum === "STALLED", "POC STALLED", 12);
+    pushEvidence(aligned, Math.abs(minute.distanceFromPoc) <= 1, "NEAR POC", 10);
+    pushEvidence(aligned, minute.efficiency5mPct <= 35, "LOW EFFICIENCY", 10);
+    pushEvidence(aligned, Math.abs(minute.deltaProxyPct) <= 18, "BALANCED Δ", 8);
+
+    pushEvidence(opposing, minute.state === "RELEASE_UP", "RELEASE UP", 18);
+    pushEvidence(opposing, minute.state === "RELEASE_DOWN", "RELEASE DOWN", 18);
+    pushEvidence(opposing, minute.pocMomentum !== "STALLED", `POC ${minute.pocMomentum}`, 12);
+    pushEvidence(opposing, minute.efficiency5mPct >= 65, "HIGH EFFICIENCY", 12);
+    pushEvidence(opposing, Math.abs(minute.distanceFromPoc) >= 3, "FAR FROM POC", 10);
+
+    const alignedWeight = evidenceWeight(aligned);
+    const opposingWeight = evidenceWeight(opposing);
+    const directionalPressure = Math.max(minute.callFadeScore, minute.putFadeScore);
+    const ownScore = minute.centerConfidence;
+    const opposingScore = directionalPressure;
+    const edge = ownScore - opposingScore;
+    const evidenceScore = clamp(50 + alignedWeight - opposingWeight, 0, 100);
+    const edgeScore = clamp(50 + edge * 1.5, 0, 100);
+    const convictionScore = weighted([
+      [ownScore, 0.60],
+      [evidenceScore, 0.25],
+      [edgeScore, 0.15],
+    ]);
+
+    let tier: AuctionConfluenceTier = "NEUTRAL";
+    if (opposingWeight >= 24 && opposingWeight > alignedWeight) tier = "CONFLICT";
+    else if (alignedWeight >= 24 && opposingWeight >= 18) tier = "MIXED";
+    else if (ownScore >= 82 && alignedWeight >= 38 && opposingWeight <= 10 && edge >= 8) tier = "DEFINITIVE";
+    else if (ownScore >= 72 && alignedWeight >= 24 && opposingWeight <= 12) tier = "CONFIRMED";
+    else if (ownScore >= 62 && alignedWeight >= 14 && opposingWeight < alignedWeight) tier = "SUPPORTIVE";
+
+    return {
+      target,
+      tier,
+      convictionScore,
+      ownScore,
+      opposingScore,
+      edge,
+      alignedEvidence: aligned.map(([label]) => label),
+      opposingEvidence: opposing.map(([label]) => label),
+      summary: buildConfluenceSummary(tier, aligned, opposing),
+    };
+  }
+
+  const isCall = target === "CALL_FADE";
+  const ownScore = isCall ? minute.callFadeScore : minute.putFadeScore;
+  const opposingScore = isCall ? minute.putFadeScore : minute.callFadeScore;
+  const edge = ownScore - opposingScore;
+  const aligned: Array<[string, number]> = [];
+  const opposing: Array<[string, number]> = [];
+
+  const alignedStates: AuctionState[] = isCall
+    ? ["REJECTION_HIGH", "EXHAUSTION_UP", "ABSORPTION_HIGH", "RELEASE_DOWN"]
+    : ["REJECTION_LOW", "EXHAUSTION_DOWN", "ABSORPTION_LOW", "RELEASE_UP"];
+  const opposingStates: AuctionState[] = isCall
+    ? ["REJECTION_LOW", "EXHAUSTION_DOWN", "ABSORPTION_LOW", "RELEASE_UP"]
+    : ["REJECTION_HIGH", "EXHAUSTION_UP", "ABSORPTION_HIGH", "RELEASE_DOWN"];
+
+  pushEvidence(aligned, alignedStates.includes(minute.state), stateEvidenceLabel(minute.state), 22);
+  pushEvidence(opposing, opposingStates.includes(minute.state), stateEvidenceLabel(minute.state), 24);
+
+  if (isCall) {
+    pushEvidence(aligned, minute.deltaDivergence === "BEARISH", "BEARISH Δ DIVERGENCE", 12);
+    pushEvidence(aligned, minute.deltaReversal === "BEARISH", "BEARISH Δ REVERSAL", 10);
+    pushEvidence(aligned, minute.pocMomentum === "DOWN", "POC DOWN", 9);
+    pushEvidence(aligned, minute.pocMomentum === "STALLED" && minute.pocPosition !== "BELOW", "POC STALLED", 5);
+    pushEvidence(opposing, minute.deltaDivergence === "BULLISH", "BULLISH Δ DIVERGENCE", 12);
+    pushEvidence(opposing, minute.deltaReversal === "BULLISH", "BULLISH Δ REVERSAL", 10);
+    pushEvidence(opposing, minute.pocMomentum === "UP", "POC UP", 9);
+    pushEvidence(opposing, minute.state === "ACCEPTANCE" && minute.pocPosition === "ABOVE" && minute.pocMomentum === "UP", "ACCEPTANCE ABOVE POC", 10);
+  } else {
+    pushEvidence(aligned, minute.deltaDivergence === "BULLISH", "BULLISH Δ DIVERGENCE", 12);
+    pushEvidence(aligned, minute.deltaReversal === "BULLISH", "BULLISH Δ REVERSAL", 10);
+    pushEvidence(aligned, minute.pocMomentum === "UP", "POC UP", 9);
+    pushEvidence(aligned, minute.pocMomentum === "STALLED" && minute.pocPosition !== "ABOVE", "POC STALLED", 5);
+    pushEvidence(opposing, minute.deltaDivergence === "BEARISH", "BEARISH Δ DIVERGENCE", 12);
+    pushEvidence(opposing, minute.deltaReversal === "BEARISH", "BEARISH Δ REVERSAL", 10);
+    pushEvidence(opposing, minute.pocMomentum === "DOWN", "POC DOWN", 9);
+    pushEvidence(opposing, minute.state === "ACCEPTANCE" && minute.pocPosition === "BELOW" && minute.pocMomentum === "DOWN", "ACCEPTANCE BELOW POC", 10);
+  }
+
+  const alignedWeight = evidenceWeight(aligned);
+  const opposingWeight = evidenceWeight(opposing);
+  const edgeScore = clamp(50 + edge * 2, 0, 100);
+  const evidenceScore = clamp(50 + alignedWeight - opposingWeight, 0, 100);
+  const convictionScore = weighted([
+    [ownScore, 0.55],
+    [edgeScore, 0.25],
+    [evidenceScore, 0.20],
+  ]);
+  const hasAlignedState = alignedStates.includes(minute.state);
+  const hasOpposingState = opposingStates.includes(minute.state);
+
+  let tier: AuctionConfluenceTier = "NEUTRAL";
+  if (hasOpposingState && opposingWeight > alignedWeight + 4) tier = "CONFLICT";
+  else if (alignedWeight >= 14 && opposingWeight >= 14) tier = "MIXED";
+  else if (opposingWeight >= 20 && edge <= 0) tier = "CONFLICT";
+  else if (ownScore >= 70 && edge >= 15 && hasAlignedState && alignedWeight >= 28 && opposingWeight <= 8) tier = "DEFINITIVE";
+  else if (ownScore >= 65 && edge >= 5 && (hasAlignedState || alignedWeight >= 18) && !hasOpposingState && opposingWeight <= 10) tier = "CONFIRMED";
+  else if (ownScore >= 55 && edge >= 0 && alignedWeight >= 8 && !hasOpposingState) tier = "SUPPORTIVE";
+  else if (hasOpposingState || opposingWeight >= 18) tier = "CONFLICT";
+
+  return {
+    target,
+    tier,
+    convictionScore,
+    ownScore,
+    opposingScore,
+    edge,
+    alignedEvidence: aligned.map(([label]) => label),
+    opposingEvidence: opposing.map(([label]) => label),
+    summary: buildConfluenceSummary(tier, aligned, opposing),
+  };
+}
+
+function pushEvidence(
+  target: Array<[string, number]>,
+  condition: boolean,
+  label: string,
+  weight: number,
+) {
+  if (condition) target.push([label, weight]);
+}
+
+function evidenceWeight(items: Array<[string, number]>) {
+  return items.reduce((sum, [, weight]) => sum + weight, 0);
+}
+
+function stateEvidenceLabel(state: AuctionState) {
+  return state.replaceAll("_", " ");
+}
+
+function buildConfluenceSummary(
+  tier: AuctionConfluenceTier,
+  aligned: Array<[string, number]>,
+  opposing: Array<[string, number]>,
+) {
+  const lead = aligned.slice(0, 3).map(([label]) => label).join(" · ");
+  const conflict = opposing.slice(0, 2).map(([label]) => label).join(" · ");
+  if (tier === "CONFLICT") return conflict ? `Opposing: ${conflict}` : "Opposing auction evidence dominates.";
+  if (tier === "MIXED") return `Aligned: ${lead || "none"} | Opposing: ${conflict || "none"}`;
+  return lead || "No decisive directional auction evidence.";
 }
 
 export function nearestAuctionMinute(

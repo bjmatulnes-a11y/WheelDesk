@@ -7,7 +7,10 @@ import {
 } from "../lib/zeroDteHistoricalFootprint";
 import {
   buildHistoricalAuctionAnalytics,
+  evaluateAuctionConfluence,
   nearestAuctionMinute,
+  type AuctionConfluenceEvaluation,
+  type AuctionConfluenceTier,
   type HistoricalAuctionMinute,
   type HistoricalAuctionSummary,
 } from "../lib/zeroDteAuctionAnalytics";
@@ -348,76 +351,127 @@ function SignalConfluencePanel({
       ? trade.signalCandleTime
       : Math.max(0, Math.floor(Date.parse(trade.signalTime) / 1000) - 60);
     const minute = nearestAuctionMinute(auction.minutes, epoch, 90);
-    const auctionScore = !minute
-      ? null
-      : trade.strategy === "call-credit-spread"
-        ? minute.callFadeScore
-        : trade.strategy === "put-credit-spread"
-          ? minute.putFadeScore
-          : minute.centerConfidence;
-    const alignment = auctionScore == null
-      ? "NO MATCH"
-      : auctionScore >= 70
-        ? "CONFIRMED"
-        : auctionScore >= 55
-          ? "SUPPORTIVE"
-          : auctionScore < 40
-            ? "CONFLICT"
-            : "NEUTRAL";
-    return { trade, minute, auctionScore, alignment };
+    const target = trade.strategy === "call-credit-spread"
+      ? "CALL_FADE" as const
+      : trade.strategy === "put-credit-spread"
+        ? "PUT_FADE" as const
+        : "CENTER" as const;
+    const confluence = evaluateAuctionConfluence(minute, target);
+    return { trade, minute, confluence };
   });
+
+  const tierStats = buildTierStats(matches);
 
   return (
     <div style={styles.confluenceCard}>
       <div style={styles.auctionHeader}>
         <div>
           <div style={styles.auctionEyebrow}>WheelDesk signal correlation</div>
-          <strong style={styles.auctionTitle}>What was the ES auction doing when SELL_READY fired?</strong>
+          <strong style={styles.auctionTitle}>Did the ES auction agree with SELL_READY?</strong>
         </div>
         <span style={styles.advisoryBadge}>{trades.length} PERSISTED SIGNAL{trades.length === 1 ? "" : "S"}</span>
       </div>
+
+      <div style={styles.confluenceExplainer}>
+        Confluence now compares the trade-side auction score against the opposite-side score, measures the directional edge, and checks the actual auction state / delta / POC narrative. <b>DEFINITIVE</b> means unusually coherent evidence; it is a research conviction tier, not automatic position sizing or execution wiring.
+      </div>
+
+      {tierStats.length ? (
+        <div style={styles.tierSummaryGrid}>
+          {tierStats.map((stat) => (
+            <div key={stat.tier} style={styles.tierSummaryCard}>
+              <span style={confluenceStyle(stat.tier)}>{stat.tier.replaceAll("_", " ")}</span>
+              <strong>{stat.count} signal{stat.count === 1 ? "" : "s"}</strong>
+              <small>{stat.closed ? `${stat.closed} closed · ${money(stat.pnl)}` : "no closed result"}</small>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
       {error ? <div style={styles.confluenceNote}>Shadow signal history could not load: {error}</div> : null}
       {!trades.length && !error ? (
         <div style={styles.confluenceNote}>No persisted Shadow Lab SELL signals were found for this date. Auction analytics still runs independently.</div>
       ) : null}
       {matches.length ? (
-        <div style={styles.signalGrid}>
-          {matches.map(({ trade, minute, auctionScore, alignment }) => (
-            <div key={trade.id} style={styles.signalRow}>
-              <div>
-                <strong>{trade.strategy === "call-credit-spread" ? "CALL CREDIT" : trade.strategy === "put-credit-spread" ? "PUT CREDIT" : "IRON FLY"}</strong>
-                <span>{formatTradeLegs(trade)} · engine {Math.round(trade.entryScore)}</span>
+        <div style={styles.signalGridScroller}>
+          <div style={styles.signalGrid}>
+            {matches.map(({ trade, minute, confluence }) => (
+              <div key={trade.id} style={styles.signalRow}>
+                <div>
+                  <strong>{trade.strategy === "call-credit-spread" ? "CALL CREDIT" : trade.strategy === "put-credit-spread" ? "PUT CREDIT" : "IRON FLY"}</strong>
+                  <span>{formatTradeLegs(trade)} · engine {Math.round(trade.entryScore)}</span>
+                </div>
+                <div>
+                  <span>SELL</span>
+                  <strong>{minute?.label ?? new Date(trade.signalTime).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</strong>
+                </div>
+                <div>
+                  <span>{confluence.target === "CENTER" ? "Center" : "Own"}</span>
+                  <strong>{Math.round(confluence.ownScore)}</strong>
+                </div>
+                <div>
+                  <span>{confluence.target === "CENTER" ? "Directional" : "Opp"}</span>
+                  <strong>{Math.round(confluence.opposingScore)}</strong>
+                </div>
+                <div>
+                  <span>Edge</span>
+                  <strong style={edgeStyle(confluence.edge)}>{signed(confluence.edge, 0)}</strong>
+                </div>
+                <div>
+                  <span>Conviction</span>
+                  <strong>{Math.round(confluence.convictionScore)}</strong>
+                </div>
+                <div>
+                  <span>State</span>
+                  <strong>{minute ? shortAuctionState(minute.state) : "—"}</strong>
+                </div>
+                <div>
+                  <span>Confluence</span>
+                  <strong style={confluenceStyle(confluence.tier)}>{confluence.tier.replaceAll("_", " ")}</strong>
+                </div>
+                <div>
+                  <span>Result</span>
+                  <strong>{trade.pnlConservativeDollars == null ? (trade.state === "open" ? "OPEN" : "—") : money(trade.pnlConservativeDollars)}</strong>
+                </div>
+                <div style={styles.signalFeatureCell}>
+                  <span>Narrative</span>
+                  <strong>{confluence.summary}</strong>
+                  {confluence.opposingEvidence.length ? (
+                    <small style={styles.opposingText}>Opp: {confluence.opposingEvidence.slice(0, 3).join(" · ")}</small>
+                  ) : null}
+                </div>
               </div>
-              <div>
-                <span>SELL</span>
-                <strong>{minute?.label ?? new Date(trade.signalTime).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</strong>
-              </div>
-              <div>
-                <span>Auction</span>
-                <strong>{auctionScore == null ? "—" : Math.round(auctionScore)}</strong>
-              </div>
-              <div>
-                <span>State</span>
-                <strong>{minute ? shortAuctionState(minute.state) : "—"}</strong>
-              </div>
-              <div>
-                <span>Confluence</span>
-                <strong style={confluenceStyle(alignment)}>{alignment}</strong>
-              </div>
-              <div>
-                <span>Result</span>
-                <strong>{trade.pnlConservativeDollars == null ? (trade.state === "open" ? "OPEN" : "—") : money(trade.pnlConservativeDollars)}</strong>
-              </div>
-              <div style={styles.signalFeatureCell}>
-                <span>Context</span>
-                <strong>{minute?.features.slice(0, 4).join(" · ") || "—"}</strong>
-              </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       ) : null}
     </div>
   );
+}
+
+function buildTierStats(
+  matches: Array<{ trade: ZeroDteShadowTrade; confluence: AuctionConfluenceEvaluation }>,
+) {
+  const order: AuctionConfluenceTier[] = [
+    "DEFINITIVE",
+    "CONFIRMED",
+    "SUPPORTIVE",
+    "MIXED",
+    "NEUTRAL",
+    "CONFLICT",
+    "NO_MATCH",
+  ];
+  return order.flatMap((tier) => {
+    const rows = matches.filter((match) => match.confluence.tier === tier);
+    if (!rows.length) return [];
+    const closed = rows.filter((row) => row.trade.pnlConservativeDollars != null);
+    return [{
+      tier,
+      count: rows.length,
+      closed: closed.length,
+      pnl: closed.reduce((sum, row) => sum + (row.trade.pnlConservativeDollars ?? 0), 0),
+    }];
+  });
 }
 
 function FootprintMatrix({
@@ -591,9 +645,17 @@ function auctionStateStyle(state: HistoricalAuctionMinute["state"]): React.CSSPr
 }
 
 function confluenceStyle(value: string): React.CSSProperties {
-  if (value === "CONFIRMED") return { color: "#62e8b8" };
-  if (value === "SUPPORTIVE") return { color: "#ffd166" };
-  if (value === "CONFLICT") return { color: "#ff837b" };
+  if (value === "DEFINITIVE") return { color: "#62e8b8", fontWeight: 900 };
+  if (value === "CONFIRMED") return { color: "#80eac4", fontWeight: 800 };
+  if (value === "SUPPORTIVE") return { color: "#ffd166", fontWeight: 800 };
+  if (value === "MIXED") return { color: "#f0a7ff", fontWeight: 800 };
+  if (value === "CONFLICT") return { color: "#ff837b", fontWeight: 900 };
+  return { color: "#91a4b8" };
+}
+
+function edgeStyle(value: number): React.CSSProperties {
+  if (value >= 15) return { color: "#62e8b8" };
+  if (value <= -10) return { color: "#ff837b" };
   return { color: "#91a4b8" };
 }
 
@@ -674,9 +736,14 @@ const styles: Record<string, React.CSSProperties> = {
   timelineEmpty: { padding: 14, color: "#71869c", fontSize: 10 },
   featureText: { color: "#8398ad", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   confluenceNote: { border: "1px solid #273b51", borderRadius: 8, padding: 9, color: "#8196ab", fontSize: 10 },
-  signalGrid: { display: "grid", gap: 6 },
-  signalRow: { display: "grid", gridTemplateColumns: "minmax(190px, 1.7fr) 70px 64px 80px 85px 70px minmax(220px, 1.5fr)", gap: 8, alignItems: "center", border: "1px solid #1d3349", borderRadius: 9, background: "#07131f", padding: "7px 8px", fontSize: 9 },
-  signalFeatureCell: { minWidth: 0, overflow: "hidden" },
+  confluenceExplainer: { border: "1px solid #20384f", borderRadius: 9, padding: "8px 10px", color: "#8ea3b8", fontSize: 10, lineHeight: 1.45, marginBottom: 9, background: "#07131f" },
+  tierSummaryGrid: { display: "grid", gridTemplateColumns: "repeat(7, minmax(105px, 1fr))", gap: 6, marginBottom: 9 },
+  tierSummaryCard: { border: "1px solid #20364c", borderRadius: 9, padding: "7px 8px", background: "#07131f", display: "grid", gap: 2, minHeight: 50, fontSize: 9 },
+  signalGridScroller: { overflowX: "auto" },
+  signalGrid: { display: "grid", gap: 6, minWidth: 1240 },
+  signalRow: { display: "grid", gridTemplateColumns: "minmax(175px, 1.35fr) 62px 54px 62px 50px 62px 78px 88px 60px minmax(285px, 1.9fr)", gap: 8, alignItems: "center", border: "1px solid #1d3349", borderRadius: 9, background: "#07131f", padding: "7px 8px", fontSize: 9 },
+  signalFeatureCell: { minWidth: 0, overflow: "hidden", display: "grid", gap: 2 },
+  opposingText: { color: "#b98585", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   matrixFrame: { border: "1px solid #223951", borderRadius: 12, overflow: "hidden", background: "#050d16" },
   matrixScroller: { overflow: "auto", maxHeight: "72vh" },
   matrix: { display: "grid", minWidth: "max-content" },
