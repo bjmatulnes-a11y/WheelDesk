@@ -74,7 +74,7 @@ export default function CheckoutButton({ planId, label }: CheckoutButtonProps) {
       >
         {buttonLabel}
       </button>
-      {status ? <small>{status}</small> : !billingEnabled ? <small>Founder billing is currently in preview.</small> : null}
+      {status ? <small>{status}</small> : !billingEnabled ? <small>Billing is currently in preview.</small> : null}
     </div>
   );
 }

@@ -20,7 +20,7 @@ function cleanNext(value: string | null, fallback: string): string {
 export default function AuthForm({ mode }: AuthFormProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const plan = useMemo(() => searchParams.get("plan") ?? "founder", [searchParams]);
+  const plan = useMemo(() => searchParams.get("plan") ?? "core", [searchParams]);
   const next = useMemo(() => {
     const fallback = mode === "signup" ? `/pricing?plan=${encodeURIComponent(plan)}` : "/control-center";
     return cleanNext(searchParams.get("next"), fallback);

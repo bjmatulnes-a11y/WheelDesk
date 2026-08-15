@@ -2304,3 +2304,325 @@ canvas {
     min-height: 230px;
   }
 }
+
+/* WheelDesk pricing v2 -------------------------------------------------------- */
+.wd-pricing-page-v2 {
+  position: relative;
+  overflow: hidden;
+}
+
+.wd-pricing-page-v2 > *:not(.wd-landing-glow) {
+  position: relative;
+  z-index: 1;
+}
+
+.wd-pricing-hero-v2 {
+  width: min(100%, 820px);
+  margin: 72px auto 36px;
+}
+
+.wd-pricing-hero-v2 h1 {
+  font-size: clamp(42px, 6vw, 72px);
+  line-height: 0.95;
+}
+
+.wd-pricing-hero-v2 > p:not(.wd-auth-status) {
+  max-width: 680px;
+  margin-left: auto;
+  margin-right: auto;
+  font-size: 17px;
+}
+
+.wd-pricing-hero-v2 .wd-auth-status {
+  max-width: 680px;
+  margin: 18px auto 0;
+}
+
+.wd-pricing-grid-two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  width: min(100%, 980px);
+}
+
+.wd-pricing-grid-two .wd-price-card {
+  min-height: 430px;
+  padding: 28px;
+  align-content: space-between;
+  background: linear-gradient(180deg, rgba(7, 25, 40, 0.94), rgba(3, 13, 23, 0.96));
+  border: 1px solid rgba(89, 132, 166, 0.24);
+}
+
+.wd-price-card-command {
+  background:
+    linear-gradient(180deg, rgba(8, 37, 49, 0.96), rgba(3, 15, 25, 0.98)) !important;
+}
+
+.wd-price-card-head {
+  display: grid;
+  gap: 24px;
+}
+
+.wd-price-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.wd-price-title-row h2 {
+  margin: 0;
+  color: #f8fbff;
+  font-size: 28px;
+  letter-spacing: -0.04em;
+}
+
+.wd-price-card-head p {
+  margin: 9px 0 0;
+  max-width: 470px;
+  color: #9fb4c7;
+  line-height: 1.55;
+}
+
+.wd-price-badge {
+  border: 1px solid rgba(61, 255, 154, 0.34);
+  border-radius: 999px;
+  padding: 5px 8px;
+  color: #7dffc0;
+  background: rgba(18, 81, 57, 0.22);
+  font-size: 10px;
+  font-weight: 950;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.wd-pricing-grid-two .wd-price strong {
+  font-size: clamp(52px, 6vw, 68px);
+}
+
+.wd-pricing-grid-two .wd-price span {
+  margin-bottom: 12px;
+}
+
+.wd-price-feature-list {
+  list-style: none;
+  padding: 0 !important;
+  gap: 10px !important;
+}
+
+.wd-price-feature-list li {
+  position: relative;
+  padding-left: 22px;
+}
+
+.wd-price-feature-list li::before {
+  content: "✓";
+  position: absolute;
+  left: 0;
+  color: #3dff9a;
+  font-weight: 950;
+}
+
+.wd-pricing-compare,
+.wd-pricing-faq {
+  width: min(100%, 1120px);
+  margin: 96px auto 0;
+}
+
+.wd-pricing-section-heading {
+  width: min(100%, 720px);
+  margin-bottom: 28px;
+}
+
+.wd-pricing-section-heading h2,
+.wd-pricing-close h2 {
+  margin: 0;
+  color: #f8fbff;
+  font-size: clamp(32px, 4vw, 48px);
+  line-height: 1;
+  letter-spacing: -0.05em;
+}
+
+.wd-pricing-section-heading p,
+.wd-pricing-close p {
+  margin: 14px 0 0;
+  color: #9fb4c7;
+  line-height: 1.55;
+}
+
+.wd-pricing-matrix-wrap {
+  overflow-x: auto;
+  border: 1px solid rgba(89, 132, 166, 0.24);
+  border-radius: 22px;
+  background: rgba(3, 14, 24, 0.82);
+}
+
+.wd-pricing-matrix {
+  width: 100%;
+  min-width: 660px;
+  border-collapse: collapse;
+  color: #c8d9e7;
+}
+
+.wd-pricing-matrix th,
+.wd-pricing-matrix td {
+  padding: 15px 20px;
+  border-bottom: 1px solid rgba(89, 132, 166, 0.14);
+}
+
+.wd-pricing-matrix thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #06131f;
+  color: #f8fbff;
+  text-align: center;
+}
+
+.wd-pricing-matrix thead th:first-child {
+  width: 56%;
+  text-align: left;
+}
+
+.wd-pricing-matrix thead span,
+.wd-pricing-matrix thead strong {
+  display: block;
+}
+
+.wd-pricing-matrix thead span {
+  color: #9fb4c7;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.wd-pricing-matrix thead strong {
+  margin-top: 4px;
+  font-size: 23px;
+}
+
+.wd-matrix-command-head {
+  box-shadow: inset 0 3px 0 rgba(34, 211, 238, 0.7);
+}
+
+.wd-pricing-matrix tbody th {
+  color: #c8d9e7;
+  font-weight: 750;
+  text-align: left;
+}
+
+.wd-pricing-matrix tbody td {
+  text-align: center;
+}
+
+.wd-pricing-matrix tbody tr:last-child th,
+.wd-pricing-matrix tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.wd-matrix-command-row {
+  background: rgba(34, 211, 238, 0.025);
+}
+
+.wd-matrix-command-row th {
+  color: #e8f9ff !important;
+}
+
+.wd-matrix-check {
+  color: #3dff9a;
+  font-size: 18px;
+  font-weight: 950;
+}
+
+.wd-matrix-dash {
+  color: #57738a;
+}
+
+.wd-pricing-faq-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.wd-pricing-faq-grid article {
+  border: 1px solid rgba(89, 132, 166, 0.22);
+  border-radius: 18px;
+  padding: 22px;
+  background: rgba(4, 17, 29, 0.72);
+}
+
+.wd-pricing-faq-grid h3 {
+  margin: 0;
+  color: #f8fbff;
+  font-size: 16px;
+}
+
+.wd-pricing-faq-grid p {
+  margin: 9px 0 0;
+  color: #9fb4c7;
+  line-height: 1.5;
+}
+
+.wd-pricing-close {
+  width: min(100%, 1120px);
+  margin: 96px auto 28px;
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 28px;
+  padding: 30px;
+  border: 1px solid rgba(34, 211, 238, 0.26);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 85% 15%, rgba(34, 211, 238, 0.11), transparent 32%),
+    rgba(3, 17, 28, 0.88);
+}
+
+.wd-pricing-close > div {
+  max-width: 720px;
+}
+
+.wd-pricing-close .wd-primary-cta {
+  flex: 0 0 auto;
+}
+
+.wd-pricing-disclaimer {
+  width: min(100%, 980px);
+  margin: 32px auto 54px;
+  color: #69859a;
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+@media (max-width: 760px), (max-device-width: 760px) {
+  .wd-pricing-hero-v2 {
+    margin-top: 48px;
+  }
+
+  .wd-pricing-grid-two,
+  .wd-pricing-faq-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .wd-pricing-grid-two .wd-price-card {
+    min-height: 0;
+  }
+
+  .wd-pricing-compare,
+  .wd-pricing-faq,
+  .wd-pricing-close {
+    margin-top: 66px;
+  }
+
+  .wd-pricing-close {
+    display: grid;
+    align-items: start;
+  }
+
+  .wd-pricing-close .wd-primary-cta {
+    width: 100%;
+    box-sizing: border-box;
+    text-align: center;
+  }
+}
