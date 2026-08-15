@@ -86,7 +86,6 @@ export default function FAQPage() {
 
         <nav className="wd-landing-links" aria-label="FAQ page navigation">
           <Link href="/about">About</Link>
-          <Link href="/demo">Demo</Link>
           <Link href="/contact">Contact</Link>
           <Link href="/login">Login</Link>
           <Link href="/signup">Create Account</Link>
@@ -126,17 +125,17 @@ export default function FAQPage() {
       <section className="wd-final-cta">
         <div>
           <div className="wd-eyebrow">Still evaluating?</div>
-          <h2>Start with the demo flow, then create an account.</h2>
+          <h2>Choose the WheelDesk that fits how you trade.</h2>
           <p>
-            The best product story is the daily edge loop: Control Center, Scanner, Wheel, Validation, and Portfolio working together.
+            Compare WheelDesk and WheelDesk Command, then create an account when you are ready to use the platform.
           </p>
         </div>
-        <Link href="/demo" className="wd-primary-cta">View Demo</Link>
+        <Link href="/pricing" className="wd-primary-cta">View Pricing</Link>
       </section>
 
       <footer className="wd-landing-footer">
         <span>WheelDesk · thewheeldesk.com</span>
-        <span>FAQ · About · Demo · Contact · Mobile</span>
+        <span>FAQ · About · Pricing · Contact</span>
       </footer>
     </main>
   );

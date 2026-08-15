@@ -47,7 +47,6 @@ export default function AboutPage() {
         </Link>
 
         <nav className="wd-landing-links" aria-label="About page navigation">
-          <Link href="/demo">Demo</Link>
           <Link href="/faq">FAQ</Link>
           <Link href="/contact">Contact</Link>
           <Link href="/login">Login</Link>
@@ -124,12 +123,12 @@ export default function AboutPage() {
             and how the structure changed over time.
           </p>
         </div>
-        <Link href="/demo" className="wd-primary-cta">View Demo Flow</Link>
+        <Link href="/pricing" className="wd-primary-cta">View Pricing</Link>
       </section>
 
       <footer className="wd-landing-footer">
         <span>WheelDesk · thewheeldesk.com</span>
-        <span>About · FAQ · Demo · Contact · Control Center</span>
+        <span>About · FAQ · Pricing · Contact · Control Center</span>
       </footer>
     </main>
   );

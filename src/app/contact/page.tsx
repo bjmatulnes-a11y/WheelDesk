@@ -56,7 +56,6 @@ export default function ContactPage() {
 
         <nav className="wd-landing-links" aria-label="Contact page navigation">
           <Link href="/pricing">Pricing</Link>
-          <Link href="/demo">Demo</Link>
           <Link href="/faq">FAQ</Link>
           <Link href="/about">About</Link>
           <Link href="/login">Login</Link>
@@ -140,7 +139,7 @@ export default function ContactPage() {
 
       <footer className="wd-landing-footer">
         <span>WheelDesk · thewheeldesk.com</span>
-        <span>Contact · Pricing · Demo · FAQ · About</span>
+        <span>Contact · Pricing · FAQ · About</span>
       </footer>
     </main>
   );
