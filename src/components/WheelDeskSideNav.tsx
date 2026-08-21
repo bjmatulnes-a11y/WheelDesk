@@ -17,14 +17,13 @@ type WheelDeskSideNavProps = {
 
 const navItems: NavItem[] = [
   { key: "dashboard", href: "/dashboard", label: "Dashboard" },
-  { key: "watchlist", href: "/watchlist", label: "Full Watchlist" },
+  { key: "zero-dte", href: "/zero-dte/chart", label: "0DTE Command" },
+  { key: "watchlist", href: "/watchlist", label: "Watchlist" },
   { key: "control-center", href: "/control-center", label: "Control Center" },
+  { key: "positions", href: "/portfolio", label: "Portfolio" },
   { key: "wheel", href: "/dashboard/wheel", label: "Wheel" },
   { key: "validation", href: "/dashboard/validation", label: "Validation" },
-  { key: "zero-dte", href: "/zero-dte/chart", label: "0DTE Command" },
-  { key: "news", href: "/news", label: "News Pulse" },
-  { key: "positions", href: "/portfolio", label: "Portfolio" },
-
+  { key: "news", href: "/news", label: "News" },
 ];
 
 export function WheelDeskSideNav({ active }: WheelDeskSideNavProps) {
@@ -61,9 +60,9 @@ export function WheelDeskSideNav({ active }: WheelDeskSideNavProps) {
       </div>
 
       <div className="wheeldesk-side-info" style={styles.infoCard}>
-        <div style={styles.infoTitle}>Market Structure</div>
+        <div style={styles.infoTitle}>WheelDesk</div>
         <div style={styles.infoText}>
-          Dashboard manages your central ticker slots. Full Watchlist is the deeper triage view after the Dashboard morning read.
+          Dashboard is the desk overview. Open Command, Watchlist, Control Center or Portfolio when a market or position needs deeper work.
         </div>
       </div>
     </aside>

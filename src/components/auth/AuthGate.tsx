@@ -4,6 +4,7 @@ import Link from "next/link";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { getSupabaseAuthClient } from "../../lib/auth/supabase-auth-client";
+import { runAutomaticSurfaceCapture } from "../../lib/automatic-surface-capture";
 
 const ACTIVE_SUBSCRIPTION_STATUSES = new Set(["active", "trialing"]);
 const ACCESS_ALLOWED_PATHS = new Set(["/account"]);
@@ -110,6 +111,36 @@ export default function AuthGate({ children }: AuthGateProps) {
       listener.subscription.unsubscribe();
     };
   }, [pathname, router, next]);
+
+  useEffect(() => {
+    if (state !== "signed-in" || routeCanBypassBilling(pathname)) return;
+
+    let cancelled = false;
+    const supabase = getSupabaseAuthClient();
+
+    const keepSurfacesCurrent = async () => {
+      const { data } = await supabase.auth.getSession();
+      if (cancelled || !data.session) return;
+
+      void runAutomaticSurfaceCapture({
+        accessToken: data.session.access_token,
+        userId: data.session.user.id,
+      });
+    };
+
+    void keepSurfacesCurrent();
+    const interval = window.setInterval(keepSurfacesCurrent, 30 * 60_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void keepSurfacesCurrent();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [state, pathname]);
 
   if (state === "signed-in") {
     return <>{children}</>;

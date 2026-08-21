@@ -9,6 +9,13 @@ import { SUPPORTED_TICKERS } from "../../lib/types";
 import { WheelDeskSideNav } from "../../components/WheelDeskSideNav";
 import AuthGate from "../../components/auth/AuthGate";
 import { getSupabaseAuthClient } from "../../lib/auth/supabase-auth-client";
+import {
+  AUTO_SURFACE_CAPTURE_EVENT,
+  expectedSurfaceDate,
+  readAutomaticSurfaceCaptureStatus,
+  runAutomaticSurfaceCapture,
+  type AutomaticSurfaceCaptureStatus,
+} from "../../lib/automatic-surface-capture";
 
 const TODAY = new Date().toISOString().slice(0, 10);
 const HARVEST_TICKERS_KEY = "wheelDesk.dashboardHarvestTickers";
@@ -187,6 +194,15 @@ type NNReadiness = {
   active?: number;
   neuralStatus?: string;
   horizonCounts?: Record<string, number>;
+};
+
+type SchwabConnectionStatus = {
+  ok?: boolean;
+  connected: boolean;
+  accessExpiresAt?: string | null;
+  refreshExpiresAt?: string | null;
+  updatedAt?: string | null;
+  error?: string;
 };
 
 type CentralCommandRow = {
@@ -821,15 +837,52 @@ function readinessLabel(value?: string | null): string {
 }
 
 function commandStatus(row: CentralCommandRow): string {
-  if (row.status === "ready") return "Forecast ready";
-  if (row.status === "surface-only") return "Surface captured";
-  return "Needs harvest";
+  if (row.status === "ready") return "Forecast current";
+  if (row.status === "surface-only") return "Surface current";
+  return "Surface updating";
 }
 
 function commandStatusColor(row: CentralCommandRow): string {
   if (row.status === "ready") return colors.green;
   if (row.status === "surface-only") return colors.amber;
   return colors.red;
+}
+
+function displayPlanName(plan?: string | null): string {
+  if (plan === "research") return "Command";
+  if (plan === "core") return "WheelDesk";
+  if (plan === "founder") return "Founder · Legacy";
+  return plan ? plan : "WheelDesk";
+}
+
+function marketSessionLabel(now = new Date()): { label: string; color: string } {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    weekday: "short",
+    hour: "numeric",
+    minute: "numeric",
+    hour12: false,
+  }).formatToParts(now);
+  const weekday = parts.find((part) => part.type === "weekday")?.value ?? "";
+  const hour = Number(parts.find((part) => part.type === "hour")?.value ?? 0);
+  const minute = Number(parts.find((part) => part.type === "minute")?.value ?? 0);
+  const minutes = hour * 60 + minute;
+  const weekdayOpen = !["Sat", "Sun"].includes(weekday);
+
+  if (weekdayOpen && minutes >= 9 * 60 + 30 && minutes < 16 * 60) {
+    return { label: "OPEN", color: colors.green };
+  }
+  if (weekdayOpen && minutes >= 4 * 60 && minutes < 9 * 60 + 30) {
+    return { label: "PREMARKET", color: colors.amber };
+  }
+  if (weekdayOpen && minutes >= 16 * 60 && minutes < 20 * 60) {
+    return { label: "AFTER HOURS", color: colors.amber };
+  }
+  return { label: "CLOSED", color: colors.muted };
+}
+
+function newsPulseForSymbol(rows: DashboardNewsPulse[], symbol: string): DashboardNewsPulse | null {
+  return rows.find((row) => row.symbol === symbol) ?? null;
 }
 
 export default function DashboardPage() {
@@ -864,6 +917,9 @@ export default function DashboardPage() {
   const [forecastHarvestStatus, setForecastHarvestStatus] = useState("Forecast harvest idle.");
   const [captureSession, setCaptureSession] = useState("auto");
   const [nnReadiness, setNnReadiness] = useState<NNReadiness | null>(null);
+  const [autoSurfaceStatus, setAutoSurfaceStatus] = useState<AutomaticSurfaceCaptureStatus | null>(null);
+  const [schwabConnection, setSchwabConnection] = useState<SchwabConnectionStatus | null>(null);
+  const [clockTick, setClockTick] = useState(0);
 
   useEffect(() => {
     setMounted(true);
@@ -916,6 +972,35 @@ export default function DashboardPage() {
     refreshCentralCommandHub();
     loadCentralUniverse();
     loadNNReadiness();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    setAutoSurfaceStatus(readAutomaticSurfaceCaptureStatus());
+
+    const handleAutoSurface = (event: Event) => {
+      const detail = (event as CustomEvent<AutomaticSurfaceCaptureStatus>).detail;
+      if (!detail) return;
+      setAutoSurfaceStatus(detail);
+
+      if (detail.phase === "complete" || detail.phase === "delayed") {
+        void refreshCentralCommandHub();
+      }
+    };
+
+    window.addEventListener(AUTO_SURFACE_CAPTURE_EVENT, handleAutoSurface as EventListener);
+
+    const clock = window.setInterval(() => setClockTick((value) => value + 1), 60_000);
+
+    void fetch("/api/brokers/schwab/status", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((payload) => setSchwabConnection(payload as SchwabConnectionStatus))
+      .catch(() => setSchwabConnection({ connected: false, error: "Status unavailable" }));
+
+    return () => {
+      window.removeEventListener(AUTO_SURFACE_CAPTURE_EVENT, handleAutoSurface as EventListener);
+      window.clearInterval(clock);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1027,7 +1112,7 @@ export default function DashboardPage() {
 
       if (!symbols.length) {
         setCentralRows([]);
-        setCentralStatus("No central ticker slots yet. Seed founder defaults or add tickers from the universe.");
+        setCentralStatus("No tracked markets yet. Add a ticker from the WheelDesk universe.");
         setCentralLoadedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
         await loadDashboardNewsPulse([]);
         return;
@@ -1042,11 +1127,16 @@ export default function DashboardPage() {
         const forecast = await fetchLatestForecast(symbol);
         const meta = await fetchLatestSurfaceMeta(symbol);
 
-        // A forecast without a visible surface is an orphaned/stale forecast. Do not let
-        // it make the dashboard say the ticker is fully ready, because Control Center
-        // and Chart Room are surface-first.
-        const status: CentralCommandRow["status"] = meta.surfaceDate
-          ? (forecast ? "ready" : "surface-only")
+        const targetSurfaceDate = expectedSurfaceDate();
+        const surfaceCurrent = Boolean(meta.surfaceDate && meta.surfaceDate >= targetSurfaceDate);
+        const forecastDate = dateOnly(forecast?.snapshot_date ?? forecast?.generated_at);
+        const forecastCurrent = Boolean(forecast && meta.surfaceDate && forecastDate && forecastDate >= meta.surfaceDate);
+
+        // Dashboard readiness is surface-first. A stale surface or an orphaned forecast
+        // cannot make a tracked market look current. Automatic capture will refresh
+        // stale surfaces in the background while the authenticated session is active.
+        const status: CentralCommandRow["status"] = surfaceCurrent
+          ? (forecastCurrent ? "ready" : "surface-only")
           : "needs-harvest";
 
         return {
@@ -1064,7 +1154,7 @@ export default function DashboardPage() {
 
       setCentralRows(sorted);
       setCentralLoadedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
-      setCentralStatus(`Loaded ${symbols.length} central ticker slot(s): ${sorted.filter((row) => row.status === "ready").length} forecast-ready, ${sorted.filter((row) => row.status === "surface-only").length} surface-only.`);
+      setCentralStatus(`Loaded ${symbols.length} tracked market${symbols.length === 1 ? "" : "s"}. Surface capture runs automatically while your WheelDesk session is active.`);
       await loadDashboardNewsPulse(symbols);
     } catch (error: any) {
       setCentralStatus(error?.message ?? "Could not load central ticker command hub.");
@@ -1162,6 +1252,15 @@ export default function DashboardPage() {
       setCentralReplaceSymbol("");
       const slots = await loadCentralWatchlist();
       await refreshCentralCommandHub(slots);
+
+      const { data } = await getSupabaseAuthClient().auth.getSession();
+      if (data.session) {
+        void runAutomaticSurfaceCapture({
+          accessToken: data.session.access_token,
+          userId: data.session.user.id,
+          force: true,
+        });
+      }
     } catch (error: any) {
       setCentralStatus(error?.message ?? `Could not add ${symbol}.`);
     } finally {
@@ -1404,467 +1503,322 @@ export default function DashboardPage() {
   const newsElevated = newsPulses.filter((pulse) => pulse.status === "elevated").length;
   const newsShock = newsPulses.filter((pulse) => pulse.status === "shock").length;
   const newsRows = newsPulses.length ? newsPulses : centralSymbols.map((symbol) => quietNewsPulse(symbol));
+  const marketSession = useMemo(() => marketSessionLabel(), [clockTick]);
+  const planName = displayPlanName(centralEntitlement?.plan);
+  const currentMarkets = centralReady + centralSurfaceOnly;
+  const newsAttention = newsElevated + newsShock;
+  const topNews = [...newsPulses].sort((a, b) => newsPulseRank(b) - newsPulseRank(a))[0] ?? null;
+  const hasCommandAccess = centralEntitlement?.plan !== "core";
+
+  const dataStatus = (() => {
+    if (autoSurfaceStatus?.phase === "capturing" || autoSurfaceStatus?.phase === "checking") {
+      return { label: "UPDATING", color: colors.amber };
+    }
+    if (autoSurfaceStatus?.phase === "delayed") {
+      return { label: "DELAYED", color: colors.red };
+    }
+    if (centralNeedsHarvest > 0) {
+      return { label: "SYNCING", color: colors.amber };
+    }
+    return { label: "CURRENT", color: colors.green };
+  })();
 
   return (
     <AuthGate>
-    <div className="wheeldesk-shell" style={styles.app}>
-  <WheelDeskSideNav active="dashboard" />
+      <div className="wheeldesk-shell" style={styles.app}>
+        <WheelDeskSideNav active="dashboard" />
 
- 
-
-      <main className="wheeldesk-page" style={styles.main}>
-        <header style={styles.header}>
-          <div>
-            <div style={styles.eyebrow}>WHEELDESK</div>
-            <h1 style={styles.title}>Dashboard</h1>
-          </div>
-
-          <div style={styles.headerRight}>
-            <span>ACCOUNT STATUS:</span>
-            <strong style={{ color: colors.green }}>OK TO TRADE</strong>
-            <a href="/control-center" style={styles.controlButton}>
-              Open Control Center
-            </a>
-          </div>
-        </header>
-
-        <section style={styles.commandHub}>
-          <div style={styles.commandHeader}>
+        <main className="wheeldesk-page" style={styles.main}>
+          <header style={styles.header}>
             <div>
-              <div style={styles.eyebrow}>Central Ticker Universe</div>
-              <h2 style={styles.commandTitle}>Dashboard Command Hub</h2>
-              <p style={styles.commandSubtitle}>
-                Manage the tickers that WheelDesk tracks for your account. Shared OI surfaces, OI Field forecasts, and future validation receipts should flow from this central universe into Control Center, Chart Room, Validation, and Watchlist Command.
-              </p>
+              <div style={styles.eyebrow}>WHEELDESK · {planName}</div>
+              <h1 style={styles.title}>Dashboard</h1>
             </div>
 
-            <div style={styles.commandStatusBox}>
-              <span>{centralLoadedAt ? `Updated ${centralLoadedAt}` : "Loading"}</span>
-              <strong>{centralUsedSlots}/{centralMaxSlots || "?"}</strong>
-              <small>{centralEntitlement?.plan ?? "founder"} ticker slots</small>
+            <div style={styles.statusStrip}>
+              <div style={styles.statusPill}>
+                <span style={styles.statusKey}>MARKET</span>
+                <strong style={{ ...styles.statusValue, color: marketSession.color }}>{marketSession.label}</strong>
+              </div>
+              <div style={styles.statusPill}>
+                <span style={styles.statusKey}>DATA</span>
+                <strong style={{ ...styles.statusValue, color: dataStatus.color }}>{dataStatus.label}</strong>
+              </div>
+              <div style={styles.statusPill}>
+                <span style={styles.statusKey}>COMMAND DATA</span>
+                <strong style={{ ...styles.statusValue, color: schwabConnection?.connected ? colors.green : colors.amber }}>
+                  {schwabConnection?.connected ? "SCHWAB" : schwabConnection ? "OFFLINE" : "CHECKING"}
+                </strong>
+              </div>
             </div>
-          </div>
+          </header>
 
-          <div style={styles.commandStats}>
-            <div style={styles.commandStat}><span>Forecast Ready</span><strong style={{ color: colors.green }}>{centralReady}</strong></div>
-            <div style={styles.commandStat}><span>Surface Only</span><strong style={{ color: colors.amber }}>{centralSurfaceOnly}</strong></div>
-            <div style={styles.commandStat}><span>Needs Harvest</span><strong style={{ color: colors.red }}>{centralNeedsHarvest}</strong></div>
-            <div style={styles.commandStat}><span>Replacements Left</span><strong style={{ color: colors.cyan }}>{centralReplacementsLeft}</strong></div>
-            <div style={styles.commandStat}><span>Forecast Receipts</span><strong style={{ color: colors.cyan }}>{safeInt(nnReadiness?.captured ?? 0)}</strong></div>
-            <div style={styles.commandStat}><span>Neural Status</span><strong style={{ color: colors.amber }}>{readinessLabel(nnReadiness?.neuralStatus)}</strong></div>
-          </div>
-
-          <div style={styles.commandControls}>
-            <label style={styles.label}>
-              Add from universe
-              <input
-                value={centralTickerInput}
-                onChange={(event) => {
-                  const value = event.target.value.toUpperCase();
-                  setCentralTickerInput(value);
-                  loadCentralUniverse(value);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    addCentralTicker();
-                  }
-                }}
-                placeholder="AMD, SOFI, NVDA..."
-                style={styles.input}
-                list="dashboard-central-universe"
-              />
-              <datalist id="dashboard-central-universe">
-                {centralUniverse.map((ticker) => (
-                  <option key={ticker.symbol} value={ticker.symbol}>
-                    {ticker.name ?? ticker.symbol}
-                  </option>
-                ))}
-              </datalist>
-            </label>
-
-            <label style={styles.label}>
-              Replace if full
-              <select value={centralReplaceSymbol} onChange={(event) => setCentralReplaceSymbol(event.target.value)} style={styles.input}>
-                <option value="">Do not replace</option>
-                {centralTickers.map((ticker) => (
-                  <option key={ticker.symbol} value={ticker.symbol}>{ticker.symbol}</option>
-                ))}
-              </select>
-            </label>
-
-            <button type="button" onClick={() => addCentralTicker()} disabled={centralSaving || centralLoading || !centralTickerInput.trim()} style={styles.primaryButton}>
-              {centralSaving ? "Saving..." : "Add Slot"}
-            </button>
-
-            <button type="button" onClick={seedCentralFounderDefaults} disabled={centralSaving || centralLoading || centralTickers.length > 0} style={styles.button}>
-              Seed Founder Defaults
-            </button>
-
-            <button type="button" onClick={() => refreshCentralCommandHub()} disabled={centralSaving || centralLoading} style={styles.button}>
-              {centralLoading ? "Refreshing..." : "Refresh Hub"}
-            </button>
-
-            <label style={styles.label}>
-              Forecast session
-              <select value={captureSession} onChange={(event) => setCaptureSession(event.target.value)} style={styles.input}>
-                <option value="auto">Auto session</option>
-                <option value="premarket">Premarket</option>
-                <option value="midday">Midday</option>
-                <option value="close">Close</option>
-                <option value="manual">Manual</option>
-              </select>
-            </label>
-
-            <button type="button" onClick={() => runHarvest(centralSymbols)} disabled={running || !centralSymbols.length} style={styles.button}>
-              {running ? "Harvesting..." : "Surface Harvest"}
-            </button>
-
-            <button type="button" onClick={runForecastHarvest} disabled={forecastHarvestRunning || !centralSymbols.length} style={styles.button}>
-              {forecastHarvestRunning ? "Forecasting..." : "Forecast Harvest"}
-            </button>
-
-            <button type="button" onClick={runFullOIHarvest} disabled={running || forecastHarvestRunning || !centralSymbols.length} style={styles.primaryButton}>
-              {running || forecastHarvestRunning ? "Running..." : "Run Full OI Harvest"}
-            </button>
-          </div>
-
-          <div style={styles.commandMessage}>{centralStatus}</div>
-          <div style={styles.commandMessage}>
-            <strong style={{ color: colors.cyan }}>Forecast harvest:</strong> {forecastHarvestStatus}
-            {forecastHarvestResult?.items?.length ? (
-              <span style={{ display: "block", marginTop: 6, color: colors.muted }}>
-                {forecastHarvestResult.items.slice(0, 6).map((item) => `${item.symbol}: surface ${item.surfaceStatus ?? "—"} / forecast ${item.forecastStatus ?? item.status} / save ${item.saveStatus ?? "—"}`).join(" · ")}
-                {forecastHarvestResult.items.length > 6 ? ` · +${forecastHarvestResult.items.length - 6} more` : ""}
-              </span>
-            ) : null}
-          </div>
-
-          {centralTop ? (
-            <div style={styles.commandTop}>
+          <section style={styles.overviewSection}>
+            <div style={styles.sectionHeader}>
               <div>
-                <div style={styles.eyebrow}>Start here</div>
-                <h3 style={styles.commandTopTitle}>{centralTop.symbol} · {commandStatus(centralTop)}</h3>
+                <div style={styles.eyebrow}>Desk overview</div>
+                <h2 style={styles.sectionTitle}>What deserves attention now</h2>
+              </div>
+              <span style={styles.sectionHint}>
+                {centralLoadedAt ? `Updated ${centralLoadedAt}` : "Loading desk state…"}
+              </span>
+            </div>
+
+            <div style={styles.overviewGrid}>
+              <a href={hasCommandAccess ? "/zero-dte/chart" : "/pricing"} style={styles.overviewCard}>
+                <div style={styles.cardEyebrow}>0DTE COMMAND</div>
+                <div style={styles.cardMetric}>SPX</div>
+                <div style={styles.cardTitle}>{hasCommandAccess ? "Session intelligence" : "Command access"}</div>
+                <div style={styles.cardCopy}>
+                  {hasCommandAccess
+                    ? "Open the live structure, readiness, premium and execution desk."
+                    : "WheelDesk Command is the active intraday decision layer."}
+                </div>
+                <span style={styles.cardLink}>{hasCommandAccess ? "Open Command →" : "View Command →"}</span>
+              </a>
+
+              <a href="/portfolio" style={styles.overviewCard}>
+                <div style={styles.cardEyebrow}>PORTFOLIO</div>
+                <div style={styles.cardMetric}>{safeInt(totals.positions, "0")}</div>
+                <div style={styles.cardTitle}>Open positions</div>
+                <div style={styles.cardCopy}>
+                  Day P/L {safeMoney(totals.dayPnL)} · Theta {safeFixed(totals.theta, 2, "0.00")}
+                </div>
+                <span style={styles.cardLink}>Open Portfolio →</span>
+              </a>
+
+              <a href="/watchlist" style={styles.overviewCard}>
+                <div style={styles.cardEyebrow}>TRACKED MARKETS</div>
+                <div style={styles.cardMetric}>{safeInt(centralUsedSlots, "0")}</div>
+                <div style={styles.cardTitle}>{currentMarkets} current · {centralNeedsHarvest} syncing</div>
+                <div style={styles.cardCopy}>
+                  Surface capture stays current automatically while your WheelDesk session is active.
+                </div>
+                <span style={styles.cardLink}>Open Watchlist →</span>
+              </a>
+
+              <a href="/news" style={styles.overviewCard}>
+                <div style={styles.cardEyebrow}>NEWS RISK</div>
+                <div style={{ ...styles.cardMetric, color: newsAttention ? colors.amber : colors.green }}>{newsAttention}</div>
+                <div style={styles.cardTitle}>{newsAttention ? "Elevated / shock" : "No elevated risk"}</div>
+                <div style={styles.cardCopy}>
+                  {topNews?.latestHeadline ?? `${newsQuiet} quiet · ${newsActive} active across tracked markets.`}
+                </div>
+                <span style={styles.cardLink}>Open News →</span>
+              </a>
+            </div>
+          </section>
+
+          <div style={styles.twoColGrid}>
+            <section style={styles.panelCard}>
+              <div style={styles.panelHeader}>
+                <div>
+                  <div style={styles.eyebrow}>Portfolio</div>
+                  <h2 style={styles.panelTitle}>Risk snapshot</h2>
+                </div>
+                <a href="/portfolio" style={styles.panelLink}>Full portfolio →</a>
+              </div>
+
+              <div style={styles.metricGrid}>
+                <div style={styles.metric}><span style={styles.metricLabel}>Open P/L</span><strong style={styles.metricValue}>{safeMoney(totals.openPnL)}</strong></div>
+                <div style={styles.metric}><span style={styles.metricLabel}>Day P/L</span><strong style={styles.metricValue}>{safeMoney(totals.dayPnL)}</strong></div>
+                <div style={styles.metric}><span style={styles.metricLabel}>Delta</span><strong style={styles.metricValue}>{safeFixed(totals.delta, 2, "0.00")}</strong></div>
+                <div style={styles.metric}><span style={styles.metricLabel}>Theta</span><strong style={styles.metricValue}>{safeFixed(totals.theta, 2, "0.00")}</strong></div>
+                <div style={styles.metric}><span style={styles.metricLabel}>Short calls</span><strong style={styles.metricValue}>{safeInt(totals.shortCalls, "0")}</strong></div>
+                <div style={styles.metric}><span style={styles.metricLabel}>Short puts</span><strong style={styles.metricValue}>{safeInt(totals.shortPuts, "0")}</strong></div>
+              </div>
+
+              <div style={styles.panelFootnote}>
+                {portfolioUpdatedAt ? `Portfolio saved ${new Date(portfolioUpdatedAt).toLocaleString()}` : "No saved portfolio positions yet."}
+              </div>
+            </section>
+
+            <section style={styles.panelCard}>
+              <div style={styles.panelHeader}>
+                <div>
+                  <div style={styles.eyebrow}>Connections</div>
+                  <h2 style={styles.panelTitle}>Data & trading</h2>
+                </div>
+              </div>
+
+              <div style={styles.connectionList}>
+                <div style={styles.connectionRow}>
+                  <div style={styles.connectionIdentity}>
+                    <span style={{ ...styles.connectionDot, background: dataStatus.color }} />
+                    <div>
+                      <div style={styles.connectionName}>WheelDesk surface feed</div>
+                      <div style={styles.connectionMeta}>Yahoo option surfaces · automatic tracked-market capture</div>
+                    </div>
+                  </div>
+                  <strong style={{ ...styles.connectionState, color: dataStatus.color }}>{dataStatus.label}</strong>
+                </div>
+
+                <div style={styles.connectionRow}>
+                  <div style={styles.connectionIdentity}>
+                    <span style={{ ...styles.connectionDot, background: schwabConnection?.connected ? colors.green : colors.amber }} />
+                    <div>
+                      <div style={styles.connectionName}>Schwab Trader API</div>
+                      <div style={styles.connectionMeta}>SPX Command feed · live options and price history</div>
+                    </div>
+                  </div>
+                  <strong style={{ ...styles.connectionState, color: schwabConnection?.connected ? colors.green : colors.amber }}>
+                    {schwabConnection?.connected ? "Connected" : schwabConnection ? "Needs attention" : "Checking"}
+                  </strong>
+                </div>
+
+                <div style={styles.connectionRow}>
+                  <div style={styles.connectionIdentity}>
+                    <span style={{ ...styles.connectionDot, background: colors.muted2 }} />
+                    <div>
+                      <div style={styles.connectionName}>Trading account</div>
+                      <div style={styles.connectionMeta}>Personal Schwab / E*TRADE / other broker adapters</div>
+                    </div>
+                  </div>
+                  <strong style={{ ...styles.connectionState, color: colors.muted }}>Not linked</strong>
+                </div>
+              </div>
+
+              <div style={styles.panelFootnote}>
+                Schwab credentials are currently platform-wide for Command. Personal Schwab, E*TRADE and future brokerage connections will be stored per user and kept separate from WheelDesk's shared data feeds.
+              </div>
+            </section>
+          </div>
+
+          <section style={styles.trackedPanel}>
+            <div style={styles.trackedHeader}>
+              <div>
+                <div style={styles.eyebrow}>Tracked markets</div>
+                <h2 style={styles.panelTitle}>Your WheelDesk universe</h2>
                 <p style={styles.commandSubtitle}>
-                  {centralTop.forecast
-                    ? `Bias ${centralTop.forecast.bias ?? "N/A"} · saved ${forecastFieldLabel(centralTop.forecast)} base ${forecastFieldBaseLabel(centralTop.forecast)} · field ${forecastFieldRangeLabel(centralTop.forecast)} · confidence ${formatPercent(centralTop.forecast.confidence)}.`
-                    : centralTop.surfaceDate
-                      ? `Surface captured on ${centralTop.surfaceDate}. Open Control Center and click Capture Forecast to create the OI Field receipt.`
-                      : "No surface exists yet. Harvest this ticker before using it in the daily read."}
+                  Symbols evaluated across Watchlist, Control Center, Validation and research. Surface acquisition is automatic.
                 </p>
               </div>
-              <div style={styles.commandTopActions}>
-                <a href={`/control-center?ticker=${encodeURIComponent(centralTop.symbol)}`} style={styles.controlButton}>Open Control</a>
-                <a href={`/control-center/chart?ticker=${encodeURIComponent(centralTop.symbol)}`} style={styles.controlButton}>Chart Room</a>
-                <a href="/watchlist" style={styles.controlButton}>Full Watchlist</a>
+              <div style={styles.trackedCount}>
+                <strong>{centralUsedSlots}</strong>
+                <span>/ {centralMaxSlots || "?"} tracked</span>
               </div>
             </div>
-          ) : null}
 
-          <div style={styles.centralTableWrap}>
-            {centralRows.length ? (
-              <table style={styles.centralCommandTable}>
+            <div style={styles.trackedControls}>
+              <label style={styles.label}>
+                Add market
+                <input
+                  value={centralTickerInput}
+                  onChange={(event) => {
+                    const value = event.target.value.toUpperCase();
+                    setCentralTickerInput(value);
+                    loadCentralUniverse(value);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      addCentralTicker();
+                    }
+                  }}
+                  placeholder="SOFI, AMD, NVDA…"
+                  style={styles.input}
+                  list="dashboard-central-universe"
+                />
+                <datalist id="dashboard-central-universe">
+                  {centralUniverse.map((ticker) => (
+                    <option key={ticker.symbol} value={ticker.symbol}>{ticker.name ?? ticker.symbol}</option>
+                  ))}
+                </datalist>
+              </label>
+
+              <label style={styles.label}>
+                Replace if full
+                <select value={centralReplaceSymbol} onChange={(event) => setCentralReplaceSymbol(event.target.value)} style={styles.input}>
+                  <option value="">Do not replace</option>
+                  {centralTickers.map((ticker) => (
+                    <option key={ticker.symbol} value={ticker.symbol}>{ticker.symbol}</option>
+                  ))}
+                </select>
+              </label>
+
+              <button type="button" onClick={() => addCentralTicker()} disabled={centralSaving || centralLoading || !centralTickerInput.trim()} style={styles.primaryButton}>
+                {centralSaving ? "Saving…" : "Add market"}
+              </button>
+            </div>
+
+            <div style={styles.trackedStatusRow}>
+              <span>{centralStatus}</span>
+              <span>{centralReplacementsLeft} replacements left today</span>
+            </div>
+
+            <div style={styles.trackedTableWrap}>
+              <table style={styles.trackedTable}>
                 <thead>
                   <tr>
-                    <th style={styles.th}>Ticker</th>
+                    <th style={styles.th}>Market</th>
                     <th style={styles.th}>Surface</th>
-                    <th style={styles.thRight}>Rows</th>
                     <th style={styles.th}>Forecast</th>
-                    <th style={styles.th}>Saved Field</th>
-                    <th style={styles.th}>Actions</th>
+                    <th style={styles.th}>News</th>
+                    <th style={styles.th}>Open</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {centralRows.map((row) => (
-                    <tr key={row.symbol}>
-                      <td style={styles.td}>
-                        <strong>{row.symbol}</strong>
-                        <div style={styles.centralSlotName}>{row.name ?? row.assetType ?? "WheelDesk universe"}</div>
-                      </td>
-                      <td style={styles.td}>{row.surfaceDate ?? "none"}</td>
-                      <td style={styles.tdRight}>{row.surfaceRows ? safeInt(row.surfaceRows) : "—"}</td>
-                      <td style={{ ...styles.td, color: commandStatusColor(row), fontWeight: 900 }}>
-                        {commandStatus(row)}
-                        {!row.surfaceDate && row.forecast ? <div style={{ color: colors.amber, fontSize: 11 }}>orphan forecast hidden until surface is visible</div> : null}
-                      </td>
-                      <td style={styles.td}>
-                        {row.forecast && row.surfaceDate
-                          ? `${forecastFieldLabel(row.forecast)} · ${forecastFieldRangeLabel(row.forecast)}`
-                          : "—"}
-                      </td>
-                      <td style={styles.td}>
-                        <a href={`/control-center?ticker=${encodeURIComponent(row.symbol)}`} style={styles.inlineAction}>{row.surfaceDate ? "Control" : "Capture"}</a>
-                        <span> · </span>
-                        <a href={`/dashboard/validation?ticker=${encodeURIComponent(row.symbol)}`} style={styles.inlineAction}>Validate</a>
-                        <span> · </span>
-                        <button type="button" onClick={() => removeCentralTicker(row.symbol)} style={styles.textButton} disabled={centralSaving}>Remove</button>
-                      </td>
+                  {centralRows.length ? centralRows.map((row) => {
+                    const pulse = newsPulseForSymbol(newsRows, row.symbol);
+                    return (
+                      <tr key={row.symbol}>
+                        <td style={styles.td}>
+                          <strong>{row.symbol}</strong>
+                          <div style={styles.centralSlotName}>{row.name ?? row.assetType ?? "WheelDesk market"}</div>
+                        </td>
+                        <td style={styles.td}>
+                          <strong style={{ color: row.status === "needs-harvest" ? colors.amber : colors.green }}>
+                            {row.status === "needs-harvest" ? "Updating" : "Current"}
+                          </strong>
+                          <div style={styles.centralSlotName}>{row.surfaceDate ?? `Target ${expectedSurfaceDate()}`}</div>
+                        </td>
+                        <td style={styles.td}>
+                          <strong style={{ color: commandStatusColor(row) }}>{commandStatus(row)}</strong>
+                          <div style={styles.centralSlotName}>
+                            {row.forecast && row.status === "ready" ? `${row.forecast.bias ?? "N/A"} · ${formatPercent(row.forecast.confidence)}` : "—"}
+                          </div>
+                        </td>
+                        <td style={styles.td}>
+                          <span style={{ ...styles.newsStatusPill, color: pulse ? newsPulseColor(pulse.status) : colors.muted, borderColor: pulse ? newsPulseColor(pulse.status) : colors.border }}>
+                            {pulse ? newsPulseLabel(pulse.status) : "Quiet"}
+                          </span>
+                        </td>
+                        <td style={styles.td}>
+                          <div style={styles.rowActions}>
+                            <a href={`/control-center?ticker=${encodeURIComponent(row.symbol)}`} style={styles.inlineAction}>Control</a>
+                            <a href={`/control-center/chart?ticker=${encodeURIComponent(row.symbol)}`} style={styles.inlineAction}>Chart</a>
+                            <button type="button" onClick={() => removeCentralTicker(row.symbol)} style={styles.textButton} disabled={centralSaving}>Remove</button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  }) : (
+                    <tr>
+                      <td style={styles.td} colSpan={5}>No tracked markets yet. Add a symbol above to begin.</td>
                     </tr>
-                  ))}
+                  )}
                 </tbody>
               </table>
-            ) : (
-              <div style={styles.emptyCentral}>
-                No central ticker slots yet. Seed founder defaults or add a ticker from the universe.
+            </div>
+          </section>
+
+          <section style={styles.dataNote}>
+            <div style={styles.dataNoteTop}>
+              <div>
+                <div style={styles.eyebrow}>Data operations</div>
+                <strong>Automatic surface capture</strong>
               </div>
-            )}
-          </div>
-        </section>
-
-        <section style={styles.portfolioPanel}>
-          <div style={styles.panelStrip}>
-            <span>Equities and Equity Options</span>
-            <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <span>Portfolio saved {portfolioUpdatedAt ? new Date(portfolioUpdatedAt).toLocaleString() : "—"}</span>
-              <button type="button" onClick={() => { try { const next = listPortfolioProfiles() as any[]; setProfiles(next); const latest = next.map((profile) => profile?.updatedAt).filter(Boolean).sort().at(-1) ?? new Date().toISOString(); setPortfolioUpdatedAt(latest); } catch { setProfiles([]); setPortfolioUpdatedAt(null); } }} style={{ border: "1px solid rgba(255,255,255,0.25)", background: "transparent", color: "inherit", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontWeight: 800 }}>Refresh</button>
-            </span>
-          </div>
-
-          <table style={styles.statementTable}>
-            <thead>
-              <tr>
-                <th style={{ ...styles.th, width: "26%" }}>Instrument</th>
-                <th style={styles.thRight}>Qty</th>
-                <th style={styles.thRight}>Days</th>
-                <th style={styles.thRight}>Trade Price</th>
-                <th style={styles.thRight}>Mark</th>
-                <th style={styles.thRight}>Delta</th>
-                <th style={styles.thRight}>Theta</th>
-                <th style={styles.thRight}>P/L Open</th>
-                <th style={styles.thRight}>P/L Day</th>
-                <th style={styles.thRight}>BP Effect</th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {groups.length ? (
-                groups.map((group) => {
-                  const open = expandedTickers[group.ticker] ?? true;
-
-                  return (
-                    <TickerRows
-                      key={group.ticker}
-                      group={group}
-                      open={open}
-                      toggle={() => toggleTicker(group.ticker)}
-                    />
-                  );
-                })
-              ) : (
-                <tr>
-                  <td style={styles.td} colSpan={10}>
-                    No portfolio positions found. Build positions in the Portfolio page.
-                  </td>
-                </tr>
-              )}
-
-              <tr>
-                <td style={styles.totalCell}>Overall Totals</td>
-                <td style={styles.tdRight}>{safeInt(totals.stockShares)}</td>
-                <td style={styles.tdRight}>N/A</td>
-                <td style={styles.tdRight}></td>
-                <td style={styles.tdRight}></td>
-                <td style={styles.tdRight}>{safeFixed(totals.delta, 2)}</td>
-                <td style={styles.tdRight}>{safeFixed(totals.theta, 2)}</td>
-                <td style={styles.tdRight}>{safeMoney(totals.openPnL)}</td>
-                <td style={styles.tdRight}>{safeMoney(totals.dayPnL)}</td>
-                <td style={styles.tdRight}>{safeMoney(totals.bpEffect)}</td>
-              </tr>
-            </tbody>
-          </table>
-
-          <div style={styles.summaryBar}>
-            <span>POSITIONS: <strong>{safeInt(totals.positions)}</strong></span>
-            <span>SHORT CALLS: <strong style={{ color: colors.green }}>{safeInt(totals.shortCalls)}</strong></span>
-            <span>SHORT PUTS: <strong style={{ color: colors.green }}>{safeInt(totals.shortPuts)}</strong></span>
-            <span>BP EFFECT: <strong style={{ color: colors.green }}>{safeMoney(totals.bpEffect)}</strong></span>
-          </div>
-        </section>
-
-        <section style={styles.harvestDetails}>
-          <button type="button" style={styles.detailsSummaryButton} onClick={() => setHarvestOpen((value) => !value)}>
-            <span style={styles.harvestTitle}>
-              <span style={styles.harvestToggle}>{harvestOpen ? "−" : "+"}</span>
-              Visible OI Harvest Flow
-            </span>
-            <span style={{ color: running ? colors.amber : colors.text }}>{status}</span>
-          </button>
-
-          {harvestOpen ? (
-            <div style={styles.harvestBody}>
-              <p style={styles.commandSubtitle}>
-                Surface Harvest visibly walks each locked ticker through Yahoo option-chain fetch, Supabase save, and saved-state confirmation. Run Full OI Harvest then generates the baseline OI implied-path forecast from the saved surface while NN remains in collecting mode.
-              </p>
-
-              <div style={styles.harvestControls}>
-                <button type="button" onClick={() => runHarvest(centralSymbols)} disabled={running || !centralSymbols.length} style={styles.button}>
-                  {running ? "Harvesting surfaces..." : "Run Surface Harvest"}
-                </button>
-                <button type="button" onClick={runForecastHarvest} disabled={forecastHarvestRunning || !centralSymbols.length} style={styles.button}>
-                  {forecastHarvestRunning ? "Generating forecasts..." : "Run Forecast Harvest"}
-                </button>
-                <button type="button" onClick={runFullOIHarvest} disabled={running || forecastHarvestRunning || !centralSymbols.length} style={styles.primaryButton}>
-                  Run Full OI Harvest
-                </button>
-              </div>
-
-              <div style={styles.queueStats}>
-                <span>Surface saved: <strong>{savedCount}</strong></span>
-                <span>Surface failed: <strong>{failedCount}</strong></span>
-                <span>Rows: <strong>{safeInt(totalRows)}</strong></span>
-                <span>Tracked slots: <strong>{centralUsedSlots}/{centralMaxSlots || "?"}</strong></span>
-                <span>Session: <strong>{captureSession === "auto" ? `Auto → ${effectiveCaptureSession()}` : captureSession}</strong></span>
-              </div>
-
-              {(() => {
-                const displayedQueue: HarvestItem[] = queue.length
-                  ? queue
-                  : centralSymbols.map((symbol): HarvestItem => ({
-                      ticker: symbol,
-                      status: "pending",
-                      message: "Waiting",
-                    }));
-
-                return (
-                  <table style={styles.harvestTable}>
-                    <thead>
-                      <tr>
-                        <th style={styles.th}>Ticker</th>
-                        <th style={styles.th}>Surface Fetch</th>
-                        <th style={styles.th}>Supabase Save</th>
-                        <th style={styles.thRight}>Chains</th>
-                        <th style={styles.thRight}>Rows</th>
-                        <th style={styles.th}>Snapshot</th>
-                        <th style={styles.th}>Message</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {displayedQueue.map((item) => (
-                        <tr key={item.ticker}>
-                          <td style={styles.td}><strong>{item.ticker}</strong></td>
-                          <td style={styles.td}>{item.status === "fetching" ? "Fetching Yahoo API..." : item.status === "pending" ? "Waiting" : item.status === "failed" ? "Failed" : "Fetched"}</td>
-                          <td style={styles.td}>{item.status === "saving" ? "Saving..." : item.status === "saved" ? "Saved" : item.status === "failed" ? "Failed" : "—"}</td>
-                          <td style={styles.tdRight}>{item.chainCount ?? "—"}</td>
-                          <td style={styles.tdRight}>{item.rowCount ?? "—"}</td>
-                          <td style={styles.td}>{item.snapshotDate ?? "—"}</td>
-                          <td style={styles.td}>{item.message ?? "—"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                );
-              })()}
-
-              {forecastHarvestResult?.items?.length ? (
-                <table style={styles.harvestTable}>
-                  <thead>
-                    <tr>
-                      <th style={styles.th}>Ticker</th>
-                      <th style={styles.th}>Surface</th>
-                      <th style={styles.th}>Forecast</th>
-                      <th style={styles.th}>Save</th>
-                      <th style={styles.th}>Expiration</th>
-                      <th style={styles.thRight}>Rows</th>
-                      <th style={styles.th}>Message</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {forecastHarvestResult.items.map((item) => (
-                      <tr key={`${item.symbol}-${item.expiration ?? "forecast"}`}>
-                        <td style={styles.td}><strong>{item.symbol}</strong></td>
-                        <td style={styles.td}>{item.surfaceStatus ?? "—"}</td>
-                        <td style={styles.td}>{item.forecastStatus ?? item.status}</td>
-                        <td style={styles.td}>{item.saveStatus ?? "—"}</td>
-                        <td style={styles.td}>{item.expiration ?? "—"}</td>
-                        <td style={styles.tdRight}>{item.rowCount ?? "—"}</td>
-                        <td style={styles.td}>{item.message ?? "—"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              ) : null}
+              <span style={{ ...styles.automaticBadge, color: dataStatus.color, borderColor: dataStatus.color }}>{dataStatus.label}</span>
             </div>
-          ) : null}
-        </section>
-
-        <section style={styles.newsPanel}>
-          <div style={styles.newsHeader}>
-            <div>
-              <strong>News Pulse</strong>
-              <span>Ticker-scoped headlines from the locked universe. 24h pulse + latest cached headlines help explain forecast divergence.</span>
-            </div>
-            <div style={styles.newsHeaderActions}>
-              <span>{newsHarvesting ? "Harvesting live news..." : newsLoading ? "Refreshing cache..." : newsStatus}</span>
-              <button
-                type="button"
-                onClick={() => loadDashboardNewsPulse(centralSymbols)}
-                disabled={newsLoading || newsHarvesting || !centralSymbols.length}
-                style={styles.newsButton}
-              >
-                Refresh Cache
-              </button>
-              <button
-                type="button"
-                onClick={runDashboardNewsHarvest}
-                disabled={newsLoading || newsHarvesting || !centralSymbols.length}
-                style={{ ...styles.newsButton, borderColor: colors.green, color: colors.green }}
-              >
-                Run News Harvest
-              </button>
-              <a href="/news" style={styles.newsButton}>Open News</a>
-            </div>
-          </div>
-
-          <div style={styles.newsSummaryGrid}>
-            <div style={styles.newsStatCard}><span>Quiet</span><strong>{newsQuiet}</strong></div>
-            <div style={styles.newsStatCard}><span>Active</span><strong style={{ color: colors.cyan }}>{newsActive}</strong></div>
-            <div style={styles.newsStatCard}><span>Elevated</span><strong style={{ color: colors.amber }}>{newsElevated}</strong></div>
-            <div style={styles.newsStatCard}><span>Shock Risk</span><strong style={{ color: colors.red }}>{newsShock}</strong></div>
-          </div>
-
-          {centralSymbols.length ? (
-            <div style={styles.newsTableWrap}>
-              <div style={styles.newsTableHeader}>
-                <span>Ticker</span>
-                <span>Pulse</span>
-                <span>24h</span>
-                <span>Materiality</span>
-                <span>Sentiment</span>
-                <span>Forecast impact</span>
-                <span>Latest headline</span>
-                <span>Age</span>
-                <span>Open</span>
-              </div>
-
-              {newsRows.map((pulse) => (
-                <div key={pulse.symbol} style={styles.newsPulseRow}>
-                  <strong style={styles.newsTicker}>{pulse.symbol}</strong>
-                  <span style={{ ...styles.newsStatusPill, color: newsPulseColor(pulse.status), borderColor: newsPulseColor(pulse.status) }}>
-                    {newsPulseLabel(pulse.status)}
-                  </span>
-                  <span>{safeInt(pulse.count24h, "0")}</span>
-                  <span>{safeInt(pulse.materiality, "0")}</span>
-                  <span>{pulse.sentiment === null ? "—" : pulse.sentiment > 0 ? `+${pulse.sentiment}` : pulse.sentiment}</span>
-                  <span>{newsImpactLabel(pulse.forecastImpact)}</span>
-                  <span style={styles.newsHeadline}>{pulse.latestHeadline ?? "No recent material ticker news detected."}</span>
-                  <span>{formatNewsAge(pulse.latestPublishedAt)}</span>
-                  <span style={styles.newsActions}>
-                    <a href={`/news?symbol=${encodeURIComponent(pulse.symbol)}`} style={styles.inlineAction}>News</a>
-                    <a href={`/control-center/chart?ticker=${encodeURIComponent(pulse.symbol)}`} style={styles.inlineAction}>Chart</a>
-                  </span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div style={styles.emptyNewsState}>
-              No locked ticker slots yet. Add tickers in the Dashboard Command Hub to activate ticker-scoped News Pulse.
-            </div>
-          )}
-        </section>
-
-      </main>
-    </div>
-  
+            <p style={styles.commandSubtitle}>
+              {autoSurfaceStatus?.message ?? "WheelDesk checks tracked-market freshness after authenticated access and captures missing surfaces automatically."}
+            </p>
+            <p style={styles.panelFootnote}>
+              Surface capture no longer requires a user action. Forecast generation remains a separate model event until its premarket / midday / close schedule is finalized.
+            </p>
+          </section>
+        </main>
+      </div>
     </AuthGate>
   );
 }
@@ -2518,4 +2472,92 @@ const styles: Record<string, React.CSSProperties> = {
     color: colors.muted,
     fontSize: 13,
   },
+  statusStrip: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  statusPill: {
+    display: "grid",
+    gap: 2,
+    minWidth: 88,
+    padding: "0.38rem 0.55rem",
+    border: `1px solid ${colors.border}`,
+    borderRadius: 8,
+    background: "rgba(3, 12, 21, 0.6)",
+  },
+  statusKey: { color: colors.muted2, fontSize: 9, fontWeight: 900, letterSpacing: 0.8 },
+  statusValue: { fontSize: 11, fontWeight: 950, letterSpacing: 0.25 },
+  overviewSection: {
+    marginTop: "1rem",
+    border: `1px solid ${colors.border}`,
+    borderRadius: 16,
+    background: "linear-gradient(135deg, rgba(8, 26, 42, 0.94), rgba(5, 13, 24, 0.96))",
+    padding: "1rem",
+  },
+  sectionHeader: { display: "flex", justifyContent: "space-between", gap: 12, alignItems: "end", marginBottom: "0.8rem" },
+  sectionTitle: { margin: "0.2rem 0 0", fontSize: 24, letterSpacing: "-0.04em" },
+  sectionHint: { color: colors.muted, fontSize: 12 },
+  overviewGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))",
+    gap: 10,
+  },
+  overviewCard: {
+    minHeight: 172,
+    display: "flex",
+    flexDirection: "column",
+    gap: 5,
+    padding: "0.9rem",
+    border: `1px solid ${colors.borderSoft}`,
+    borderRadius: 12,
+    background: "rgba(5, 15, 25, 0.82)",
+    color: colors.text,
+    textDecoration: "none",
+  },
+  cardEyebrow: { color: colors.cyan, fontSize: 10, fontWeight: 950, letterSpacing: 1 },
+  cardMetric: { marginTop: 4, fontSize: 30, lineHeight: 1, fontWeight: 950, letterSpacing: "-0.05em" },
+  cardTitle: { color: colors.text, fontSize: 14, fontWeight: 900 },
+  cardCopy: { color: colors.muted, fontSize: 12, lineHeight: 1.4, flex: 1, overflow: "hidden" },
+  cardLink: { color: colors.cyan, fontSize: 12, fontWeight: 900, marginTop: 6 },
+  twoColGrid: {
+    marginTop: "0.8rem",
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 390px), 1fr))",
+    gap: 10,
+  },
+  panelCard: {
+    border: `1px solid ${colors.border}`,
+    borderRadius: 14,
+    background: colors.panel2,
+    padding: "0.9rem",
+  },
+  panelHeader: { display: "flex", justifyContent: "space-between", alignItems: "start", gap: 12, marginBottom: "0.75rem" },
+  panelTitle: { margin: "0.18rem 0 0", fontSize: 20, letterSpacing: "-0.035em" },
+  panelLink: { color: colors.cyan, textDecoration: "none", fontWeight: 900, fontSize: 12 },
+  metricGrid: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 },
+  metric: { display: "grid", gap: 4, padding: "0.65rem", border: `1px solid ${colors.borderSoft}`, borderRadius: 9, background: colors.row },
+  metricLabel: { color: colors.muted2, fontSize: 10, fontWeight: 900, textTransform: "uppercase", letterSpacing: 0.5 },
+  metricValue: { color: colors.text, fontSize: 17, fontWeight: 950, fontVariantNumeric: "tabular-nums" },
+  panelFootnote: { marginTop: "0.7rem", color: colors.muted2, fontSize: 11, lineHeight: 1.45 },
+  connectionList: { display: "grid", gap: 8 },
+  connectionRow: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "0.72rem", border: `1px solid ${colors.borderSoft}`, borderRadius: 9, background: colors.row },
+  connectionIdentity: { display: "flex", alignItems: "center", gap: 10, minWidth: 0 },
+  connectionDot: { width: 8, height: 8, borderRadius: 999, flex: "0 0 auto" },
+  connectionName: { color: colors.text, fontWeight: 900, fontSize: 13 },
+  connectionMeta: { color: colors.muted, fontSize: 11, marginTop: 2 },
+  connectionState: { fontSize: 11, fontWeight: 950, whiteSpace: "nowrap" },
+  trackedPanel: { marginTop: "0.8rem", border: `1px solid ${colors.border}`, borderRadius: 14, background: colors.panel2, padding: "0.9rem" },
+  trackedHeader: { display: "flex", justifyContent: "space-between", gap: 12, alignItems: "start" },
+  trackedCount: { display: "flex", gap: 4, alignItems: "baseline", color: colors.muted, whiteSpace: "nowrap" },
+  trackedControls: { marginTop: "0.8rem", display: "grid", gridTemplateColumns: "minmax(180px, 1.3fr) minmax(150px, 0.8fr) auto", gap: 8, alignItems: "end" },
+  trackedStatusRow: { marginTop: "0.65rem", display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", color: colors.muted2, fontSize: 11 },
+  trackedTableWrap: { marginTop: "0.65rem", overflowX: "auto", border: `1px solid ${colors.borderSoft}`, borderRadius: 9 },
+  trackedTable: { width: "100%", minWidth: 760, borderCollapse: "collapse", fontSize: 12 },
+  rowActions: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
+  dataNote: { marginTop: "0.8rem", border: `1px solid ${colors.borderSoft}`, borderRadius: 12, background: "rgba(7, 17, 27, 0.72)", padding: "0.8rem" },
+  dataNoteTop: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 },
+  automaticBadge: { border: `1px solid ${colors.green}`, borderRadius: 999, padding: "0.18rem 0.5rem", fontSize: 10, fontWeight: 950, letterSpacing: 0.5 },
 }; 

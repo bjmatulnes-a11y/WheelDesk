@@ -192,7 +192,11 @@ export async function getAvailableExpirations(symbol: string): Promise<string[]>
   }
 }
 
-export async function getOptionChain(symbol: string, asOfDate: string): Promise<ChainSnapshot> {
+export async function getOptionChain(
+  symbol: string,
+  asOfDate: string,
+  options: { allowFallback?: boolean } = {},
+): Promise<ChainSnapshot> {
   const normalized = symbol.toUpperCase();
 
   let currentPrice = fallbackBasePrice(normalized);
@@ -201,8 +205,13 @@ export async function getOptionChain(symbol: string, asOfDate: string): Promise<
     const quote = await yahooProvider.getQuote(normalized);
     if (validNumber(quote.price)) {
       currentPrice = quote.price;
+    } else if (options.allowFallback === false) {
+      throw new Error(`Live quote unavailable for ${normalized}`);
     }
-  } catch {
+  } catch (error) {
+    if (options.allowFallback === false) {
+      throw error instanceof Error ? error : new Error(`Live quote unavailable for ${normalized}`);
+    }
     // fallback currentPrice remains
   }
 
@@ -238,7 +247,11 @@ export async function getOptionChain(symbol: string, asOfDate: string): Promise<
       snapshotDate: asOfDate,
       chains: ranked
     };
-  } catch {
+  } catch (error) {
+    if (options.allowFallback === false) {
+      throw error instanceof Error ? error : new Error("Live option-chain provider failed");
+    }
+
     const fallbackExpirations = ["2026-05-15", "2026-06-19", "2026-09-18", "2027-01-15"];
 
     const chains = fallbackExpirations.map((expiration) => {
