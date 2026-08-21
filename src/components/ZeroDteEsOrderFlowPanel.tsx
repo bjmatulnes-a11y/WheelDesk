@@ -8,6 +8,7 @@ import {
   type EsOrderFlowSnapshot,
   type EsOrderFlowState,
 } from "../lib/zeroDteEsOrderFlow";
+import type { AdaptiveAuctionContext } from "../lib/zeroDteAdaptiveManagement";
 
 type OrderFlowApiResponse = {
   ok: boolean;
@@ -29,6 +30,8 @@ type OrderFlowApiResponse = {
 
 type Props = {
   enabled?: boolean;
+  spxPrice?: number | null;
+  onManagementRead?: (read: AdaptiveAuctionContext | null) => void;
 };
 
 type FootprintBucket = {
@@ -45,7 +48,11 @@ type FootprintBucket = {
 
 const ES_TICK = 0.25;
 
-export function ZeroDteEsOrderFlowPanel({ enabled = true }: Props) {
+export function ZeroDteEsOrderFlowPanel({
+  enabled = true,
+  spxPrice = null,
+  onManagementRead,
+}: Props) {
   const [read, setRead] = useState<EsOrderFlowRead>(() => emptyEsOrderFlowRead());
   const [capabilities, setCapabilities] = useState<OrderFlowApiResponse["capabilities"] | null>(null);
   const [fieldNames, setFieldNames] = useState<string[]>([]);
@@ -56,6 +63,11 @@ export function ZeroDteEsOrderFlowPanel({ enabled = true }: Props) {
   const [footprintBuckets, setFootprintBuckets] = useState<Record<string, FootprintBucket>>({});
   const inFlightRef = useRef(false);
   const processedFootprintTimestampRef = useRef<string | null>(null);
+  const managementPocHistoryRef = useRef<Array<{
+    timestamp: string;
+    pocEs: number;
+    projectedPocSpx: number | null;
+  }>>([]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -139,6 +151,93 @@ export function ZeroDteEsOrderFlowPanel({ enabled = true }: Props) {
   const stale = staleSeconds != null && staleSeconds > 4;
   const stateTone = toneForState(read.state);
   const visible = useMemo(() => read.samples.slice(-90), [read.samples]);
+  const managementProfile: {
+    observedVolume: number;
+    classificationPct: number | null;
+    pocEs: number | null;
+  } = useMemo(() => {
+    const levels = Object.values(footprintBuckets) as FootprintBucket[];
+    const observedVolume = levels.reduce((sum, level) => sum + level.totalVolume, 0);
+    const classifiedVolume = levels.reduce(
+      (sum, level) => sum + level.buyVolume + level.sellVolume,
+      0,
+    );
+    const poc = levels.reduce<FootprintBucket | null>(
+      (best, level) => (!best || level.totalVolume > best.totalVolume ? level : best),
+      null,
+    );
+    return {
+      observedVolume,
+      classificationPct:
+        observedVolume > 0 ? (classifiedVolume / observedVolume) * 100 : null,
+      pocEs: poc?.price ?? null,
+    };
+  }, [footprintBuckets]);
+
+  useEffect(() => {
+    if (!enabled || !latest) {
+      onManagementRead?.(null);
+      return;
+    }
+    const esReference = latest.last ?? latest.mid;
+    const basis =
+      esReference !== null && spxPrice !== null && Number.isFinite(spxPrice) && spxPrice > 0
+        ? esReference - spxPrice
+        : null;
+    const projectedPocSpx =
+      managementProfile.pocEs !== null && basis !== null
+        ? managementProfile.pocEs - basis
+        : null;
+
+    if (managementProfile.pocEs !== null) {
+      const history = managementPocHistoryRef.current;
+      const last = history.at(-1);
+      if (!last || last.timestamp !== latest.timestamp) {
+        history.push({
+          timestamp: latest.timestamp,
+          pocEs: managementProfile.pocEs,
+          projectedPocSpx,
+        });
+      } else {
+        history[history.length - 1] = {
+          timestamp: latest.timestamp,
+          pocEs: managementProfile.pocEs,
+          projectedPocSpx,
+        };
+      }
+      const nowMs = Date.parse(latest.timestamp);
+      managementPocHistoryRef.current = history.filter(
+        (item) => nowMs - Date.parse(item.timestamp) <= 5 * 60_000,
+      );
+    }
+
+    const oldestProjected = managementPocHistoryRef.current.find(
+      (item) => item.projectedPocSpx !== null,
+    )?.projectedPocSpx ?? null;
+    const pocMigration5mSpx =
+      projectedPocSpx !== null && oldestProjected !== null
+        ? projectedPocSpx - oldestProjected
+        : null;
+
+    onManagementRead?.({
+      state: read.state,
+      directionalPressurePct: latest.directionalPressurePct,
+      efficiencyPct: latest.efficiencyPct,
+      flowConfidencePct: latest.flowConfidencePct,
+      observedPocEs: managementProfile.pocEs,
+      projectedPocSpx,
+      pocMigration5mSpx,
+      observedVolume: managementProfile.observedVolume,
+      classificationPct: managementProfile.classificationPct,
+    });
+  }, [
+    enabled,
+    latest,
+    managementProfile,
+    onManagementRead,
+    read.state,
+    spxPrice,
+  ]);
 
   return (
     <div style={styles.shell}>

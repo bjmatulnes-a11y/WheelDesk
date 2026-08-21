@@ -89,6 +89,10 @@ import {
   shadowTradeToExecutionPosition,
   type ZeroDteShadowTrade,
 } from "../lib/zeroDteShadowTrade";
+import {
+  evaluateZeroDteAdaptiveManagement,
+  type AdaptiveAuctionContext,
+} from "../lib/zeroDteAdaptiveManagement";
 
 type Candle = {
   time: number;
@@ -131,6 +135,16 @@ type ExpirationListResponse = {
     date: string;
     daysFromTradeDate: number;
   }>;
+  error?: string;
+};
+
+type SchwabConnectionStatus = {
+  ok: boolean;
+  connected: boolean;
+  needsReconnect?: boolean;
+  accessExpiresAt?: string | null;
+  refreshExpiresAt?: string | null;
+  updatedAt?: string | null;
   error?: string;
 };
 
@@ -261,8 +275,12 @@ export default function SpxCommandChart() {
   const [shadowError, setShadowError] = useState<string | null>(null);
   const shadowOpeningSignalIdsRef = useRef<Set<string>>(new Set());
   const shadowSampleKeyRef = useRef<string | null>(null);
+  const liveAuctionManagementRef = useRef<AdaptiveAuctionContext | null>(null);
   const [premiumBaselineReadySetupKeys, setPremiumBaselineReadySetupKeys] =
     useState<string[]>([]);
+  const [schwabConnection, setSchwabConnection] =
+    useState<SchwabConnectionStatus | null>(null);
+  const [schwabStatusLoading, setSchwabStatusLoading] = useState(true);
 
   useEffect(() => {
     saveZeroDteRiskPolicy(riskPolicy);
@@ -271,6 +289,39 @@ export default function SpxCommandChart() {
   useEffect(() => {
     const timer = window.setInterval(() => setFreshnessNow(Date.now()), 5_000);
     return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadSchwabStatus = async () => {
+      try {
+        const response = await fetch("/api/brokers/schwab/status", { cache: "no-store" });
+        const json = (await response.json()) as SchwabConnectionStatus;
+        if (cancelled) return;
+        setSchwabConnection(json);
+      } catch (statusError) {
+        if (cancelled) return;
+        setSchwabConnection({
+          ok: false,
+          connected: false,
+          error:
+            statusError instanceof Error
+              ? statusError.message
+              : "Unable to read Schwab connection status.",
+        });
+      } finally {
+        if (!cancelled) setSchwabStatusLoading(false);
+      }
+    };
+
+    void loadSchwabStatus();
+    const timer = window.setInterval(() => void loadSchwabStatus(), 60_000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, []);
 
   useEffect(() => {
@@ -335,6 +386,12 @@ export default function SpxCommandChart() {
   const manualChainResearch = harvest?.researchMode === true;
   const lastCandle = candles.at(-1);
   const currentPrice = recommendation?.spxPrice ?? harvest?.spx?.price ?? lastCandle?.close ?? 0;
+  const handleLiveAuctionManagementRead = useCallback(
+    (read: AdaptiveAuctionContext | null) => {
+      liveAuctionManagementRef.current = read;
+    },
+    [],
+  );
   const displaySessionCandles = useMemo(() => {
     const scoped = selectCashSessionCandles(candles, harvest?.tradeDate);
     return scoped.length ? scoped : candles;
@@ -1551,7 +1608,7 @@ export default function SpxCommandChart() {
 
     const output: Record<string, ZeroDteExecutionRead> = {};
     for (const shadow of shadowTrades) {
-      if (shadow.state !== "open") continue;
+      if (shadow.state !== "open" && shadow.adaptiveState !== "open") continue;
       const position = shadowTradeToExecutionPosition(shadow);
       output[shadow.id] = buildZeroDteExecutionRead({
         tradeDate,
@@ -1672,7 +1729,9 @@ export default function SpxCommandChart() {
       !harvest?.tradeDate ||
       !harvest.generatedAt ||
       !recommendation ||
-      !shadowTrades.some((trade) => trade.state === "open")
+      !shadowTrades.some(
+        (trade) => trade.state === "open" || trade.adaptiveState === "open",
+      )
     ) {
       return;
     }
@@ -1681,12 +1740,27 @@ export default function SpxCommandChart() {
     if (shadowSampleKeyRef.current === sampleKey) return;
     shadowSampleKeyRef.current = sampleKey;
 
-    const openItems = shadowTrades.flatMap((trade) => {
-      if (trade.state !== "open") return [];
+    const openItems: Array<{
+      tradeId: string;
+      read: ZeroDteExecutionRead;
+      currentShortBuybackPrice: number | null;
+      currentShortLegMultiple: number | null;
+      adaptiveDecision: ReturnType<typeof evaluateZeroDteAdaptiveManagement> | null;
+    }> = shadowTrades.flatMap((trade) => {
+      if (trade.state !== "open" && trade.adaptiveState !== "open") return [];
       const read = shadowExecutionReads[trade.id];
       if (!read) return [];
       const shortRead = currentShadowShortLegRead(spxRows, trade.entryShortLegs);
-      return [{ tradeId: trade.id, read, ...shortRead }];
+      const adaptiveDecision =
+        trade.adaptiveState === "open"
+          ? evaluateZeroDteAdaptiveManagement({
+              trade,
+              read,
+              spot: recommendation.spxPrice,
+              auction: liveAuctionManagementRef.current,
+            })
+          : null;
+      return [{ tradeId: trade.id, read, adaptiveDecision, ...shortRead }];
     });
     if (!openItems.length) return;
 
@@ -1708,7 +1782,7 @@ export default function SpxCommandChart() {
         const updatedById = new Map(updated.map((trade) => [trade.id, trade]));
         const exits = openItems.flatMap(({ tradeId, read }) => {
           const sampledTrade = updatedById.get(tradeId);
-          if (!sampledTrade) return [];
+          if (!sampledTrade || sampledTrade.state !== "open") return [];
           if (read.timeRegime.regime === "CLOSED") {
             return [{ tradeId, read, reason: "SESSION_CLOSE" }];
           }
@@ -1872,6 +1946,41 @@ export default function SpxCommandChart() {
         </div>
 
         <div style={styles.actions}>
+          <a
+            href="/api/brokers/schwab/connect"
+            style={
+              schwabConnection?.connected
+                ? styles.schwabConnectedButton
+                : styles.schwabConnectButton
+            }
+            title={
+              schwabConnection?.connected
+                ? "Schwab is connected. Click to re-authorize the broker connection."
+                : schwabConnection?.needsReconnect
+                  ? "Schwab authorization has expired. Click to reconnect."
+                  : schwabConnection?.error
+                    ? `${schwabConnection.error} Click to connect Schwab.`
+                    : "Authorize WheelDesk with Schwab."
+            }
+          >
+            <span
+              style={{
+                ...styles.schwabStatusDot,
+                background: schwabConnection?.connected ? "#16c784" : "#f59e0b",
+                boxShadow: schwabConnection?.connected
+                  ? "0 0 10px rgba(22,199,132,.75)"
+                  : "0 0 10px rgba(245,158,11,.55)",
+              }}
+            />
+            {schwabStatusLoading
+              ? "CHECKING SCHWAB"
+              : schwabConnection?.connected
+                ? "SCHWAB CONNECTED"
+                : schwabConnection?.needsReconnect
+                  ? "RECONNECT SCHWAB"
+                  : "CONNECT SCHWAB"}
+          </a>
+
           <select
             value={selectedExpiration}
             onChange={(event) => setSelectedExpiration(event.target.value)}
@@ -2077,7 +2186,11 @@ export default function SpxCommandChart() {
         <div style={styles.chartPanel}>
           <div ref={chartHostRef} style={styles.chartHost} />
 
-          <ZeroDteEsOrderFlowPanel enabled={!manualChainResearch} />
+          <ZeroDteEsOrderFlowPanel
+            enabled={!manualChainResearch}
+            spxPrice={currentPrice > 0 ? currentPrice : null}
+            onManagementRead={handleLiveAuctionManagementRead}
+          />
 
           <div style={styles.legend}>
             <LegendItem color="#ff8a34" text="Call Wall" />
@@ -2872,6 +2985,41 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     gap: 8,
     alignItems: "center",
+    flexWrap: "wrap",
+  },
+  schwabConnectButton: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 7,
+    background: "rgba(23,125,220,.12)",
+    color: "#9bd7ff",
+    border: "1px solid rgba(85,214,255,.42)",
+    borderRadius: 9,
+    padding: "9px 11px",
+    fontSize: 10,
+    fontWeight: 850,
+    textDecoration: "none",
+    letterSpacing: 0.35,
+  },
+  schwabConnectedButton: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 7,
+    background: "rgba(22,199,132,.1)",
+    color: "#7ff2bd",
+    border: "1px solid #1f6b50",
+    borderRadius: 9,
+    padding: "9px 11px",
+    fontSize: 10,
+    fontWeight: 850,
+    textDecoration: "none",
+    letterSpacing: 0.35,
+  },
+  schwabStatusDot: {
+    width: 7,
+    height: 7,
+    borderRadius: "50%",
+    flex: "0 0 auto",
   },
   select: {
     background: "#0c1721",

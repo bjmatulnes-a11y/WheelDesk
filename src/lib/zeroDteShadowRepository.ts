@@ -1,6 +1,7 @@
 import type { ConfirmedExecutionSignal } from "./execution/useExecutionSignalPaint";
 import type { ZeroDteExecutionRead } from "./zeroDteExecutionIntelligence";
 import type { ZeroDteShadowTrade } from "./zeroDteShadowTrade";
+import type { AdaptiveManagementDecision } from "./zeroDteAdaptiveManagement";
 import { buildShadowShortLegEntries, shadowWidthPoints } from "./zeroDteShadowTrade";
 import type { ZeroDteChainRow } from "./zeroDteOiIntelligence";
 import { getSupabaseAuthClient } from "./auth/supabase-auth-client";
@@ -110,13 +111,14 @@ export async function sampleZeroDteShadowTrades(args: {
     read: ZeroDteExecutionRead;
     currentShortBuybackPrice: number | null;
     currentShortLegMultiple: number | null;
+    adaptiveDecision: AdaptiveManagementDecision | null;
   }>;
 }) {
   if (!args.items.length) return [] as ZeroDteShadowTrade[];
   const json = await call({
     action: "sample-batch",
     ...args,
-    items: args.items.map(({ tradeId, read, currentShortBuybackPrice, currentShortLegMultiple }) => ({
+    items: args.items.map(({ tradeId, read, currentShortBuybackPrice, currentShortLegMultiple, adaptiveDecision }) => ({
       tradeId,
       strategy: read.position?.strategy ?? read.strategy,
       lifecycle: read.lifecycle,
@@ -127,6 +129,7 @@ export async function sampleZeroDteShadowTrades(args: {
       buybackDebit: read.currentBuybackDebit,
       currentShortBuybackPrice,
       currentShortLegMultiple,
+      adaptiveDecision,
       shortDistancePoints: read.position
         ? shortDistanceForPosition(read, args.spot)
         : read.shortDistancePoints,

@@ -5,6 +5,10 @@ import type {
   ZeroDteExecutionRead,
 } from "./zeroDteExecutionIntelligence";
 import type { ZeroDteChainRow } from "./zeroDteOiIntelligence";
+import type {
+  AdaptiveManagementAction,
+  AdaptiveManagementState,
+} from "./zeroDteAdaptiveManagement";
 
 export type ZeroDteShadowTradeState = "open" | "closed";
 
@@ -62,6 +66,28 @@ export type ZeroDteShadowTrade = {
   exitReason: string | null;
   exitBuybackDebit: number | null;
   pnlConservativeDollars: number | null;
+  adaptiveState: "open" | "closed" | null;
+  adaptiveManagementState: AdaptiveManagementState | null;
+  adaptiveAction: AdaptiveManagementAction | null;
+  adaptiveTargetCapturePct: number | null;
+  adaptiveTargetDebit: number | null;
+  adaptiveTargetR: number | null;
+  adaptiveThesisScore: number | null;
+  adaptiveFavorableScore: number | null;
+  adaptiveThreatScore: number | null;
+  adaptiveInvalidationScore: number | null;
+  adaptiveReason: string | null;
+  adaptiveMaxAdverseExcursionDollars: number;
+  adaptiveMaxFavorableExcursionDollars: number;
+  adaptiveProfitGivebackPct: number | null;
+  adaptiveExitTime: string | null;
+  adaptiveExitReason: string | null;
+  adaptiveExitBuybackDebit: number | null;
+  adaptivePnlDollars: number | null;
+  adaptiveAuctionState: string | null;
+  adaptiveAuctionPressurePct: number | null;
+  adaptiveAuctionEfficiencyPct: number | null;
+  adaptiveProjectedPocSpx: number | null;
 };
 
 export type ShadowShortLegEntry = {

@@ -102,6 +102,29 @@ async function openShadow(body: any, userId: string) {
     hit_one_point_five_x: false,
     hit_two_x: false,
     ran_to_max_loss: false,
+    adaptive_state: "open",
+    adaptive_management_state: "HEALTHY",
+    adaptive_action: "HOLD",
+    adaptive_target_capture_pct: null,
+    adaptive_target_debit: null,
+    adaptive_target_r: null,
+    adaptive_thesis_score: null,
+    adaptive_favorable_score: null,
+    adaptive_threat_score: null,
+    adaptive_invalidation_score: null,
+    adaptive_reason: "Adaptive shadow manager initialized at SELL_READY.",
+    adaptive_max_adverse_excursion_dollars: 0,
+    adaptive_max_favorable_excursion_dollars: 0,
+    adaptive_profit_giveback_pct: null,
+    adaptive_exit_time: null,
+    adaptive_exit_reason: null,
+    adaptive_exit_buyback_debit: null,
+    adaptive_pnl_dollars: null,
+    adaptive_last_updated_at: body.signalTime,
+    adaptive_auction_state: null,
+    adaptive_auction_pressure_pct: null,
+    adaptive_auction_efficiency_pct: null,
+    adaptive_projected_poc_spx: null,
   };
 
   // A confirmed signal is immutable. Never let a reload/upsert reopen a shadow
@@ -142,7 +165,7 @@ async function sampleShadowBatch(body: any, userId: string) {
     .select("*")
     .in("id", ids)
     .eq("user_id", userId)
-    .eq("state", "open");
+    .or("state.eq.open,adaptive_state.eq.open");
   if (existingError) throw existingError;
   const byId = new Map<string, any>((existing ?? []).map((row: any) => [String(row.id), row]));
 
@@ -173,6 +196,21 @@ async function sampleShadowBatch(body: any, userId: string) {
       width !== null &&
       buybackDebit !== null &&
       buybackDebit >= Math.max(0, width * 0.95);
+    const adaptive = normalizeAdaptiveDecision(item.adaptiveDecision);
+    const adaptiveWasOpen = row.adaptive_state === "open";
+    const staticWasOpen = row.state === "open";
+    const adaptiveMae = adaptiveWasOpen
+      ? Math.max(numeric(row.adaptive_max_adverse_excursion_dollars) ?? 0, adverseDollars)
+      : numeric(row.adaptive_max_adverse_excursion_dollars) ?? 0;
+    const adaptiveMfe = adaptiveWasOpen
+      ? Math.max(numeric(row.adaptive_max_favorable_excursion_dollars) ?? 0, favorableDollars)
+      : numeric(row.adaptive_max_favorable_excursion_dollars) ?? 0;
+    const adaptiveCurrentPnl =
+      buybackDebit === null ? null : (entryCredit - buybackDebit) * 100;
+    const adaptiveGiveback =
+      adaptiveCurrentPnl !== null && adaptiveCurrentPnl >= 0 && adaptiveMfe > 0
+        ? Math.max(0, Math.min(100, ((adaptiveMfe - adaptiveCurrentPnl) / adaptiveMfe) * 100))
+        : null;
 
     sampleRows.push({
       shadow_trade_id: row.id,
@@ -200,46 +238,94 @@ async function sampleShadowBatch(body: any, userId: string) {
         buybackDebit !== null && entryCredit > 0
           ? buybackDebit >= entryCredit * 2
           : false,
+      adaptive_management_state: adaptive?.state ?? null,
+      adaptive_action: adaptive?.action ?? null,
+      adaptive_target_capture_pct: numeric(adaptive?.targetCapturePct),
+      adaptive_target_debit: numeric(adaptive?.targetDebit),
+      adaptive_target_r: numeric(adaptive?.targetR),
+      adaptive_thesis_score: numeric(adaptive?.thesisScore),
+      adaptive_favorable_score: numeric(adaptive?.favorableScore),
+      adaptive_threat_score: numeric(adaptive?.threatScore),
+      adaptive_invalidation_score: numeric(adaptive?.invalidationScore),
+      adaptive_reason: adaptive?.reasons?.join(" ") ?? null,
+      adaptive_auction_state: adaptive?.auctionState ?? null,
+      adaptive_auction_pressure_pct: numeric(adaptive?.auctionPressurePct),
+      adaptive_auction_efficiency_pct: numeric(adaptive?.auctionEfficiencyPct),
+      adaptive_projected_poc_spx: numeric(adaptive?.projectedPocSpx),
     });
 
-    const update = {
+    const update: Record<string, unknown> = {
       last_sample_at: generatedAt,
       current_mark_credit: markCredit,
       current_buyback_debit: buybackDebit,
       current_short_buyback_price: currentShortBuybackPrice,
       current_short_leg_multiple: currentShortLegMultiple,
-      max_mark_credit:
-        markCredit === null
-          ? numeric(row.max_mark_credit)
-          : Math.max(numeric(row.max_mark_credit) ?? markCredit, markCredit),
-      min_buyback_debit:
-        buybackDebit === null
-          ? numeric(row.min_buyback_debit)
-          : Math.min(
-              numeric(row.min_buyback_debit) ?? buybackDebit,
-              buybackDebit,
-            ),
-      max_adverse_excursion_dollars: Math.max(
-        numeric(row.max_adverse_excursion_dollars) ?? 0,
-        adverseDollars,
-      ),
-      max_favorable_excursion_dollars: Math.max(
-        numeric(row.max_favorable_excursion_dollars) ?? 0,
-        favorableDollars,
-      ),
-      hit_short_strike: Boolean(row.hit_short_strike) || hitShortStrike,
-      hit_one_point_five_x:
-        Boolean(row.hit_one_point_five_x) ||
-        (buybackDebit !== null &&
-          entryCredit > 0 &&
-          buybackDebit >= entryCredit * 1.5),
-      hit_two_x:
-        Boolean(row.hit_two_x) ||
-        (buybackDebit !== null &&
-          entryCredit > 0 &&
-          buybackDebit >= entryCredit * 2),
-      ran_to_max_loss: Boolean(row.ran_to_max_loss) || ranToMaxLoss,
     };
+
+    // Preserve the original static manager's statistics at its own exit. If the
+    // adaptive path remains open after static TP, later samples must not rewrite
+    // static MAE/MFE or the original validation result.
+    if (staticWasOpen) {
+      Object.assign(update, {
+        max_mark_credit:
+          markCredit === null
+            ? numeric(row.max_mark_credit)
+            : Math.max(numeric(row.max_mark_credit) ?? markCredit, markCredit),
+        min_buyback_debit:
+          buybackDebit === null
+            ? numeric(row.min_buyback_debit)
+            : Math.min(numeric(row.min_buyback_debit) ?? buybackDebit, buybackDebit),
+        max_adverse_excursion_dollars: Math.max(
+          numeric(row.max_adverse_excursion_dollars) ?? 0,
+          adverseDollars,
+        ),
+        max_favorable_excursion_dollars: Math.max(
+          numeric(row.max_favorable_excursion_dollars) ?? 0,
+          favorableDollars,
+        ),
+        hit_short_strike: Boolean(row.hit_short_strike) || hitShortStrike,
+        hit_one_point_five_x:
+          Boolean(row.hit_one_point_five_x) ||
+          (buybackDebit !== null && entryCredit > 0 && buybackDebit >= entryCredit * 1.5),
+        hit_two_x:
+          Boolean(row.hit_two_x) ||
+          (buybackDebit !== null && entryCredit > 0 && buybackDebit >= entryCredit * 2),
+        ran_to_max_loss: Boolean(row.ran_to_max_loss) || ranToMaxLoss,
+      });
+    }
+
+    if (adaptiveWasOpen && adaptive) {
+      Object.assign(update, {
+        adaptive_management_state: adaptive.state,
+        adaptive_action: adaptive.action,
+        adaptive_target_capture_pct: numeric(adaptive.targetCapturePct),
+        adaptive_target_debit: numeric(adaptive.targetDebit),
+        adaptive_target_r: numeric(adaptive.targetR),
+        adaptive_thesis_score: numeric(adaptive.thesisScore),
+        adaptive_favorable_score: numeric(adaptive.favorableScore),
+        adaptive_threat_score: numeric(adaptive.threatScore),
+        adaptive_invalidation_score: numeric(adaptive.invalidationScore),
+        adaptive_reason: adaptive.reasons.join(" "),
+        adaptive_max_adverse_excursion_dollars: adaptiveMae,
+        adaptive_max_favorable_excursion_dollars: adaptiveMfe,
+        adaptive_profit_giveback_pct: adaptiveGiveback,
+        adaptive_last_updated_at: generatedAt,
+        adaptive_auction_state: adaptive.auctionState,
+        adaptive_auction_pressure_pct: numeric(adaptive.auctionPressurePct),
+        adaptive_auction_efficiency_pct: numeric(adaptive.auctionEfficiencyPct),
+        adaptive_projected_poc_spx: numeric(adaptive.projectedPocSpx),
+      });
+      if (adaptive.shouldExit && adaptive.exitReason) {
+        Object.assign(update, {
+          adaptive_state: "closed",
+          adaptive_exit_time: generatedAt,
+          adaptive_exit_reason: adaptive.exitReason,
+          adaptive_exit_buyback_debit: buybackDebit,
+          adaptive_pnl_dollars: adaptiveCurrentPnl,
+        });
+      }
+    }
+
     const { data: updated, error: updateError } = await supabaseServer
       .from("zero_dte_shadow_trades")
       .update({ ...update, updated_at: generatedAt })
@@ -368,6 +454,31 @@ function mapShadowTrade(row: any) {
     exitReason: row.exit_reason ?? null,
     exitBuybackDebit: numeric(row.exit_buyback_debit),
     pnlConservativeDollars: numeric(row.pnl_conservative_dollars),
+    adaptiveState:
+      row.adaptive_state === "open" || row.adaptive_state === "closed"
+        ? row.adaptive_state
+        : null,
+    adaptiveManagementState: normalizeAdaptiveState(row.adaptive_management_state),
+    adaptiveAction: normalizeAdaptiveAction(row.adaptive_action),
+    adaptiveTargetCapturePct: numeric(row.adaptive_target_capture_pct),
+    adaptiveTargetDebit: numeric(row.adaptive_target_debit),
+    adaptiveTargetR: numeric(row.adaptive_target_r),
+    adaptiveThesisScore: numeric(row.adaptive_thesis_score),
+    adaptiveFavorableScore: numeric(row.adaptive_favorable_score),
+    adaptiveThreatScore: numeric(row.adaptive_threat_score),
+    adaptiveInvalidationScore: numeric(row.adaptive_invalidation_score),
+    adaptiveReason: row.adaptive_reason ? String(row.adaptive_reason) : null,
+    adaptiveMaxAdverseExcursionDollars: Number(row.adaptive_max_adverse_excursion_dollars ?? 0),
+    adaptiveMaxFavorableExcursionDollars: Number(row.adaptive_max_favorable_excursion_dollars ?? 0),
+    adaptiveProfitGivebackPct: numeric(row.adaptive_profit_giveback_pct),
+    adaptiveExitTime: row.adaptive_exit_time ?? null,
+    adaptiveExitReason: row.adaptive_exit_reason ?? null,
+    adaptiveExitBuybackDebit: numeric(row.adaptive_exit_buyback_debit),
+    adaptivePnlDollars: numeric(row.adaptive_pnl_dollars),
+    adaptiveAuctionState: row.adaptive_auction_state ?? null,
+    adaptiveAuctionPressurePct: numeric(row.adaptive_auction_pressure_pct),
+    adaptiveAuctionEfficiencyPct: numeric(row.adaptive_auction_efficiency_pct),
+    adaptiveProjectedPocSpx: numeric(row.adaptive_projected_poc_spx),
   };
 }
 
@@ -388,6 +499,42 @@ function normalizeStrategy(value: unknown) {
     return value;
   }
   return "iron-fly";
+}
+
+function normalizeAdaptiveDecision(value: any) {
+  if (!value || typeof value !== "object") return null;
+  const state = normalizeAdaptiveState(value.state);
+  const action = normalizeAdaptiveAction(value.action);
+  if (!state || !action) return null;
+  return {
+    ...value,
+    state,
+    action,
+    shouldExit: Boolean(value.shouldExit),
+    exitReason: value.exitReason ? String(value.exitReason) : null,
+    reasons: Array.isArray(value.reasons) ? value.reasons.map(String) : [],
+    auctionState: value.auctionState ? String(value.auctionState) : null,
+  };
+}
+
+function normalizeAdaptiveState(value: any) {
+  return value === "HEALTHY" ||
+    value === "FAVORABLE_RELEASE" ||
+    value === "RECOVERY" ||
+    value === "THREATENED" ||
+    value === "INVALIDATED" ||
+    value === "HARVEST"
+    ? value
+    : null;
+}
+
+function normalizeAdaptiveAction(value: any) {
+  return value === "HOLD" ||
+    value === "HOLD_FOR_DEEPER_HARVEST" ||
+    value === "WATCH" ||
+    value === "EXIT"
+    ? value
+    : null;
 }
 
 function numeric(value: unknown): number | null {
