@@ -1,13 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseServer } from "../../../../lib/supabase-server";
-import { getAuthenticatedUserFromRequest } from "../../../../lib/billing/auth-request";
+import { requirePlanAccessFromRequest } from "../../../../lib/billing/server-access";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
+  const access = await requirePlanAccessFromRequest(request, "research");
+  if ("response" in access) return access.response;
+  const user = access.access.user;
   try {
-    const user = await getAuthenticatedUserFromRequest(request);
     const tradeDate = request.nextUrl.searchParams.get("tradeDate");
     if (!tradeDate) return jsonError("tradeDate is required", 400);
     const { data, error } = await supabaseServer
@@ -27,8 +29,10 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const access = await requirePlanAccessFromRequest(request, "research");
+  if ("response" in access) return access.response;
+  const user = access.access.user;
   try {
-    const user = await getAuthenticatedUserFromRequest(request);
     const body = await request.json();
     if (body.action === "open") return openShadow(body, user.id);
     if (body.action === "sample-batch") return sampleShadowBatch(body, user.id);

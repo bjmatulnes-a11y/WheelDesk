@@ -9,6 +9,7 @@ import {
   type EsOrderFlowState,
 } from "../lib/zeroDteEsOrderFlow";
 import type { AdaptiveAuctionContext } from "../lib/zeroDteAdaptiveManagement";
+import { authenticatedApiHeaders } from "../lib/auth/authenticated-api";
 
 type OrderFlowApiResponse = {
   ok: boolean;
@@ -78,6 +79,7 @@ export function ZeroDteEsOrderFlowPanel({
       inFlightRef.current = true;
       try {
         const response = await fetch("/api/zero-dte/order-flow", {
+          headers: await authenticatedApiHeaders(),
           cache: "no-store",
         });
         const body = (await response.json()) as OrderFlowApiResponse;

@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requirePlanAccessFromRequest } from "../../../../../lib/billing/server-access";
 import { getDailyLeadershipWeightSnapshot } from "../../../../../lib/zeroDteLeadershipWeights";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
+  const access = await requirePlanAccessFromRequest(request, "research");
+  if ("response" in access) return access.response;
   const tradeDate =
     request.nextUrl.searchParams.get("date") ??
     new Intl.DateTimeFormat("en-CA", {

@@ -1,5 +1,7 @@
 "use client";
 
+import { authenticatedApiHeaders } from "../lib/auth/authenticated-api";
+
 import {
   CandlestickSeries,
   ColorType,
@@ -326,8 +328,13 @@ export default function SpxCommandChart() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/zero-dte/expirations?days=14", { cache: "no-store" })
-      .then(async (response) => {
+    void (async () => {
+      try {
+        const response = await fetch("/api/zero-dte/expirations?days=14", {
+          headers: await authenticatedApiHeaders(),
+          cache: "no-store",
+        });
+
         const json = (await response.json()) as ExpirationListResponse;
         if (!response.ok || !json.ok) {
           throw new Error(json.error || "SPX expiration list failed.");
@@ -336,8 +343,7 @@ export default function SpxCommandChart() {
           setExpirationOptions(json.expirations ?? []);
           setExpirationError(null);
         }
-      })
-      .catch((loadError) => {
+      } catch (loadError) {
         if (!cancelled) {
           setExpirationOptions([]);
           setExpirationError(
@@ -346,7 +352,8 @@ export default function SpxCommandChart() {
               : "SPX expiration list failed.",
           );
         }
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };
@@ -841,16 +848,17 @@ export default function SpxCommandChart() {
     loadRequestKeyRef.current = requestKey;
 
     try {
+      const authHeaders = await authenticatedApiHeaders();
       const displayHistoryRequest = fetch(
         `/api/brokers/schwab/price-history?symbol=${encodeURIComponent("$SPX")}&frequency=${frequency}`,
-        { cache: "no-store", signal: controller.signal },
+        { headers: authHeaders, cache: "no-store", signal: controller.signal },
       );
       const signalHistoryRequest =
         frequency === 1
           ? null
           : fetch(
               `/api/brokers/schwab/price-history?symbol=${encodeURIComponent("$SPX")}&frequency=1`,
-              { cache: "no-store", signal: controller.signal },
+              { headers: authHeaders, cache: "no-store", signal: controller.signal },
             );
       const harvestParams = new URLSearchParams({
         strict: "1",
@@ -882,6 +890,7 @@ export default function SpxCommandChart() {
         await Promise.all([
           displayHistoryRequest,
           fetch(`/api/zero-dte/harvest-schwab?${harvestParams.toString()}`, {
+            headers: authHeaders,
             cache: "no-store",
             signal: controller.signal,
           }),

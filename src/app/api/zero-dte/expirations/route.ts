@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requirePlanAccessFromRequest } from "../../../../lib/billing/server-access";
 import { fetchSchwabOptionChain } from "../../../../lib/schwab/client";
 import type { SchwabOptionChainResponse } from "../../../../lib/schwab/types";
 
@@ -7,6 +8,8 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export async function GET(request: NextRequest) {
+  const access = await requirePlanAccessFromRequest(request, "research");
+  if ("response" in access) return access.response;
   const tradeDate =
     request.nextUrl.searchParams.get("date") ?? chicagoDateString(new Date());
   const days = clampInteger(

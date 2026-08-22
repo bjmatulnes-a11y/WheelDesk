@@ -1,10 +1,12 @@
 import SpxCommandChart from "../../../components/SpxCommandChart";
+import AuthGate from "../../../components/auth/AuthGate";
 import { WheelDeskSideNav } from "../../../components/WheelDeskSideNav";
 
 export const dynamic = "force-dynamic";
 
 export default function SpxCommandChartPage() {
   return (
+    <AuthGate requiredPlan="research">
     <div
       style={{
         minHeight: "100vh",
@@ -25,5 +27,6 @@ export default function SpxCommandChartPage() {
         <SpxCommandChart />
       </main>
     </div>
+    </AuthGate>
   );
 }

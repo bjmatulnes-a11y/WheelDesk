@@ -1,10 +1,12 @@
 import EsHistoricalFootprintLab from "../../../components/EsHistoricalFootprintLab";
+import AuthGate from "../../../components/auth/AuthGate";
 import { WheelDeskSideNav } from "../../../components/WheelDeskSideNav";
 
 export const dynamic = "force-dynamic";
 
 export default function EsHistoryLabPage() {
   return (
+    <AuthGate requiredPlan="research">
     <div
       style={{
         minHeight: "100vh",
@@ -25,5 +27,6 @@ export default function EsHistoryLabPage() {
         <EsHistoricalFootprintLab />
       </main>
     </div>
+    </AuthGate>
   );
 }

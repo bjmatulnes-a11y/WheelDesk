@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requirePlanAccessFromRequest } from "../../../../lib/billing/server-access";
 import {
   buildZeroDteRecommendation,
   type ZeroDteChainRow,
@@ -32,6 +33,8 @@ function json(data: unknown, status = 200) {
 }
 
 export async function GET(request: NextRequest) {
+  const access = await requirePlanAccessFromRequest(request, "research");
+  if ("response" in access) return access.response;
   const generatedAt = new Date().toISOString();
   const tradeDate =
     request.nextUrl.searchParams.get("date") ?? nyDateString(new Date());

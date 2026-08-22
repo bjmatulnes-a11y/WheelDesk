@@ -1,3 +1,4 @@
+import { authenticatedApiHeaders } from "./auth/authenticated-api";
 import type {
   ExecutionCandidate,
   ExecutionPremiumSample,
@@ -13,7 +14,7 @@ import type { ZeroDteStrikeFlowRead } from "./zeroDteStrikeFlow";
 async function call(body: Record<string, unknown>): Promise<ZeroDteExecutionMemory> {
   const response = await fetch("/api/zero-dte/execution-v2", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: await authenticatedApiHeaders({ "content-type": "application/json" }),
     body: JSON.stringify(body),
     cache: "no-store",
   });
@@ -29,7 +30,7 @@ export async function loadExecutionMemoryDb(
 ): Promise<ZeroDteExecutionMemory> {
   const response = await fetch(
     `/api/zero-dte/execution-v2?tradeDate=${encodeURIComponent(tradeDate)}`,
-    { cache: "no-store" },
+    { headers: await authenticatedApiHeaders(), cache: "no-store" },
   );
   const json = await response.json();
   if (!response.ok || !json.ok) {

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requirePlanAccessFromRequest } from "../../../../lib/billing/server-access";
 import { schwabFetch, type SchwabPriceHistoryResponse } from "../../../../lib/schwab/client";
 
 export const runtime = "nodejs";
@@ -15,6 +16,8 @@ type HistoricalCandle = {
 };
 
 export async function GET(request: NextRequest) {
+  const access = await requirePlanAccessFromRequest(request, "research");
+  if ("response" in access) return access.response;
   const date = request.nextUrl.searchParams.get("date")?.trim() || previousWeekdayDate();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return NextResponse.json({ ok: false, error: "date must be YYYY-MM-DD" }, { status: 400 });

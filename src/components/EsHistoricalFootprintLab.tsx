@@ -15,6 +15,7 @@ import {
   type HistoricalAuctionSummary,
 } from "../lib/zeroDteAuctionAnalytics";
 import { loadZeroDteShadowTrades } from "../lib/zeroDteShadowRepository";
+import { authenticatedApiHeaders } from "../lib/auth/authenticated-api";
 import type { ZeroDteShadowTrade } from "../lib/zeroDteShadowTrade";
 
 type ApiResponse = {
@@ -74,6 +75,7 @@ export default function EsHistoricalFootprintLab() {
       const params = new URLSearchParams({ date });
       if (symbol.trim()) params.set("symbol", symbol.trim());
       const res = await fetch(`/api/zero-dte/es-history?${params.toString()}`, {
+        headers: await authenticatedApiHeaders(),
         cache: "no-store",
       });
       const body = (await res.json()) as ApiResponse;

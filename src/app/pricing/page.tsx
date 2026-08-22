@@ -7,6 +7,7 @@ type PricingPageProps = {
     checkout?: string;
     plan?: string;
     access?: string;
+    upgrade?: string;
     next?: string;
   }>;
 };
@@ -68,6 +69,7 @@ export default async function PricingPage({ searchParams }: PricingPageProps) {
   const params = await searchParams;
   const checkoutStatus = params?.checkout;
   const accessStatus = params?.access;
+  const upgradeTarget = params?.upgrade;
   const billingEnabled = process.env.NEXT_PUBLIC_BILLING_ENABLED === "true";
 
   return (
@@ -101,6 +103,9 @@ export default async function PricingPage({ searchParams }: PricingPageProps) {
 
         {accessStatus === "required" ? (
           <p className="wd-auth-status">Choose a plan to unlock WheelDesk.</p>
+        ) : null}
+        {upgradeTarget === "research" ? (
+          <p className="wd-auth-status">0DTE Command requires the WheelDesk Command plan.</p>
         ) : null}
         {!billingEnabled ? (
           <p className="wd-auth-status">Billing is currently in preview. Pricing is visible, but checkout is not open yet.</p>

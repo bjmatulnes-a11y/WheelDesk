@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requirePlanAccessFromRequest } from "../../../../lib/billing/server-access";
 import { supabaseServer } from "../../../../lib/supabase-server";
 
 type LegacyExecutionPremiumSample = {
@@ -195,6 +196,8 @@ async function upsertTradeDay(body: any): Promise<string> {
 }
 
 export async function GET(request: NextRequest) {
+  const access = await requirePlanAccessFromRequest(request, "research");
+  if ("response" in access) return access.response;
   try {
     const tradeDate = request.nextUrl.searchParams.get("tradeDate");
     if (!tradeDate) return err("Missing tradeDate", 400);
@@ -209,6 +212,8 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const access = await requirePlanAccessFromRequest(request, "research");
+  if ("response" in access) return access.response;
   try {
     const body = await request.json();
 

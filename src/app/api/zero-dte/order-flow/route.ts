@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requirePlanAccessFromRequest } from "../../../../lib/billing/server-access";
 import { fetchSchwabQuotes } from "../../../../lib/schwab/client";
 import type { SchwabQuoteInstrument } from "../../../../lib/schwab/types";
 import type { EsOrderFlowSnapshot } from "../../../../lib/zeroDteEsOrderFlow";
@@ -8,6 +9,8 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export async function GET(request: NextRequest) {
+  const access = await requirePlanAccessFromRequest(request, "research");
+  if ("response" in access) return access.response;
   const generatedAt = new Date().toISOString();
   const requested = request.nextUrl.searchParams.get("symbol")?.trim() || null;
   const configured = process.env.SCHWAB_ES_SYMBOL?.trim() || null;

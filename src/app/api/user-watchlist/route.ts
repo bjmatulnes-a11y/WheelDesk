@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseServer } from "../../../lib/supabase-server";
-import { getAuthenticatedUserFromRequest } from "../../../lib/billing/auth-request";
+import { requirePlanAccessFromRequest } from "../../../lib/billing/server-access";
 import { fallbackEntitlement, normalizePlan, normalizeSymbol } from "../../../lib/ticker-entitlements";
 
 export const runtime = "nodejs";
@@ -9,28 +9,6 @@ type WatchlistBody = {
   symbol?: string;
   replaceSymbol?: string;
 };
-
-async function getUserPlan(userId: string): Promise<string> {
-  const { data: subscription } = await supabaseServer
-    .from("subscriptions")
-    .select("plan,status,current_period_end")
-    .eq("user_id", userId)
-    .in("status", ["active", "trialing"])
-    .order("current_period_end", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (subscription?.plan) return subscription.plan;
-
-  // Profiles have changed during the beta; read all columns and tolerate either name.
-  const { data: profile } = await supabaseServer
-    .from("profiles")
-    .select("*")
-    .eq("id", userId)
-    .maybeSingle();
-
-  return (profile as any)?.selected_plan ?? (profile as any)?.plan ?? "founder";
-}
 
 async function getEntitlement(planValue: string) {
   const fallback = fallbackEntitlement(planValue);
@@ -66,9 +44,10 @@ async function replacementCountToday(userId: string): Promise<number> {
 
 export async function GET(request: Request) {
   try {
-    const user = await getAuthenticatedUserFromRequest(request);
-    const plan = await getUserPlan(user.id);
-    const entitlement = await getEntitlement(plan);
+    const access = await requirePlanAccessFromRequest(request, "core");
+    if ("response" in access) return access.response;
+    const user = access.access.user;
+    const entitlement = await getEntitlement(access.access.plan);
 
     const { data, error } = await supabaseServer
       .from("user_watchlist_tickers")
@@ -96,7 +75,9 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const user = await getAuthenticatedUserFromRequest(request);
+    const access = await requirePlanAccessFromRequest(request, "core");
+    if ("response" in access) return access.response;
+    const user = access.access.user;
     const body = (await request.json().catch(() => ({}))) as WatchlistBody;
     const symbol = normalizeSymbol(body.symbol);
     const replaceSymbol = normalizeSymbol(body.replaceSymbol);
@@ -105,8 +86,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: "Ticker symbol is required." }, { status: 400 });
     }
 
-    const plan = await getUserPlan(user.id);
-    const entitlement = await getEntitlement(plan);
+    const entitlement = await getEntitlement(access.access.plan);
 
     const { data: universeRow, error: universeError } = await supabaseServer
       .from("ticker_universe")
@@ -215,7 +195,9 @@ export async function POST(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
-    const user = await getAuthenticatedUserFromRequest(request);
+    const access = await requirePlanAccessFromRequest(request, "core");
+    if ("response" in access) return access.response;
+    const user = access.access.user;
     const { searchParams } = new URL(request.url);
     const symbol = normalizeSymbol(searchParams.get("symbol"));
 

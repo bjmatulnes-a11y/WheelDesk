@@ -83,8 +83,10 @@ export function planLabel(value: string | null | undefined): string {
 }
 
 export function planSortRank(value: string | null | undefined): number {
+  // Founder is a retired legacy SKU, but existing Founder subscribers are
+  // grandfathered into the complete product, including Command.
+  if (value === "founder") return 40;
   if (value === "research") return 30;
   if (value === "core") return 20;
-  if (value === "founder") return 10;
   return 0;
 }

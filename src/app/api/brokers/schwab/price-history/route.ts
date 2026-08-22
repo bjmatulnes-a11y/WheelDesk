@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requirePlanAccessFromRequest } from "../../../../../lib/billing/server-access";
 import { fetchSchwabPriceHistory } from "../../../../../lib/schwab/client";
 
 export const runtime = "nodejs";
@@ -6,6 +7,8 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export async function GET(request: NextRequest) {
+  const access = await requirePlanAccessFromRequest(request, "research");
+  if ("response" in access) return access.response;
   try {
     const symbol =
       request.nextUrl.searchParams.get("symbol")?.trim() ||

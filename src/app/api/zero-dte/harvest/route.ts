@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requirePlanAccessFromRequest } from "../../../../lib/billing/server-access";
 import { buildZeroDteRecommendation, ZeroDteChainRow } from "../../../../lib/zeroDteOiIntelligence";
 import { buildZeroDteMoodRead, type ZeroDteMoodInput, type ZeroDteMoodRead } from "../../../../lib/zeroDteMoodEngine";
 import { buildZeroDteTradeSelection, type ZeroDteTradeSelection } from "../../../../lib/zeroDteTradeSelector";
@@ -82,6 +83,8 @@ function json(data: unknown, status = 200) {
 }
 
 export async function GET(req: NextRequest) {
+  const access = await requirePlanAccessFromRequest(req, "research");
+  if ("response" in access) return access.response;
   const now = new Date();
   const tradeDate = req.nextUrl.searchParams.get("date") ?? nyDateString(now);
   const rangePct = numberParam(req, "rangePct", 0.045);

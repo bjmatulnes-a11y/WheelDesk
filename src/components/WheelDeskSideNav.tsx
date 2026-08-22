@@ -1,7 +1,10 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import AuthStatusPill from "./auth/AuthStatusPill";
+import { getSupabaseAuthClient } from "../lib/auth/supabase-auth-client";
+import { hasPlanAccess } from "../lib/billing/subscription-access";
 
 type NavKey = "dashboard" | "watchlist" | "scanner" | "positions" | "wheel" | "control-center" | "validation" | "zero-dte" | "news";
 
@@ -9,6 +12,7 @@ type NavItem = {
   href: string;
   label: string;
   key: Exclude<NavKey, "scanner">;
+  commandOnly?: boolean;
 };
 
 type WheelDeskSideNavProps = {
@@ -17,7 +21,7 @@ type WheelDeskSideNavProps = {
 
 const navItems: NavItem[] = [
   { key: "dashboard", href: "/dashboard", label: "Dashboard" },
-  { key: "zero-dte", href: "/zero-dte/chart", label: "0DTE Command" },
+  { key: "zero-dte", href: "/zero-dte/chart", label: "0DTE Command", commandOnly: true },
   { key: "watchlist", href: "/watchlist", label: "Watchlist" },
   { key: "control-center", href: "/control-center", label: "Control Center" },
   { key: "positions", href: "/portfolio", label: "Portfolio" },
@@ -28,6 +32,44 @@ const navItems: NavItem[] = [
 
 export function WheelDeskSideNav({ active }: WheelDeskSideNavProps) {
   const activeKey = active === "scanner" ? "watchlist" : active;
+  const [commandAccess, setCommandAccess] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    const supabase = getSupabaseAuthClient();
+
+    async function loadCommandAccess() {
+      if (process.env.NEXT_PUBLIC_BILLING_ENABLED !== "true") {
+        if (mounted) setCommandAccess(true);
+        return;
+      }
+
+      const { data } = await supabase.auth.getSession();
+      if (!data.session) {
+        if (mounted) setCommandAccess(false);
+        return;
+      }
+
+      const { data: subscriptions } = await supabase
+        .from("subscriptions")
+        .select("plan,status,current_period_end")
+        .eq("user_id", data.session.user.id)
+        .in("status", ["active", "trialing"])
+        .order("current_period_end", { ascending: false, nullsFirst: false })
+        .limit(1);
+
+      if (!mounted) return;
+      const subscription = subscriptions?.[0] ?? null;
+      setCommandAccess(
+        Boolean(subscription && hasPlanAccess(subscription.plan, subscription.status, "research")),
+      );
+    }
+
+    void loadCommandAccess();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   return (
     <aside className="wheeldesk-side-nav" style={styles.sidebar}>
@@ -39,17 +81,19 @@ export function WheelDeskSideNav({ active }: WheelDeskSideNavProps) {
       <nav className="wheeldesk-nav" style={styles.nav}>
         {navItems.map((item) => {
           const isActive = item.key === activeKey;
+          const isLocked = item.commandOnly && commandAccess === false;
 
           return (
             <Link
               key={item.key}
-              href={item.href}
+              href={isLocked ? "/pricing?upgrade=research" : item.href}
               style={{
                 ...styles.navItem,
                 ...(isActive ? styles.navItemActive : null),
               }}
             >
-              {item.label}
+              <span>{item.label}</span>
+              {isLocked ? <span style={styles.lockBadge}>Upgrade</span> : null}
             </Link>
           );
         })}
@@ -123,7 +167,10 @@ const styles: Record<string, any> = {
   },
 
   navItem: {
-    display: "block",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
     color: "#d6e3f0",
     textDecoration: "none",
     fontWeight: 800,
@@ -138,6 +185,19 @@ const styles: Record<string, any> = {
     background: "#0b3947",
     borderColor: "#155e75",
     boxShadow: "inset 0 0 0 1px rgba(34, 211, 238, 0.08)",
+  },
+
+  lockBadge: {
+    color: "#8ea8bd",
+    border: "1px solid #294155",
+    background: "#0a1825",
+    borderRadius: 999,
+    padding: "2px 6px",
+    fontSize: 9,
+    lineHeight: 1.2,
+    fontWeight: 900,
+    letterSpacing: "0.06em",
+    textTransform: "uppercase",
   },
 
   accountRow: {

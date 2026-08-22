@@ -16,6 +16,7 @@ import { MapEnginePanel } from "./MapEnginePanel";
 import type { ZeroDteMoodRead } from "../lib/zeroDteMoodEngine";
 import { buildZeroDteTradeSelection, type ZeroDteTradeSelection } from "../lib/zeroDteTradeSelector";
 import { useSessionMapManager } from "../lib/session/useSessionMapManager";
+import { authenticatedApiHeaders } from "../lib/auth/authenticated-api";
 import { orchestrateZeroDteStrategySelection } from "../lib/zeroDteStrategyOrchestrator";
 import { updateZeroDteStrikeFlow, type ZeroDteStrikeFlowRead } from "../lib/zeroDteStrikeFlow";
 import { getOpeningExecutionRead, lockOpeningMap, resetOpeningMap, type ZeroDteOpeningMap } from "../lib/zeroDteOpeningMap";
@@ -116,7 +117,10 @@ export default function ZeroDteCommandClient() {
       if (Number(maxRisk) > 0) params.set("maxRisk", maxRisk);
       if (Number(minCredit) > 0) params.set("minCredit", minCredit);
 
-      const res = await fetch(`/api/zero-dte/harvest-schwab?${params.toString()}`, { cache: "no-store" });
+      const res = await fetch(`/api/zero-dte/harvest-schwab?${params.toString()}`, {
+        headers: await authenticatedApiHeaders(),
+        cache: "no-store",
+      });
       const json = (await res.json()) as HarvestResponse;
       let nextData = json;
       if (json.recommendation && json.tradeDate && json.spx?.rows?.length) {

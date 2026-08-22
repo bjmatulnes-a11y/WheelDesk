@@ -5,15 +5,18 @@ import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { getSupabaseAuthClient } from "../../lib/auth/supabase-auth-client";
 import { runAutomaticSurfaceCapture } from "../../lib/automatic-surface-capture";
+import { hasPlanAccess } from "../../lib/billing/subscription-access";
+import type { WheelDeskPlanId } from "../../lib/billing/plans";
 
 const ACTIVE_SUBSCRIPTION_STATUSES = new Set(["active", "trialing"]);
 const ACCESS_ALLOWED_PATHS = new Set(["/account"]);
 
 type AuthGateProps = {
   children: ReactNode;
+  requiredPlan?: WheelDeskPlanId;
 };
 
-type GateState = "checking" | "signed-in" | "signed-out" | "billing-required";
+type GateState = "checking" | "signed-in" | "signed-out" | "billing-required" | "plan-required";
 
 function safeNext(pathname: string | null): string {
   const next = pathname || "/control-center";
@@ -30,7 +33,7 @@ function routeCanBypassBilling(pathname: string | null): boolean {
   return ACCESS_ALLOWED_PATHS.has(pathname);
 }
 
-export default function AuthGate({ children }: AuthGateProps) {
+export default function AuthGate({ children, requiredPlan = "core" }: AuthGateProps) {
   const router = useRouter();
   const pathname = usePathname();
   const [state, setState] = useState<GateState>("checking");
@@ -83,8 +86,20 @@ export default function AuthGate({ children }: AuthGateProps) {
         return;
       }
 
-      if (subscriptions && subscriptions.length > 0) {
-        setState("signed-in");
+      const subscription = subscriptions?.[0] ?? null;
+      if (subscription) {
+        if (hasPlanAccess(subscription.plan, subscription.status, requiredPlan)) {
+          setState("signed-in");
+          return;
+        }
+
+        setMessage(
+          requiredPlan === "research"
+            ? "WheelDesk Command is required for this area."
+            : "Your current plan does not include this area.",
+        );
+        setState("plan-required");
+        router.replace(`/pricing?upgrade=${requiredPlan}&next=${encodeURIComponent(next)}`);
         return;
       }
 
@@ -110,7 +125,7 @@ export default function AuthGate({ children }: AuthGateProps) {
       mounted = false;
       listener.subscription.unsubscribe();
     };
-  }, [pathname, router, next]);
+  }, [pathname, router, next, requiredPlan]);
 
   useEffect(() => {
     if (state !== "signed-in" || routeCanBypassBilling(pathname)) return;
@@ -144,6 +159,22 @@ export default function AuthGate({ children }: AuthGateProps) {
 
   if (state === "signed-in") {
     return <>{children}</>;
+  }
+
+
+  if (state === "plan-required") {
+    return (
+      <main className="wd-auth-shell">
+        <section className="wd-auth-card wd-auth-card-small">
+          <div className="wd-auth-logo">W</div>
+          <h1>{message}</h1>
+          <p>Upgrade to WheelDesk Command to unlock SPX 0DTE decision intelligence.</p>
+          <Link href={`/pricing?upgrade=${requiredPlan}&next=${encodeURIComponent(next)}`} className="wd-auth-primary">
+            View Command
+          </Link>
+        </section>
+      </main>
+    );
   }
 
   if (state === "billing-required") {

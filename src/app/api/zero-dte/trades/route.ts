@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAuthenticatedUserFromRequest } from "../../../../lib/billing/auth-request";
+import { requirePlanAccessFromRequest } from "../../../../lib/billing/server-access";
 import { supabaseServer } from "../../../../lib/supabase-server";
 
 export const runtime = "nodejs";
@@ -24,8 +24,10 @@ function s(value: unknown): string | null {
 }
 
 export async function GET(request: NextRequest) {
+  const access = await requirePlanAccessFromRequest(request, "research");
+  if ("response" in access) return access.response;
+  const user = access.access.user;
   try {
-    const user = await getAuthenticatedUserFromRequest(request);
     const limitRaw = request.nextUrl.searchParams.get("limit");
     const limit = Math.min(Math.max(Number(limitRaw || 25), 1), 100);
 
@@ -44,8 +46,10 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const access = await requirePlanAccessFromRequest(request, "research");
+  if ("response" in access) return access.response;
+  const user = access.access.user;
   try {
-    const user = await getAuthenticatedUserFromRequest(request);
     const body = await request.json();
 
     const snapshotId = s(body?.snapshotId);
