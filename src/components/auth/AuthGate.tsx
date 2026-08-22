@@ -25,10 +25,6 @@ function safeNext(pathname: string | null): string {
   return next;
 }
 
-function billingIsEnabled(): boolean {
-  return process.env.NEXT_PUBLIC_BILLING_ENABLED === "true";
-}
-
 function routeCanBypassBilling(pathname: string | null): boolean {
   if (!pathname) return false;
   return ACCESS_ALLOWED_PATHS.has(pathname);
@@ -66,14 +62,9 @@ export default function AuthGate({ children, requiredPlan = "core" }: AuthGatePr
         return;
       }
 
-      // During setup / private beta, BILLING_ENABLED=false keeps the console open
-      // for testing. Once billing is enabled, Admin authority is checked before
-      // Stripe/Supabase subscription status.
-      if (!billingIsEnabled()) {
-        setState("signed-in");
-        return;
-      }
-
+      // Application access is always entitlement-controlled. Checkout/billing
+      // availability is a separate concern and must never disable plan gates.
+      // Admin authority is checked before subscription status.
       setMessage("Checking WheelDesk access…");
 
       const { data: roleRow } = await supabase

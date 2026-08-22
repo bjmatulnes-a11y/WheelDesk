@@ -24,14 +24,6 @@ export type RequestPlanAccessResult =
   | { ok: true; access: RequestPlanAccess }
   | { ok: false; response: NextResponse };
 
-function billingIsEnabled(): boolean {
-  return (
-    process.env.BILLING_ENABLED === "true" ||
-    process.env.NEXT_PUBLIC_BILLING_ENABLED === "true"
-  );
-}
-
-
 async function applicationRole(userId: string): Promise<WheelDeskRole> {
   const { data, error } = await supabaseServer
     .from("user_roles")
@@ -102,20 +94,9 @@ export async function requirePlanAccessFromRequest(
     };
   }
 
-  // Private-beta/dev mode can bypass billing, but never authentication.
-  if (!billingIsEnabled()) {
-    return {
-      ok: true,
-      access: {
-        user,
-        plan: "research",
-        status: "active",
-        billingBypass: true,
-        role,
-      },
-    };
-  }
-
+  // Checkout availability and application entitlement are intentionally
+  // independent. Non-admin users must always hold an active subscription
+  // whose plan satisfies the requested capability.
   let subscription: SubscriptionAccessRow | null;
   try {
     subscription = await activeSubscription(user.id);

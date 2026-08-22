@@ -40,11 +40,6 @@ export function WheelDeskSideNav({ active }: WheelDeskSideNavProps) {
     const supabase = getSupabaseAuthClient();
 
     async function loadCommandAccess() {
-      if (process.env.NEXT_PUBLIC_BILLING_ENABLED !== "true") {
-        if (mounted) setCommandAccess(true);
-        return;
-      }
-
       const { data } = await supabase.auth.getSession();
       if (!data.session) {
         if (mounted) setCommandAccess(false);
