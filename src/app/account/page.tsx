@@ -7,8 +7,9 @@ import type { User } from "@supabase/supabase-js";
 import AuthGate from "../../components/auth/AuthGate";
 import ManageBillingButton from "../../components/billing/ManageBillingButton";
 import { getSupabaseAuthClient } from "../../lib/auth/supabase-auth-client";
-import { friendlyBillingStatus } from "../../lib/billing/subscription-access";
+import { friendlyBillingStatus, hasPlanAccess } from "../../lib/billing/subscription-access";
 import { planLabel } from "../../lib/billing/plans";
+import { normalizeWheelDeskRole, wheelDeskRoleLabel } from "../../lib/auth/application-role";
 
 type ProfileRow = {
   selected_plan?: string | null;
@@ -22,6 +23,10 @@ type SubscriptionRow = {
   cancel_at_period_end?: boolean | null;
 };
 
+type RoleRow = {
+  role?: string | null;
+};
+
 function formatDate(value: string | null | undefined): string {
   if (!value) return "—";
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(new Date(value));
@@ -33,6 +38,7 @@ function AccountContent() {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<ProfileRow | null>(null);
   const [subscription, setSubscription] = useState<SubscriptionRow | null>(null);
+  const [roleRow, setRoleRow] = useState<RoleRow | null>(null);
   const [status, setStatus] = useState("Loading account…");
   const [busy, setBusy] = useState(false);
 
@@ -57,7 +63,7 @@ function AccountContent() {
         return;
       }
 
-      const [{ data: profileData }, { data: subscriptionData }] = await Promise.all([
+      const [{ data: profileData }, { data: subscriptionData }, { data: roleData }] = await Promise.all([
         supabase
           .from("profiles")
           .select("selected_plan, stripe_customer_id")
@@ -70,12 +76,18 @@ function AccountContent() {
           .order("current_period_end", { ascending: false, nullsFirst: false })
           .limit(1)
           .maybeSingle(),
+        supabase
+          .from("user_roles")
+          .select("role")
+          .eq("user_id", activeUser.id)
+          .maybeSingle(),
       ]);
 
       if (!mounted) return;
 
       setProfile(profileData as ProfileRow | null);
       setSubscription(subscriptionData as SubscriptionRow | null);
+      setRoleRow(roleData as RoleRow | null);
 
       if (searchParams.get("checkout") === "success") {
         setStatus("Checkout complete. Stripe webhook sync may take a moment; refresh if the plan still looks pending.");
@@ -101,7 +113,16 @@ function AccountContent() {
   }
 
   const displayedPlan = subscription?.plan ?? profile?.selected_plan ?? String(user?.user_metadata?.selected_plan ?? "founder");
+  const role = normalizeWheelDeskRole(roleRow?.role);
   const hasStripeCustomer = Boolean(profile?.stripe_customer_id);
+  const accessLabel =
+    role === "admin"
+      ? "Full platform · Admin"
+      : hasPlanAccess(subscription?.plan, subscription?.status, "research")
+        ? "WheelDesk Command"
+        : hasPlanAccess(subscription?.plan, subscription?.status, "core")
+          ? "WheelDesk"
+          : "No active app access";
 
   return (
     <AuthGate>
@@ -121,6 +142,14 @@ function AccountContent() {
             <div>
               <span>User ID</span>
               <strong>{user?.id ? `${user.id.slice(0, 8)}…` : "—"}</strong>
+            </div>
+            <div>
+              <span>Role</span>
+              <strong>{wheelDeskRoleLabel(role)}</strong>
+            </div>
+            <div>
+              <span>Access</span>
+              <strong>{accessLabel}</strong>
             </div>
             <div>
               <span>Plan</span>
@@ -143,8 +172,8 @@ function AccountContent() {
           <div className="wd-billing-note">
             <strong>Billing control</strong>
             <span>
-              Stripe checkout creates the paid subscription. Stripe webhooks update Supabase, and WheelDesk reads
-              that subscription record for tier-based access.
+              Stripe controls paid user access. Application roles are separate: Admin authority bypasses billing
+              gates and grants full WheelDesk + Command access without changing the account's commercial plan.
             </span>
           </div>
 

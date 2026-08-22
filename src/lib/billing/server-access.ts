@@ -4,6 +4,7 @@ import { supabaseServer } from "../supabase-server";
 import { getAuthenticatedUserFromRequest } from "./auth-request";
 import { hasPlanAccess } from "./subscription-access";
 import type { WheelDeskPlanId } from "./plans";
+import { normalizeWheelDeskRole, type WheelDeskRole } from "../auth/application-role";
 
 type SubscriptionAccessRow = {
   plan: string | null;
@@ -16,6 +17,7 @@ export type RequestPlanAccess = {
   plan: string;
   status: string;
   billingBypass: boolean;
+  role: WheelDeskRole;
 };
 
 export type RequestPlanAccessResult =
@@ -27,6 +29,25 @@ function billingIsEnabled(): boolean {
     process.env.BILLING_ENABLED === "true" ||
     process.env.NEXT_PUBLIC_BILLING_ENABLED === "true"
   );
+}
+
+
+async function applicationRole(userId: string): Promise<WheelDeskRole> {
+  const { data, error } = await supabaseServer
+    .from("user_roles")
+    .select("role")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  // Missing role rows are normal and mean a standard user. During rollout,
+  // also fail closed to the normal user role if the role table has not yet
+  // been installed rather than breaking authentication for everyone.
+  if (error) {
+    console.warn("WheelDesk application role check failed", error.message);
+    return "user";
+  }
+
+  return normalizeWheelDeskRole(data?.role);
 }
 
 async function activeSubscription(userId: string): Promise<SubscriptionAccessRow | null> {
@@ -64,6 +85,23 @@ export async function requirePlanAccessFromRequest(
     };
   }
 
+  const role = await applicationRole(user.id);
+
+  // Admin is application authority, independent of Stripe. It receives the
+  // complete product entitlement even if the account has no paid subscription.
+  if (role === "admin") {
+    return {
+      ok: true,
+      access: {
+        user,
+        plan: "research",
+        status: "active",
+        billingBypass: true,
+        role,
+      },
+    };
+  }
+
   // Private-beta/dev mode can bypass billing, but never authentication.
   if (!billingIsEnabled()) {
     return {
@@ -73,6 +111,7 @@ export async function requirePlanAccessFromRequest(
         plan: "research",
         status: "active",
         billingBypass: true,
+        role,
       },
     };
   }
@@ -135,6 +174,7 @@ export async function requirePlanAccessFromRequest(
       plan: subscription.plan,
       status: subscription.status,
       billingBypass: false,
+      role,
     },
   };
 }

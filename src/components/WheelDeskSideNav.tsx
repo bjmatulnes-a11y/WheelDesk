@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import AuthStatusPill from "./auth/AuthStatusPill";
 import { getSupabaseAuthClient } from "../lib/auth/supabase-auth-client";
 import { hasPlanAccess } from "../lib/billing/subscription-access";
+import { isWheelDeskAdmin } from "../lib/auth/application-role";
 
 type NavKey = "dashboard" | "watchlist" | "scanner" | "positions" | "wheel" | "control-center" | "validation" | "zero-dte" | "news";
 
@@ -47,6 +48,18 @@ export function WheelDeskSideNav({ active }: WheelDeskSideNavProps) {
       const { data } = await supabase.auth.getSession();
       if (!data.session) {
         if (mounted) setCommandAccess(false);
+        return;
+      }
+
+      const { data: roleRow } = await supabase
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", data.session.user.id)
+        .maybeSingle();
+
+      if (!mounted) return;
+      if (isWheelDeskAdmin(roleRow?.role)) {
+        setCommandAccess(true);
         return;
       }
 

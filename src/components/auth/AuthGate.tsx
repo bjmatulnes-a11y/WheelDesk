@@ -7,6 +7,7 @@ import { getSupabaseAuthClient } from "../../lib/auth/supabase-auth-client";
 import { runAutomaticSurfaceCapture } from "../../lib/automatic-surface-capture";
 import { hasPlanAccess } from "../../lib/billing/subscription-access";
 import type { WheelDeskPlanId } from "../../lib/billing/plans";
+import { isWheelDeskAdmin } from "../../lib/auth/application-role";
 
 const ACTIVE_SUBSCRIPTION_STATUSES = new Set(["active", "trialing"]);
 const ACCESS_ALLOWED_PATHS = new Set(["/account"]);
@@ -58,10 +59,32 @@ export default function AuthGate({ children, requiredPlan = "core" }: AuthGatePr
         return;
       }
 
+      // Account remains available to every signed-in user so billing/access can
+      // always be inspected even when the subscription itself is inactive.
+      if (routeCanBypassBilling(pathname)) {
+        setState("signed-in");
+        return;
+      }
+
       // During setup / private beta, BILLING_ENABLED=false keeps the console open
-      // for testing. Once billing is enabled, Stripe/Supabase subscription status
-      // becomes the permission gate for the trading console.
-      if (!billingIsEnabled() || routeCanBypassBilling(pathname)) {
+      // for testing. Once billing is enabled, Admin authority is checked before
+      // Stripe/Supabase subscription status.
+      if (!billingIsEnabled()) {
+        setState("signed-in");
+        return;
+      }
+
+      setMessage("Checking WheelDesk access…");
+
+      const { data: roleRow } = await supabase
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", data.session.user.id)
+        .maybeSingle();
+
+      if (!mounted) return;
+
+      if (isWheelDeskAdmin(roleRow?.role)) {
         setState("signed-in");
         return;
       }
