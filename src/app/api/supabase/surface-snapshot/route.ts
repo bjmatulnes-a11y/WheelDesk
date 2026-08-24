@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   deleteSurfaceSnapshotFromSupabase,
   readAllSurfaceSnapshotsFromSupabase,
+  readLatestSurfaceMetadataFromSupabase,
   readLatestSurfaceSnapshotFromSupabase,
   readSurfaceSnapshotsFromSupabase,
   saveSurfaceSnapshotToSupabase,
@@ -26,6 +27,7 @@ export async function GET(request: NextRequest) {
 
     const ticker = searchParams.get("ticker");
     const latest = searchParams.get("latest") === "1";
+    const metadataOnly = searchParams.get("metadata") === "1";
     const mode = searchParams.get("mode");
     const limitRaw = searchParams.get("limit");
 
@@ -48,6 +50,20 @@ export async function GET(request: NextRequest) {
 
     if (!ticker) {
       return errorResponse("Missing required query parameter: ticker. Use mode=list to read all stored surfaces.", 400);
+    }
+
+    if (latest && metadataOnly) {
+      const metadata = await readLatestSurfaceMetadataFromSupabase(ticker);
+
+      return NextResponse.json(
+        {
+          ok: true,
+          mode: "metadata",
+          ticker: ticker.toUpperCase(),
+          metadata,
+        },
+        { headers: { "Cache-Control": "private, max-age=60" } },
+      );
     }
 
     if (latest) {

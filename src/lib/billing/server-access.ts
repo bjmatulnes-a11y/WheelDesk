@@ -24,36 +24,97 @@ export type RequestPlanAccessResult =
   | { ok: true; access: RequestPlanAccess }
   | { ok: false; response: NextResponse };
 
+const ACCESS_LOOKUP_CACHE_MS = 30_000;
+
+type TimedValue<T> = { value: T; expiresAt: number };
+
+const globalAccessCache = globalThis as typeof globalThis & {
+  __wheelDeskRoleCache?: Map<string, TimedValue<WheelDeskRole>>;
+  __wheelDeskSubscriptionCache?: Map<string, TimedValue<SubscriptionAccessRow | null>>;
+  __wheelDeskRoleLoads?: Map<string, Promise<WheelDeskRole>>;
+  __wheelDeskSubscriptionLoads?: Map<string, Promise<SubscriptionAccessRow | null>>;
+};
+
+function roleCache() {
+  return (globalAccessCache.__wheelDeskRoleCache ??= new Map());
+}
+
+function subscriptionCache() {
+  return (globalAccessCache.__wheelDeskSubscriptionCache ??= new Map());
+}
+
+function roleLoads() {
+  return (globalAccessCache.__wheelDeskRoleLoads ??= new Map());
+}
+
+function subscriptionLoads() {
+  return (globalAccessCache.__wheelDeskSubscriptionLoads ??= new Map());
+}
+
 async function applicationRole(userId: string): Promise<WheelDeskRole> {
-  const { data, error } = await supabaseServer
-    .from("user_roles")
-    .select("role")
-    .eq("user_id", userId)
-    .maybeSingle();
+  const cached = roleCache().get(userId);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
 
-  // Missing role rows are normal and mean a standard user. During rollout,
-  // also fail closed to the normal user role if the role table has not yet
-  // been installed rather than breaking authentication for everyone.
-  if (error) {
-    console.warn("WheelDesk application role check failed", error.message);
-    return "user";
+  const pending = roleLoads().get(userId);
+  if (pending) return pending;
+
+  const load = (async () => {
+    const { data, error } = await supabaseServer
+      .from("user_roles")
+      .select("role")
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    // Missing role rows are normal and mean a standard user. During rollout,
+    // also fail closed to the normal user role if the role table has not yet
+    // been installed rather than breaking authentication for everyone.
+    if (error) {
+      console.warn("WheelDesk application role check failed", error.message);
+      return "user" as WheelDeskRole;
+    }
+
+    return normalizeWheelDeskRole(data?.role);
+  })();
+
+  roleLoads().set(userId, load);
+  try {
+    const value = await load;
+    roleCache().set(userId, { value, expiresAt: Date.now() + ACCESS_LOOKUP_CACHE_MS });
+    return value;
+  } finally {
+    if (roleLoads().get(userId) === load) roleLoads().delete(userId);
   }
-
-  return normalizeWheelDeskRole(data?.role);
 }
 
 async function activeSubscription(userId: string): Promise<SubscriptionAccessRow | null> {
-  const { data, error } = await supabaseServer
-    .from("subscriptions")
-    .select("plan,status,current_period_end")
-    .eq("user_id", userId)
-    .in("status", ["active", "trialing"])
-    .order("current_period_end", { ascending: false, nullsFirst: false })
-    .limit(1)
-    .maybeSingle();
+  const cached = subscriptionCache().get(userId);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
 
-  if (error) throw error;
-  return (data as SubscriptionAccessRow | null) ?? null;
+  const pending = subscriptionLoads().get(userId);
+  if (pending) return pending;
+
+  const load = (async () => {
+    const { data, error } = await supabaseServer
+      .from("subscriptions")
+      .select("plan,status,current_period_end")
+      .eq("user_id", userId)
+      .in("status", ["active", "trialing"])
+      .order("current_period_end", { ascending: false, nullsFirst: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw error;
+    return (data as SubscriptionAccessRow | null) ?? null;
+  })();
+
+  subscriptionLoads().set(userId, load);
+  try {
+    const value = await load;
+    subscriptionCache().set(userId, { value, expiresAt: Date.now() + ACCESS_LOOKUP_CACHE_MS });
+    return value;
+  } finally {
+    if (subscriptionLoads().get(userId) === load) subscriptionLoads().delete(userId);
+  }
 }
 
 export async function requirePlanAccessFromRequest(

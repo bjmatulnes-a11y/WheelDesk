@@ -283,6 +283,7 @@ export default function SpxCommandChart() {
   const [schwabConnection, setSchwabConnection] =
     useState<SchwabConnectionStatus | null>(null);
   const [schwabStatusLoading, setSchwabStatusLoading] = useState(true);
+  const [schwabConnectBusy, setSchwabConnectBusy] = useState(false);
 
   useEffect(() => {
     saveZeroDteRiskPolicy(riskPolicy);
@@ -298,7 +299,10 @@ export default function SpxCommandChart() {
 
     const loadSchwabStatus = async () => {
       try {
-        const response = await fetch("/api/brokers/schwab/status", { cache: "no-store" });
+        const response = await fetch("/api/brokers/schwab/status", {
+          headers: await authenticatedApiHeaders(),
+          cache: "no-store",
+        });
         const json = (await response.json()) as SchwabConnectionStatus;
         if (cancelled) return;
         setSchwabConnection(json);
@@ -325,6 +329,36 @@ export default function SpxCommandChart() {
       window.clearInterval(timer);
     };
   }, []);
+
+  const connectSchwab = useCallback(async () => {
+    if (schwabConnectBusy) return;
+    setSchwabConnectBusy(true);
+    try {
+      const response = await fetch("/api/brokers/schwab/connect", {
+        headers: await authenticatedApiHeaders(),
+        cache: "no-store",
+      });
+      const payload = (await response.json()) as {
+        ok?: boolean;
+        authorizeUrl?: string;
+        error?: string;
+      };
+      if (!response.ok || !payload.ok || !payload.authorizeUrl) {
+        throw new Error(payload.error || "Unable to start Schwab authorization.");
+      }
+      window.location.assign(payload.authorizeUrl);
+    } catch (connectError) {
+      setSchwabConnection({
+        ok: false,
+        connected: false,
+        error:
+          connectError instanceof Error
+            ? connectError.message
+            : "Unable to start Schwab authorization.",
+      });
+      setSchwabConnectBusy(false);
+    }
+  }, [schwabConnectBusy]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1955,8 +1989,10 @@ export default function SpxCommandChart() {
         </div>
 
         <div style={styles.actions}>
-          <a
-            href="/api/brokers/schwab/connect"
+          <button
+            type="button"
+            onClick={() => void connectSchwab()}
+            disabled={schwabConnectBusy}
             style={
               schwabConnection?.connected
                 ? styles.schwabConnectedButton
@@ -1981,14 +2017,16 @@ export default function SpxCommandChart() {
                   : "0 0 10px rgba(245,158,11,.55)",
               }}
             />
-            {schwabStatusLoading
-              ? "CHECKING SCHWAB"
-              : schwabConnection?.connected
-                ? "SCHWAB CONNECTED"
-                : schwabConnection?.needsReconnect
-                  ? "RECONNECT SCHWAB"
-                  : "CONNECT SCHWAB"}
-          </a>
+            {schwabConnectBusy
+              ? "OPENING SCHWAB…"
+              : schwabStatusLoading
+                ? "CHECKING SCHWAB"
+                : schwabConnection?.connected
+                  ? "SCHWAB CONNECTED"
+                  : schwabConnection?.needsReconnect
+                    ? "RECONNECT SCHWAB"
+                    : "CONNECT SCHWAB"}
+          </button>
 
           <select
             value={selectedExpiration}

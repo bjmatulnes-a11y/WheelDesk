@@ -4,6 +4,24 @@ import type { SchwabOptionChainResponse, SchwabQuotesResponse } from "./types";
 const AUTH_BASE = "https://api.schwabapi.com/v1/oauth";
 const MARKET_BASE = "https://api.schwabapi.com/marketdata/v1";
 
+const globalSchwabClient = globalThis as typeof globalThis & {
+  __wheelDeskSchwabRefreshes?: Map<string, Promise<string>>;
+  __wheelDeskSchwabMarketCache?: Map<string, { value: unknown; expiresAt: number }>;
+  __wheelDeskSchwabMarketLoads?: Map<string, Promise<unknown>>;
+};
+
+function refreshes() {
+  return (globalSchwabClient.__wheelDeskSchwabRefreshes ??= new Map());
+}
+
+function marketCache() {
+  return (globalSchwabClient.__wheelDeskSchwabMarketCache ??= new Map());
+}
+
+function marketLoads() {
+  return (globalSchwabClient.__wheelDeskSchwabMarketLoads ??= new Map());
+}
+
 function required(name: string): string {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`Missing ${name}`);
@@ -57,7 +75,7 @@ export function buildSchwabAuthorizeUrl(state: string) {
   return `${AUTH_BASE}/authorize?${params.toString()}`;
 }
 
-export async function exchangeSchwabCode(code: string) {
+export async function exchangeSchwabCode(code: string, userId: string) {
   const token = await tokenRequest(
     new URLSearchParams({
       grant_type: "authorization_code",
@@ -70,7 +88,7 @@ export async function exchangeSchwabCode(code: string) {
     throw new Error("Schwab did not return a refresh token.");
   }
 
-  await saveSchwabTokens({
+  await saveSchwabTokens(userId, {
     accessToken: token.access_token,
     refreshToken: token.refresh_token,
     tokenType: token.token_type,
@@ -80,41 +98,58 @@ export async function exchangeSchwabCode(code: string) {
   });
 }
 
-async function refreshSchwabAccessToken(refreshToken: string) {
-  const token = await tokenRequest(
-    new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: refreshToken,
-    }),
-  );
+async function refreshSchwabAccessToken(userId: string, refreshToken: string) {
+  const active = refreshes();
+  const pending = active.get(userId);
+  if (pending) return pending;
 
-  await saveSchwabTokens({
-    accessToken: token.access_token,
-    refreshToken: token.refresh_token ?? refreshToken,
-    tokenType: token.token_type,
-    scope: token.scope,
-    expiresIn: token.expires_in,
-    refreshExpiresIn: token.refresh_token_expires_in,
-  });
+  const refresh = (async () => {
+    const token = await tokenRequest(
+      new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+      }),
+    );
 
-  return token.access_token;
+    await saveSchwabTokens(userId, {
+      accessToken: token.access_token,
+      refreshToken: token.refresh_token ?? refreshToken,
+      tokenType: token.token_type,
+      scope: token.scope,
+      expiresIn: token.expires_in,
+      refreshExpiresIn: token.refresh_token_expires_in,
+    });
+
+    return token.access_token;
+  })();
+
+  active.set(userId, refresh);
+  try {
+    return await refresh;
+  } finally {
+    if (active.get(userId) === refresh) active.delete(userId);
+  }
 }
 
-export async function getSchwabAccessToken() {
-  const tokens = await loadSchwabTokens();
+export async function getSchwabAccessToken(userId: string) {
+  const tokens = await loadSchwabTokens(userId);
   if (!tokens) {
-    throw new Error("Schwab is not connected. Open /api/brokers/schwab/connect first.");
+    throw new Error("Schwab is not connected for this WheelDesk user.");
   }
 
   if (Date.parse(tokens.expires_at) > Date.now() + 60_000) {
     return tokens.access_token;
   }
 
-  return refreshSchwabAccessToken(tokens.refresh_token);
+  return refreshSchwabAccessToken(userId, tokens.refresh_token);
 }
 
-export async function schwabFetch<T>(path: string, retry = true): Promise<T> {
-  const accessToken = await getSchwabAccessToken();
+export async function schwabFetch<T>(
+  userId: string,
+  path: string,
+  retry = true,
+): Promise<T> {
+  const accessToken = await getSchwabAccessToken(userId);
   const response = await fetch(`${MARKET_BASE}${path}`, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -124,10 +159,10 @@ export async function schwabFetch<T>(path: string, retry = true): Promise<T> {
   });
 
   if (response.status === 401 && retry) {
-    const tokens = await loadSchwabTokens();
-    if (!tokens) throw new Error("Schwab connection is missing.");
-    await refreshSchwabAccessToken(tokens.refresh_token);
-    return schwabFetch<T>(path, false);
+    const tokens = await loadSchwabTokens(userId, { force: true });
+    if (!tokens) throw new Error("Schwab connection is missing for this WheelDesk user.");
+    await refreshSchwabAccessToken(userId, tokens.refresh_token);
+    return schwabFetch<T>(userId, path, false);
   }
 
   const text = await response.text();
@@ -138,7 +173,31 @@ export async function schwabFetch<T>(path: string, retry = true): Promise<T> {
   return JSON.parse(text) as T;
 }
 
+async function cachedSchwabFetch<T>(userId: string, path: string, cacheMs: number): Promise<T> {
+  const key = `${userId}:${path}`;
+  const now = Date.now();
+  const cached = marketCache().get(key);
+  if (cached && cached.expiresAt > now) return cached.value as T;
+
+  const pending = marketLoads().get(key);
+  if (pending) return pending as Promise<T>;
+
+  const load = schwabFetch<T>(userId, path).then((value) => {
+    if (cacheMs > 0) {
+      marketCache().set(key, { value, expiresAt: Date.now() + cacheMs });
+    }
+    return value;
+  });
+  marketLoads().set(key, load);
+  try {
+    return await load;
+  } finally {
+    if (marketLoads().get(key) === load) marketLoads().delete(key);
+  }
+}
+
 export async function fetchSchwabOptionChain(args: {
+  userId: string;
   symbol: string;
   fromDate: string;
   toDate: string;
@@ -155,7 +214,7 @@ export async function fetchSchwabOptionChain(args: {
     strikeCount: String(args.strikeCount ?? 120),
   });
 
-  return schwabFetch<SchwabOptionChainResponse>(`/chains?${params.toString()}`);
+  return cachedSchwabFetch<SchwabOptionChainResponse>(args.userId, `/chains?${params.toString()}`, 4_000);
 }
 
 export type SchwabPriceCandle = {
@@ -176,12 +235,17 @@ export type SchwabPriceHistoryResponse = {
 };
 
 export async function fetchSchwabPriceHistory(args: {
+  userId: string;
   symbol: string;
   frequency?: 1 | 5 | 10 | 15 | 30;
   startDate?: number;
   endDate?: number;
 }): Promise<SchwabPriceHistoryResponse> {
-  const now = Date.now();
+  const rawNow = Date.now();
+  // Align default history windows to the same four-second bucket used by the
+  // live collector cache. Separate browser tabs asking for the same chart in
+  // the same refresh window therefore share one Schwab request.
+  const now = Math.floor(rawNow / 4_000) * 4_000;
   const params = new URLSearchParams({
     symbol: args.symbol,
     periodType: "day",
@@ -194,11 +258,11 @@ export async function fetchSchwabPriceHistory(args: {
     needPreviousClose: "true",
   });
 
-  return schwabFetch<SchwabPriceHistoryResponse>(`/pricehistory?${params.toString()}`);
+  return cachedSchwabFetch<SchwabPriceHistoryResponse>(args.userId, `/pricehistory?${params.toString()}`, 4_000);
 }
 
-
 export async function fetchSchwabQuotes(
+  userId: string,
   symbols: string[],
 ): Promise<SchwabQuotesResponse> {
   const unique = [...new Set(symbols.map((symbol) => symbol.trim()).filter(Boolean))];
@@ -213,7 +277,7 @@ export async function fetchSchwabQuotes(
     });
     Object.assign(
       result,
-      await schwabFetch<SchwabQuotesResponse>(`/quotes?${params.toString()}`),
+      await cachedSchwabFetch<SchwabQuotesResponse>(userId, `/quotes?${params.toString()}`, 750),
     );
   }
 

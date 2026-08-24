@@ -24,7 +24,7 @@ export async function GET(request: NextRequest) {
   const failures: string[] = [];
   for (const symbol of candidates) {
     try {
-      const quotes = await fetchSchwabQuotes([symbol]);
+      const quotes = await fetchSchwabQuotes(access.access.user.id, [symbol]);
       const instrument = pickInstrument(quotes, symbol);
       if (!instrument) {
         failures.push(`${symbol}: no quote instrument returned`);

@@ -27,6 +27,7 @@ export async function GET(request: NextRequest) {
         : 1;
 
     const result = await fetchSchwabPriceHistory({
+      userId: access.access.user.id,
       symbol,
       frequency,
     });
@@ -59,7 +60,7 @@ export async function GET(request: NextRequest) {
       },
       {
         headers: {
-          "Cache-Control": "no-store, no-cache, must-revalidate",
+          "Cache-Control": "private, no-store",
         },
       },
     );

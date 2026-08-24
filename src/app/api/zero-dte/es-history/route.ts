@@ -35,7 +35,7 @@ export async function GET(request: NextRequest) {
 
   for (const symbol of candidates) {
     try {
-      const es = await fetchHistory(symbol, startDate, endDate, true);
+      const es = await fetchHistory(access.access.user.id, symbol, startDate, endDate, true);
       if (!es.candles.length) {
         failures.push(`${symbol}: Schwab returned no candles`);
         continue;
@@ -51,7 +51,7 @@ export async function GET(request: NextRequest) {
         : `Basis disabled for ${resolvedEsSymbol}; ES→SPX projection requires an ES futures symbol.`;
       if (basisInstrumentCompatible) {
         try {
-          const spx = await fetchHistory(spxSymbol, startDate, endDate, false);
+          const spx = await fetchHistory(access.access.user.id, spxSymbol, startDate, endDate, false);
           spxCandles = spx.candles;
           spxPreviousClose = spx.previousClose;
           if (!spxCandles.length) basisFailure = `${spxSymbol}: Schwab returned no SPX candles`;
@@ -117,6 +117,7 @@ export async function GET(request: NextRequest) {
 }
 
 async function fetchHistory(
+  userId: string,
   symbol: string,
   startDate: number,
   endDate: number,
@@ -133,6 +134,7 @@ async function fetchHistory(
     needPreviousClose: "true",
   });
   const result = await schwabFetch<SchwabPriceHistoryResponse>(
+    userId,
     `/pricehistory?${params.toString()}`,
   );
   return {

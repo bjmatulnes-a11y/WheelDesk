@@ -24,6 +24,7 @@ const globalCache = globalThis as typeof globalThis & {
 };
 
 export async function loadZeroDteMoodMarketData(args: {
+  userId: string;
   tradeDate: string;
   generatedAt: string;
   spxProviderSymbol: string;
@@ -47,7 +48,7 @@ export async function loadZeroDteMoodMarketData(args: {
       : clock.sessionStatus === "PREOPEN"
         ? "PREOPEN"
         : String(clock.epochMinute);
-  const key = `${args.tradeDate}:${bucket}:${requestKey}`;
+  const key = `${args.userId}:${args.tradeDate}:${bucket}:${requestKey}`;
   const cache = globalCache.__wheelDeskMoodMarketData ?? [];
   const existing = cache.find((item) => item.key === key);
   if (existing) return existing.value;
@@ -55,18 +56,21 @@ export async function loadZeroDteMoodMarketData(args: {
   const [weights, priceHistory, breadth] = await Promise.all([
     getDailyLeadershipWeightSnapshot({ tradeDate: args.tradeDate }),
     fetchSchwabPriceHistory({
+      userId: args.userId,
       symbol: args.spxProviderSymbol,
       frequency: 1,
       startDate: Date.now() - 24 * 60 * 60 * 1000,
       endDate: Date.now(),
     }),
     fetchZeroDteBreadthSnapshot({
+      userId: args.userId,
       tradeDate: args.tradeDate,
       generatedAt: args.generatedAt,
       requestValues: args.requestValues,
     }),
   ]);
   const quotes = await fetchSchwabQuotes(
+    args.userId,
     weights.constituents.map((item) => item.providerSymbol),
   );
   const leadership = buildZeroDteLeadershipRead({

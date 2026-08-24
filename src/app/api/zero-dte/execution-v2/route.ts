@@ -221,7 +221,9 @@ async function loadScoreHistory(tradeDayId: string) {
   for (let offset = 0; offset < maxRows; offset += pageSize) {
     const { data, error } = await supabaseServer
       .from("zero_dte_execution_score_history")
-      .select("*")
+      .select(
+        "sampled_at,spx_price,strategy,setup_key,strategy_credit,if_credit,sellable_credit,buyback_debit,entry_score,sell_score,exit_score,buyback_score,map_phase,map_center,rail_breached,lifecycle,time_regime,short_distance_points,short_distance_expected_move_pct,candidate_age_candles,tracked_since,dealer_pressure,strike_flow_state"
+      )
       .eq("trade_day_id", tradeDayId)
       .order("sampled_at", { ascending: true })
       .range(offset, offset + pageSize - 1);
@@ -467,10 +469,22 @@ export async function POST(request: NextRequest) {
     if (!body.tradeDate) return err("Missing tradeDate", 400);
 
     if (body.action === "sample" || body.action === "sample-batch") {
-      const existing = await loadMemory(body.tradeDate);
-      let tradeDayId = existing.tradeDayId;
+      // Sampling is the hot path (typically every ~30 seconds per setup). Do
+      // not reload the entire day's premium history before every insert. The
+      // client already hydrated history once; here we only resolve the day id,
+      // persist the new rows, and return the small delta.
+      let tradeDayId: string | null = null;
       if (body.openingMap && body.recommendation) {
         tradeDayId = await upsertTradeDay(body);
+      } else {
+        const { data: day, error: dayError } = await supabaseServer
+          .from("zero_dte_execution_trade_days")
+          .select("id")
+          .eq("trade_date", body.tradeDate)
+          .eq("symbol", "SPX")
+          .maybeSingle();
+        if (dayError) throw dayError;
+        tradeDayId = day?.id ?? null;
       }
       if (!tradeDayId) {
         return err(
@@ -560,7 +574,33 @@ export async function POST(request: NextRequest) {
 
       return NextResponse.json({
         ok: true,
-        memory: await loadMemory(body.tradeDate),
+        delta: {
+          tradeDate: body.tradeDate,
+          tradeDayId,
+          samples: rows.map((row: any) => ({
+            timestamp: row.sampled_at,
+            spot: Number(row.spx_price),
+            strategy: normalizeStrategy(row.strategy),
+            setupKey: row.setup_key,
+            credit: Number(row.strategy_credit ?? row.if_credit ?? 0),
+            sellableCredit: numeric(row.sellable_credit),
+            buybackDebit: numeric(row.buyback_debit),
+            entryScore: Number(row.entry_score ?? row.sell_score ?? 0),
+            exitScore: Number(row.exit_score ?? row.buyback_score ?? 0),
+            mapPhase: normalizePhase(row.map_phase),
+            mapCenter: Number(row.map_center ?? 0),
+            railBreached: normalizeRail(row.rail_breached),
+            lifecycle: row.lifecycle ?? "WAIT",
+            timeRegime: normalizeTimeRegime(row.time_regime),
+            shortDistancePoints: numeric(row.short_distance_points),
+            shortDistanceExpectedMovePct: numeric(row.short_distance_expected_move_pct),
+            candidateAgeCandles: Number(row.candidate_age_candles ?? 0),
+            trackedSince: row.tracked_since ?? null,
+            dealerPressure: numeric(row.dealer_pressure),
+            strikeFlowState:
+              typeof row.strike_flow_state === "string" ? row.strike_flow_state : null,
+          })),
+        },
       });
     }
 

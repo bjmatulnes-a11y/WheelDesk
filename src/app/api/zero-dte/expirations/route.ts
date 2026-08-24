@@ -21,6 +21,7 @@ export async function GET(request: NextRequest) {
 
   try {
     const chain = await fetchSchwabOptionChain({
+      userId: access.access.user.id,
       symbol: providerSymbol,
       fromDate: tradeDate,
       toDate: addDays(tradeDate, days),

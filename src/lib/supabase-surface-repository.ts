@@ -12,6 +12,14 @@ export type SupabaseSurfaceSaveResult = {
   chainRowCount: number;
 };
 
+export type SupabaseSurfaceMetadata = {
+  snapshotId: string;
+  ticker: string;
+  snapshotDate: string;
+  surfaceKey: string;
+  updatedAt: string | null;
+};
+
 function todayDateOnly(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -865,7 +873,6 @@ export async function readSurfaceSnapshotsFromSupabase(
 
   if (!parents?.length) return [];
 
-  const snapshotIds = parents.map((parent) => String(parent.id));
   const snapshotDates: string[] = Array.from(
     new Set<string>(
       parents
@@ -874,17 +881,36 @@ export async function readSurfaceSnapshotsFromSupabase(
     )
   );
 
-  // Important: Supabase/PostgREST commonly returns only the first 1,000 rows
-  // unless range pagination is used. Large surfaces like AMD, SPY, and ^SPX
-  // can otherwise look like they only have the first few expiration chains.
-  const [rowsByIdData, rowsByDateData] = await Promise.all([
-    readAllChainRowsBySnapshotIds(snapshotIds),
-    readAllChainRowsByTickerDates(normalizedTicker, snapshotDates),
-  ]);
-
-  const rowsBySnapshotId = new Map<string, AnyRecord[]>();
+  // Canonical current storage is ticker + snapshot_date. Older builds could
+  // split a logical snapshot across snapshot_ids, so date-based hydration is
+  // the correct first read and avoids the old behavior of downloading the
+  // entire chain twice in parallel on every request.
+  const rowsByDateData = await readAllChainRowsByTickerDates(
+    normalizedTicker,
+    snapshotDates,
+  );
   const rowsBySnapshotDate = new Map<string, AnyRecord[]>();
 
+  for (const row of rowsByDateData) {
+    const key = dateOnly(row.snapshot_date) ?? String(row.snapshot_date ?? "");
+    if (!key) continue;
+    const list = rowsBySnapshotDate.get(key) ?? [];
+    list.push(row);
+    rowsBySnapshotDate.set(key, list);
+  }
+
+  // Fallback only for legacy parents whose date has no canonical rows. In the
+  // normal/current schema this query never runs, cutting option_chain_rows
+  // egress roughly in half for full surface hydration.
+  const fallbackParents = parents.filter((parent) => {
+    const key = dateOnly(parent.snapshot_date) ?? "";
+    return !key || !(rowsBySnapshotDate.get(key)?.length);
+  });
+  const fallbackIds = fallbackParents.map((parent) => String(parent.id));
+  const rowsByIdData = fallbackIds.length
+    ? await readAllChainRowsBySnapshotIds(fallbackIds)
+    : [];
+  const rowsBySnapshotId = new Map<string, AnyRecord[]>();
   for (const row of rowsByIdData) {
     const key = String(row.snapshot_id);
     const list = rowsBySnapshotId.get(key) ?? [];
@@ -892,25 +918,44 @@ export async function readSurfaceSnapshotsFromSupabase(
     rowsBySnapshotId.set(key, list);
   }
 
-  for (const row of rowsByDateData) {
-    const key = dateOnly(row.snapshot_date) ?? String(row.snapshot_date ?? "");
-    if (!key) continue;
-
-    const list = rowsBySnapshotDate.get(key) ?? [];
-    list.push(row);
-    rowsBySnapshotDate.set(key, list);
-  }
-
   return parents.map((parent) => {
+    const dateRows =
+      rowsBySnapshotDate.get(dateOnly(parent.snapshot_date) ?? "") ?? [];
     const idRows = rowsBySnapshotId.get(String(parent.id)) ?? [];
-    const dateRows = rowsBySnapshotDate.get(dateOnly(parent.snapshot_date) ?? "") ?? [];
-
-    // Prefer the fuller logical ticker/date set. This fixes both legacy
-    // snapshot_id splits and 1,000-row truncation.
-    const rowsForParent = dateRows.length > idRows.length ? dateRows : idRows;
-
-    return mapParentAndRowsToSnapshot(parent, rowsForParent);
+    return mapParentAndRowsToSnapshot(
+      parent,
+      dateRows.length ? dateRows : idRows,
+    );
   });
+}
+
+export async function readLatestSurfaceMetadataFromSupabase(
+  ticker: string,
+): Promise<SupabaseSurfaceMetadata | null> {
+  const normalizedTicker = normalizeTicker(ticker);
+  if (!normalizedTicker) return null;
+
+  const { data, error } = await supabaseServer
+    .from("option_surface_snapshots")
+    .select("id,ticker,snapshot_date,surface_key,updated_at")
+    .eq("ticker", normalizedTicker)
+    .order("snapshot_date", { ascending: false })
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Failed to read latest surface metadata: ${error.message}`);
+  }
+  if (!data) return null;
+
+  return {
+    snapshotId: String(data.id),
+    ticker: normalizeTicker(data.ticker),
+    snapshotDate: dateOnly(data.snapshot_date) ?? String(data.snapshot_date ?? ""),
+    surfaceKey: String(data.surface_key ?? ""),
+    updatedAt: data.updated_at ? String(data.updated_at) : null,
+  };
 }
 
 export async function readLatestSurfaceSnapshotFromSupabase(

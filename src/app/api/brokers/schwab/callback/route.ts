@@ -30,18 +30,19 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  if (!verifySchwabOAuthState(returnedState)) {
+  const verifiedState = verifySchwabOAuthState(returnedState);
+  if (!verifiedState) {
     return NextResponse.json(
       {
         ok: false,
-        error: "Invalid or expired Schwab OAuth callback state. Start again from /api/brokers/schwab/connect.",
+        error: "Invalid or expired Schwab OAuth callback state. Start again from WheelDesk.",
       },
       { status: 400 },
     );
   }
 
   try {
-    await exchangeSchwabCode(code);
+    await exchangeSchwabCode(code, verifiedState.userId);
     return NextResponse.redirect(new URL("/zero-dte?schwab=connected", request.url));
   } catch (error) {
     return NextResponse.json(

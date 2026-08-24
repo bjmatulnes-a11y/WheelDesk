@@ -35,6 +35,7 @@ function json(data: unknown, status = 200) {
 export async function GET(request: NextRequest) {
   const access = await requirePlanAccessFromRequest(request, "research");
   if ("response" in access) return access.response;
+  const userId = access.access.user.id;
   const generatedAt = new Date().toISOString();
   const tradeDate =
     request.nextUrl.searchParams.get("date") ?? nyDateString(new Date());
@@ -74,6 +75,7 @@ export async function GET(request: NextRequest) {
   // latency. Partial failures are still reported independently below.
   const [spxResult, spyResult] = await Promise.allSettled([
     harvestSchwabSymbol({
+      userId,
       symbol: "SPX",
       providerSymbol: process.env.SCHWAB_SPX_SYMBOL?.trim() || "$SPX",
       tradeDate,
@@ -83,6 +85,7 @@ export async function GET(request: NextRequest) {
       anchorSpot: spxAnchor,
     }),
     harvestSchwabSymbol({
+      userId,
       symbol: "SPY",
       providerSymbol: process.env.SCHWAB_SPY_SYMBOL?.trim() || "SPY",
       tradeDate,
@@ -119,6 +122,7 @@ export async function GET(request: NextRequest) {
   if (recommendation && spx) {
     try {
       const marketData = await loadZeroDteMoodMarketData({
+        userId,
         tradeDate,
         generatedAt,
         spxProviderSymbol: spx.providerSymbol,
@@ -229,6 +233,7 @@ export async function GET(request: NextRequest) {
 }
 
 async function harvestSchwabSymbol(args: {
+  userId: string;
   symbol: "SPX" | "SPY";
   providerSymbol: string;
   tradeDate: string;
@@ -242,6 +247,7 @@ async function harvestSchwabSymbol(args: {
     ? requestedDate
     : addDays(args.tradeDate, args.strictZeroDte ? 0 : 7);
   const chain = await fetchSchwabOptionChain({
+    userId: args.userId,
     symbol: args.providerSymbol,
     fromDate: requestedDate,
     toDate,

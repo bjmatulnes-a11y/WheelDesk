@@ -811,10 +811,21 @@ async function fetchLatestForecast(symbol: string): Promise<ForecastDbRow | null
 
 async function fetchLatestSurfaceMeta(symbol: string): Promise<Pick<CentralCommandRow, "surfaceDate" | "surfaceRows" | "surfaceChains">> {
   try {
-    const response = await fetch(`/api/supabase/surface-snapshot?ticker=${encodeURIComponent(symbol)}&latest=1`, { cache: "no-store" });
+    // Dashboard readiness only needs the latest snapshot date. Do not hydrate
+    // hundreds/thousands of option_chain_rows just to decide whether a ticker
+    // is current. The full surface remains available to Chart Room/research.
+    const response = await fetch(
+      `/api/supabase/surface-snapshot?ticker=${encodeURIComponent(symbol)}&latest=1&metadata=1`,
+      { cache: "no-store" },
+    );
     const payload = await response.json().catch(() => null);
     if (!response.ok) return { surfaceDate: null, surfaceRows: null, surfaceChains: null };
-    return surfaceMeta(payload);
+    const metadata = payload?.metadata;
+    return {
+      surfaceDate: dateOnly(metadata?.snapshotDate ?? metadata?.snapshot_date),
+      surfaceRows: null,
+      surfaceChains: null,
+    };
   } catch {
     return { surfaceDate: null, surfaceRows: null, surfaceChains: null };
   }
@@ -992,7 +1003,8 @@ export default function DashboardPage() {
 
     const clock = window.setInterval(() => setClockTick((value) => value + 1), 60_000);
 
-    void fetch("/api/brokers/schwab/status", { cache: "no-store" })
+    void getDashboardAuthHeaders()
+      .then((headers) => fetch("/api/brokers/schwab/status", { headers, cache: "no-store" }))
       .then((response) => response.json())
       .then((payload) => setSchwabConnection(payload as SchwabConnectionStatus))
       .catch(() => setSchwabConnection({ connected: false, error: "Status unavailable" }));
@@ -1679,7 +1691,7 @@ export default function DashboardPage() {
               </div>
 
               <div style={styles.panelFootnote}>
-                Schwab credentials are currently platform-wide for Command. Personal Schwab, E*TRADE and future brokerage connections will be stored per user and kept separate from WheelDesk's shared data feeds.
+                Schwab authorization is stored per WheelDesk user. Each account uses its own broker token/session; high-frequency 0DTE reads reuse the server-side session instead of re-reading credentials from Supabase every tick.
               </div>
             </section>
           </div>

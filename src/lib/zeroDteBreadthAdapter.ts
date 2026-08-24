@@ -58,17 +58,17 @@ type NativeTickState = {
 };
 
 const globalBreadth = globalThis as typeof globalThis & {
-  __wheelDeskSpxNativeTickState?: NativeTickState;
-  __wheelDeskSpxNativeBreadthCache?: {
-    tradeDate: string;
-    capturedAtMs: number;
-    snapshot: ZeroDteBreadthSnapshot;
-  };
+  __wheelDeskSpxNativeTickStates?: Map<string, NativeTickState>;
+  __wheelDeskSpxNativeBreadthCaches?: Map<
+    string,
+    { tradeDate: string; capturedAtMs: number; snapshot: ZeroDteBreadthSnapshot }
+  >;
 };
 
 const NATIVE_BREADTH_CACHE_MS = 55_000;
 
 export async function fetchZeroDteBreadthSnapshot(args: {
+  userId: string;
   tradeDate: string;
   generatedAt: string;
   requestValues?: Partial<{
@@ -144,7 +144,7 @@ export async function fetchZeroDteBreadthSnapshot(args: {
   const configured = Object.values(symbols).filter(Boolean);
   if (configured.length) {
     try {
-      const quotes = await fetchSchwabQuotes(configured);
+      const quotes = await fetchSchwabQuotes(args.userId, configured);
       const snapshot = makeSnapshot(
         args.generatedAt,
         "SCHWAB_CONFIGURED_SYMBOLS",
@@ -176,7 +176,9 @@ export async function fetchZeroDteBreadthSnapshot(args: {
 
   try {
     const nowMs = Date.parse(args.generatedAt);
-    const cached = globalBreadth.__wheelDeskSpxNativeBreadthCache;
+    const cacheKey = `${args.userId}:${args.tradeDate}`;
+    const breadthCaches = (globalBreadth.__wheelDeskSpxNativeBreadthCaches ??= new Map());
+    const cached = breadthCaches.get(cacheKey);
     if (
       cached?.tradeDate === args.tradeDate &&
       Number.isFinite(nowMs) &&
@@ -194,15 +196,16 @@ export async function fetchZeroDteBreadthSnapshot(args: {
     }
 
     const snapshot = await buildSchwabNativeBreadth({
+      userId: args.userId,
       tradeDate: args.tradeDate,
       generatedAt: args.generatedAt,
       warnings: fallbackWarnings,
     });
-    globalBreadth.__wheelDeskSpxNativeBreadthCache = {
+    breadthCaches.set(cacheKey, {
       tradeDate: args.tradeDate,
       capturedAtMs: Number.isFinite(nowMs) ? nowMs : Date.now(),
       snapshot,
-    };
+    });
     return snapshot;
   } catch (error) {
     return makeSnapshot(
@@ -219,6 +222,7 @@ export async function fetchZeroDteBreadthSnapshot(args: {
 }
 
 async function buildSchwabNativeBreadth(args: {
+  userId: string;
   tradeDate: string;
   generatedAt: string;
   warnings: string[];
@@ -229,7 +233,7 @@ async function buildSchwabNativeBreadth(args: {
   const providerSymbols = universe.constituents.map(
     (item) => item.providerSymbol,
   );
-  const quotes = await fetchSchwabQuotes(providerSymbols);
+  const quotes = await fetchSchwabQuotes(args.userId, providerSymbols);
 
   let quotedCount = 0;
   let volumeCount = 0;
@@ -239,14 +243,13 @@ async function buildSchwabNativeBreadth(args: {
   let uvol = 0;
   let dvol = 0;
 
-  const state =
-    globalBreadth.__wheelDeskSpxNativeTickState?.tradeDate === args.tradeDate
-      ? globalBreadth.__wheelDeskSpxNativeTickState
-      : {
-          tradeDate: args.tradeDate,
-          prices: {},
-          directions: {},
-        };
+  const stateKey = `${args.userId}:${args.tradeDate}`;
+  const tickStates = (globalBreadth.__wheelDeskSpxNativeTickStates ??= new Map());
+  const state = tickStates.get(stateKey) ?? {
+    tradeDate: args.tradeDate,
+    prices: {},
+    directions: {},
+  };
 
   let tickKnown = 0;
   let tickSum = 0;
@@ -292,7 +295,7 @@ async function buildSchwabNativeBreadth(args: {
     }
   }
 
-  globalBreadth.__wheelDeskSpxNativeTickState = state;
+  tickStates.set(stateKey, state);
 
   const universeCount = universe.constituents.length;
   const quoteCoveragePct =

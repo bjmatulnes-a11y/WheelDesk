@@ -85,6 +85,7 @@ function latestSurfaceDate(payload: any): string | null {
   const snapshots = [
     ...(Array.isArray(payload?.snapshots) ? payload.snapshots : []),
     ...(payload?.snapshot ? [payload.snapshot] : []),
+    ...(payload?.metadata ? [payload.metadata] : []),
   ];
 
   const dates = snapshots
@@ -139,7 +140,7 @@ async function loadWatchlist(accessToken: string): Promise<string[]> {
 }
 
 async function surfaceIsCurrent(symbol: string, targetDate: string): Promise<boolean> {
-  const response = await fetch(`/api/supabase/surface-snapshot?ticker=${encodeURIComponent(symbol)}&latest=1`, {
+  const response = await fetch(`/api/supabase/surface-snapshot?ticker=${encodeURIComponent(symbol)}&latest=1&metadata=1`, {
     cache: "no-store",
   });
   const payload = await response.json().catch(() => null);

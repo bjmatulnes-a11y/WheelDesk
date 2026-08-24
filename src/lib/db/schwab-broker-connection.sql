@@ -1,9 +1,9 @@
--- WheelDesk personal Schwab connection.
--- Run once in the Supabase SQL editor before deploying the Schwab patch.
--- This table is intentionally service-role only; never expose it through the browser.
+-- WheelDesk per-user Schwab connections.
+-- Service-role only: broker tokens are never readable directly by browser users.
 
 CREATE TABLE IF NOT EXISTS broker_connections (
   id text PRIMARY KEY,
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   provider text NOT NULL,
   access_token text NOT NULL,
   refresh_token text NOT NULL,
@@ -18,6 +18,9 @@ ALTER TABLE broker_connections ENABLE ROW LEVEL SECURITY;
 
 REVOKE ALL ON broker_connections FROM anon;
 REVOKE ALL ON broker_connections FROM authenticated;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_broker_connections_user_provider
+  ON broker_connections(user_id, provider);
 
 CREATE INDEX IF NOT EXISTS idx_broker_connections_provider
   ON broker_connections(provider);

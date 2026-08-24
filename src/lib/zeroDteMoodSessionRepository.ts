@@ -15,11 +15,16 @@ export type PersistedZeroDteMoodSample = {
 };
 
 const memory = new Map<string, PersistedZeroDteMoodSample[]>();
+const hydratedTradeDates = new Set<string>();
 
 export async function loadZeroDteMoodHistory(
   tradeDate: string,
   limit = 120,
 ): Promise<PersistedZeroDteMoodSample[]> {
+  if (hydratedTradeDates.has(tradeDate)) {
+    return [...(memory.get(tradeDate) ?? [])].slice(-limit);
+  }
+
   try {
     const { data, error } = await supabaseServer
       .from("zero_dte_mood_samples")
@@ -30,10 +35,15 @@ export async function loadZeroDteMoodHistory(
     if (!error && data) {
       const rows = data.map(rowToSample).reverse();
       memory.set(tradeDate, rows);
+      hydratedTradeDates.add(tradeDate);
       return rows;
     }
+    hydratedTradeDates.add(tradeDate);
   } catch {
     // Fall through to in-memory history when the migration has not run yet.
+    // Mark the warm instance hydrated so a missing table does not trigger a
+    // database request on every 0DTE refresh.
+    hydratedTradeDates.add(tradeDate);
   }
   return [...(memory.get(tradeDate) ?? [])].slice(-limit);
 }

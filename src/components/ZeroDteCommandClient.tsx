@@ -95,7 +95,7 @@ export default function ZeroDteCommandClient() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [secondsToRefresh, setSecondsToRefresh] = useState(60);
   const [executionIntelligence, setExecutionIntelligence] = useState<ZeroDteExecutionRead | null>(null);
-  const [, setExecutionMemory] = useState<ZeroDteExecutionMemory | null>(null);
+  const [executionMemory, setExecutionMemory] = useState<ZeroDteExecutionMemory | null>(null);
   const [executionDbError, setExecutionDbError] = useState<string | null>(null);
   const executionSyncKeyRef = useRef<string | null>(null);
 
@@ -207,6 +207,35 @@ export default function ZeroDteCommandClient() {
   }, [data?.tradeSelection, mapManager.state, rec, spxRows, strikeFlow]);
 
   useEffect(() => {
+    if (!data?.tradeDate) {
+      setExecutionMemory(null);
+      return;
+    }
+
+    executionSyncKeyRef.current = null;
+    let cancelled = false;
+    void loadExecutionMemoryDb(data.tradeDate)
+      .then((memory) => {
+        if (cancelled) return;
+        setExecutionMemory(memory);
+        setExecutionDbError(null);
+      })
+      .catch((loadError) => {
+        if (cancelled) return;
+        setExecutionMemory(emptyExecutionMemory(data.tradeDate));
+        setExecutionDbError(
+          loadError instanceof Error
+            ? loadError.message
+            : "Execution history load failed.",
+        );
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [data?.tradeDate]);
+
+  useEffect(() => {
     if (
       !data?.tradeDate ||
       !data.generatedAt ||
@@ -216,7 +245,9 @@ export default function ZeroDteCommandClient() {
       !rec ||
       !mapAwareTradeSelection ||
       !mapManager.state ||
-      !spxRows.length
+      !spxRows.length ||
+      !executionMemory ||
+      executionMemory.tradeDate !== data.tradeDate
     ) {
       return;
     }
@@ -236,9 +267,7 @@ export default function ZeroDteCommandClient() {
 
     void (async () => {
       try {
-        const dbMemory = await loadExecutionMemoryDb(data.tradeDate).catch(() =>
-          emptyExecutionMemory(data.tradeDate),
-        );
+        const dbMemory = executionMemory;
         const preliminary = buildZeroDteExecutionRead({
           tradeDate: data.tradeDate,
           generatedAt: data.generatedAt,
@@ -297,6 +326,7 @@ export default function ZeroDteCommandClient() {
     data?.generatedAt,
     data?.spx?.expirationDate,
     data?.tradeDate,
+    executionMemory,
     mapAwareTradeSelection,
     mapManager.state,
     openingMap,
