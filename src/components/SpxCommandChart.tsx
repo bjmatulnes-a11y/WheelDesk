@@ -14,6 +14,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { authenticatedApiHeaders } from "../lib/auth/authenticated-api";
 import type { ZeroDteChainRow, ZeroDteRecommendation } from "../lib/zeroDteOiIntelligence";
 import type { ZeroDteMoodRead } from "../lib/zeroDteMoodEngine";
 import { PremiumHistoryPanel } from "./execution/PremiumHistoryPanel";
@@ -152,6 +153,25 @@ type SchwabConnectionStatus = {
   error?: string;
 };
 
+type SchwabConnectResponse = {
+  ok?: boolean;
+  authorizeUrl?: string;
+  error?: string;
+};
+
+async function readJsonResponse<T>(response: Response, label: string): Promise<T> {
+  const body = await response.text();
+  if (!body.trim()) {
+    throw new Error(`${label} returned an empty response (HTTP ${response.status}).`);
+  }
+
+  try {
+    return JSON.parse(body) as T;
+  } catch {
+    throw new Error(`${label} returned invalid JSON (HTTP ${response.status}).`);
+  }
+}
+
 type HarvestResponse = {
   tradeDate: string;
   generatedAt: string;
@@ -285,6 +305,7 @@ export default function SpxCommandChart() {
   const [schwabConnection, setSchwabConnection] =
     useState<SchwabConnectionStatus | null>(null);
   const [schwabStatusLoading, setSchwabStatusLoading] = useState(true);
+  const [schwabConnectBusy, setSchwabConnectBusy] = useState(false);
 
   useEffect(() => {
     saveZeroDteRiskPolicy(riskPolicy);
@@ -300,8 +321,15 @@ export default function SpxCommandChart() {
 
     const loadSchwabStatus = async () => {
       try {
-        const response = await fetch("/api/brokers/schwab/status", { cache: "no-store" });
-        const json = (await response.json()) as SchwabConnectionStatus;
+        const headers = await authenticatedApiHeaders();
+        const response = await fetch("/api/brokers/schwab/status", {
+          headers,
+          cache: "no-store",
+        });
+        const json = await readJsonResponse<SchwabConnectionStatus>(
+          response,
+          "Schwab connection status",
+        );
         if (cancelled) return;
         setSchwabConnection(json);
       } catch (statusError) {
@@ -330,9 +358,18 @@ export default function SpxCommandChart() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/zero-dte/expirations?days=14", { cache: "no-store" })
-      .then(async (response) => {
-        const json = (await response.json()) as ExpirationListResponse;
+
+    const loadExpirations = async () => {
+      try {
+        const headers = await authenticatedApiHeaders();
+        const response = await fetch("/api/zero-dte/expirations?days=14", {
+          headers,
+          cache: "no-store",
+        });
+        const json = await readJsonResponse<ExpirationListResponse>(
+          response,
+          "SPX expiration list",
+        );
         if (!response.ok || !json.ok) {
           throw new Error(json.error || "SPX expiration list failed.");
         }
@@ -340,8 +377,7 @@ export default function SpxCommandChart() {
           setExpirationOptions(json.expirations ?? []);
           setExpirationError(null);
         }
-      })
-      .catch((loadError) => {
+      } catch (loadError) {
         if (!cancelled) {
           setExpirationOptions([]);
           setExpirationError(
@@ -350,7 +386,10 @@ export default function SpxCommandChart() {
               : "SPX expiration list failed.",
           );
         }
-      });
+      }
+    };
+
+    void loadExpirations();
     return () => {
       cancelled = true;
     };
@@ -845,16 +884,17 @@ export default function SpxCommandChart() {
     loadRequestKeyRef.current = requestKey;
 
     try {
+      const authHeaders = await authenticatedApiHeaders();
       const displayHistoryRequest = fetch(
         `/api/brokers/schwab/price-history?symbol=${encodeURIComponent("$SPX")}&frequency=${frequency}`,
-        { cache: "no-store", signal: controller.signal },
+        { headers: authHeaders, cache: "no-store", signal: controller.signal },
       );
       const signalHistoryRequest =
         frequency === 1
           ? null
           : fetch(
               `/api/brokers/schwab/price-history?symbol=${encodeURIComponent("$SPX")}&frequency=1`,
-              { cache: "no-store", signal: controller.signal },
+              { headers: authHeaders, cache: "no-store", signal: controller.signal },
             );
       const harvestParams = new URLSearchParams({
         strict: "1",
@@ -886,16 +926,26 @@ export default function SpxCommandChart() {
         await Promise.all([
           displayHistoryRequest,
           fetch(`/api/zero-dte/harvest-schwab?${harvestParams.toString()}`, {
+            headers: authHeaders,
             cache: "no-store",
             signal: controller.signal,
           }),
           signalHistoryRequest,
         ]);
 
-      const historyJson = (await historyResponse.json()) as PriceHistoryResponse;
-      const harvestJson = (await harvestResponse.json()) as HarvestResponse;
+      const historyJson = await readJsonResponse<PriceHistoryResponse>(
+        historyResponse,
+        "SPX price history",
+      );
+      const harvestJson = await readJsonResponse<HarvestResponse>(
+        harvestResponse,
+        "Schwab 0DTE harvest",
+      );
       const signalHistoryJson = signalHistoryResponse
-        ? ((await signalHistoryResponse.json()) as PriceHistoryResponse)
+        ? await readJsonResponse<PriceHistoryResponse>(
+            signalHistoryResponse,
+            "SPX one-minute signal history",
+          )
         : historyJson;
 
       if (!historyResponse.ok || !historyJson.ok) {
@@ -1936,6 +1986,37 @@ export default function SpxCommandChart() {
   ]);
 
 
+  const beginSchwabConnect = useCallback(async () => {
+    if (schwabConnectBusy) return;
+    setSchwabConnectBusy(true);
+    try {
+      const headers = await authenticatedApiHeaders();
+      const response = await fetch("/api/brokers/schwab/connect", {
+        headers,
+        cache: "no-store",
+      });
+      const json = await readJsonResponse<SchwabConnectResponse>(
+        response,
+        "Schwab authorization",
+      );
+      if (!response.ok || !json.ok || !json.authorizeUrl) {
+        throw new Error(json.error || "Unable to start Schwab authorization.");
+      }
+      window.location.assign(json.authorizeUrl);
+    } catch (connectError) {
+      setSchwabConnection({
+        ok: false,
+        connected: false,
+        error:
+          connectError instanceof Error
+            ? connectError.message
+            : "Unable to start Schwab authorization.",
+      });
+      setSchwabConnectBusy(false);
+    }
+  }, [schwabConnectBusy]);
+
+
   return (
     <section style={styles.shell}>
       <div style={styles.topBar}>
@@ -1959,8 +2040,10 @@ export default function SpxCommandChart() {
         </div>
 
         <div style={styles.actions}>
-          <a
-            href="/api/brokers/schwab/connect"
+          <button
+            type="button"
+            onClick={() => void beginSchwabConnect()}
+            disabled={schwabConnectBusy}
             style={
               schwabConnection?.connected
                 ? styles.schwabConnectedButton
@@ -1991,8 +2074,10 @@ export default function SpxCommandChart() {
                 ? "SCHWAB CONNECTED"
                 : schwabConnection?.needsReconnect
                   ? "RECONNECT SCHWAB"
+                  : schwabConnectBusy
+                  ? "CONNECTING SCHWAB"
                   : "CONNECT SCHWAB"}
-          </a>
+          </button>
 
           <select
             value={selectedExpiration}
@@ -3013,6 +3098,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 850,
     textDecoration: "none",
     letterSpacing: 0.35,
+    cursor: "pointer",
   },
   schwabConnectedButton: {
     display: "inline-flex",
@@ -3027,6 +3113,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 850,
     textDecoration: "none",
     letterSpacing: 0.35,
+    cursor: "pointer",
   },
   schwabStatusDot: {
     width: 7,
