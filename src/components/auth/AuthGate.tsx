@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { getSupabaseAuthClient } from "../../lib/auth/supabase-auth-client";
 import { runAutomaticSurfaceCapture } from "../../lib/automatic-surface-capture";
@@ -35,6 +35,7 @@ export default function AuthGate({ children, requiredPlan = "core" }: AuthGatePr
   const pathname = usePathname();
   const [state, setState] = useState<GateState>("checking");
   const [message, setMessage] = useState("Checking WheelDesk session…");
+  const verifiedUserIdRef = useRef<string | null>(null);
 
   const next = useMemo(() => safeNext(pathname), [pathname]);
 
@@ -42,14 +43,17 @@ export default function AuthGate({ children, requiredPlan = "core" }: AuthGatePr
     let mounted = true;
     const supabase = getSupabaseAuthClient();
 
-    async function verifyAccess() {
-      setState("checking");
-      setMessage("Checking WheelDesk session…");
+    async function verifyAccess(showChecking = true) {
+      if (showChecking) {
+        setState("checking");
+        setMessage("Checking WheelDesk session…");
+      }
 
       const { data, error } = await supabase.auth.getSession();
       if (!mounted) return;
 
       if (error || !data.session) {
+        verifiedUserIdRef.current = null;
         setState("signed-out");
         router.replace(`/login?next=${encodeURIComponent(next)}`);
         return;
@@ -58,6 +62,7 @@ export default function AuthGate({ children, requiredPlan = "core" }: AuthGatePr
       // Account remains available to every signed-in user so billing/access can
       // always be inspected even when the subscription itself is inactive.
       if (routeCanBypassBilling(pathname)) {
+        verifiedUserIdRef.current = data.session.user.id;
         setState("signed-in");
         return;
       }
@@ -76,6 +81,7 @@ export default function AuthGate({ children, requiredPlan = "core" }: AuthGatePr
       if (!mounted) return;
 
       if (isWheelDeskAdmin(roleRow?.role)) {
+        verifiedUserIdRef.current = data.session.user.id;
         setState("signed-in");
         return;
       }
@@ -103,6 +109,7 @@ export default function AuthGate({ children, requiredPlan = "core" }: AuthGatePr
       const subscription = subscriptions?.[0] ?? null;
       if (subscription) {
         if (hasPlanAccess(subscription.plan, subscription.status, requiredPlan)) {
+          verifiedUserIdRef.current = data.session.user.id;
           setState("signed-in");
           return;
         }
@@ -123,16 +130,39 @@ export default function AuthGate({ children, requiredPlan = "core" }: AuthGatePr
 
     void verifyAccess();
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
       if (!mounted) return;
 
-      if (!session) {
+      if (event === "SIGNED_OUT" || !session) {
+        verifiedUserIdRef.current = null;
         setState("signed-out");
         router.replace(`/login?next=${encodeURIComponent(next)}`);
         return;
       }
 
-      void verifyAccess();
+      // Supabase can emit INITIAL_SESSION, TOKEN_REFRESHED, and even a
+      // redundant SIGNED_IN while an already-authenticated browser tab is
+      // restored/refocused. Re-running verifyAccess() for those events used to
+      // set the gate back to `checking`, which unmounted the entire WheelDesk
+      // page and made a simple tab switch look like a full reload.
+      if (event === "INITIAL_SESSION" || event === "TOKEN_REFRESHED") return;
+
+      if (event === "SIGNED_IN") {
+        if (verifiedUserIdRef.current === session.user.id) return;
+
+        // Defer any genuinely new sign-in verification until after the auth
+        // callback returns. Keep the current page mounted while we verify.
+        window.setTimeout(() => {
+          if (mounted) void verifyAccess(false);
+        }, 0);
+        return;
+      }
+
+      if (event === "USER_UPDATED") {
+        window.setTimeout(() => {
+          if (mounted) void verifyAccess(false);
+        }, 0);
+      }
     });
 
     return () => {
@@ -159,15 +189,13 @@ export default function AuthGate({ children, requiredPlan = "core" }: AuthGatePr
 
     void keepSurfacesCurrent();
     const interval = window.setInterval(keepSurfacesCurrent, 30 * 60_000);
-    const onVisible = () => {
-      if (document.visibilityState === "visible") void keepSurfacesCurrent();
-    };
-    document.addEventListener("visibilitychange", onVisible);
 
+    // Surface capture is daily background maintenance. A browser tab switch
+    // must not trigger it. The initial run plus the ordinary 30-minute timer
+    // are sufficient and avoid unnecessary provider/Supabase traffic on focus.
     return () => {
       cancelled = true;
       window.clearInterval(interval);
-      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [state, pathname]);
 
