@@ -98,29 +98,75 @@ export async function exchangeSchwabCode(code: string, userId: string) {
   });
 }
 
+function isInvalidGrantError(error: unknown) {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("invalid_grant") ||
+    message.includes("refresh token is invalid") ||
+    message.includes("expired or revoked")
+  );
+}
+
+async function requestAndSaveRefresh(
+  userId: string,
+  refreshToken: string,
+): Promise<string> {
+  const token = await tokenRequest(
+    new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+    }),
+  );
+
+  await saveSchwabTokens(userId, {
+    accessToken: token.access_token,
+    refreshToken: token.refresh_token ?? refreshToken,
+    tokenType: token.token_type,
+    scope: token.scope,
+    expiresIn: token.expires_in,
+    refreshExpiresIn: token.refresh_token_expires_in,
+  });
+
+  return token.access_token;
+}
+
 async function refreshSchwabAccessToken(userId: string, refreshToken: string) {
   const active = refreshes();
   const pending = active.get(userId);
   if (pending) return pending;
 
   const refresh = (async () => {
-    const token = await tokenRequest(
-      new URLSearchParams({
-        grant_type: "refresh_token",
-        refresh_token: refreshToken,
-      }),
-    );
+    try {
+      return await requestAndSaveRefresh(userId, refreshToken);
+    } catch (error) {
+      if (!isInvalidGrantError(error)) throw error;
 
-    await saveSchwabTokens(userId, {
-      accessToken: token.access_token,
-      refreshToken: token.refresh_token ?? refreshToken,
-      tokenType: token.token_type,
-      scope: token.scope,
-      expiresIn: token.expires_in,
-      refreshExpiresIn: token.refresh_token_expires_in,
-    });
+      // WheelDesk runs on serverless instances. A different instance may have
+      // completed a Schwab reconnect or refresh while this instance still had
+      // the older token record cached in memory. Before declaring the broker
+      // connection dead, force-read the authoritative row from Supabase.
+      const latest = await loadSchwabTokens(userId, { force: true });
+      if (!latest) throw error;
 
-    return token.access_token;
+      // If another instance already refreshed successfully, use the fresh
+      // access token directly. This also handles providers that keep the same
+      // refresh token value after a successful refresh.
+      if (Date.parse(latest.expires_at) > Date.now() + 30_000) {
+        return latest.access_token;
+      }
+
+      // If OAuth reconnect rotated the refresh token, retry exactly once with
+      // the current database value. Avoid recursive use of the per-process
+      // refresh map so this promise cannot wait on itself.
+      if (latest.refresh_token !== refreshToken) {
+        return requestAndSaveRefresh(userId, latest.refresh_token);
+      }
+
+      // Supabase still contains the same expired/revoked credential, so this
+      // is a genuine reconnect-required condition rather than stale cache.
+      throw error;
+    }
   })();
 
   active.set(userId, refresh);
