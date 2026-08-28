@@ -118,33 +118,27 @@ export function ZeroDteEsOrderFlowPanel({
 
     void load();
 
-    // One-second REST snapshots are useful only while the operator can consume
-    // them. Chrome throttles/suspends background timers anyway, so explicitly
-    // pause hidden-tab polling and perform a forced clean snapshot immediately
-    // on wake. This avoids both stale-return behavior and needless background
-    // provider traffic.
+    // Keep the one-second feed on its normal visible-tab cadence, but never
+    // force a separate snapshot just because the operator switched back to
+    // WheelDesk. That wake behavior caused unnecessary repaint/reload activity
+    // when moving among Schwab, TradingView, email, and other tabs.
     const timer = window.setInterval(() => {
       if (document.visibilityState !== "visible" || !navigator.onLine) return;
       void load();
     }, 1_000);
 
-    let wakeTimer: number | null = null;
-    const forceResync = () => {
-      if (document.visibilityState !== "visible" || !navigator.onLine) return;
-      if (wakeTimer !== null) window.clearTimeout(wakeTimer);
-      wakeTimer = window.setTimeout(() => {
-        wakeTimer = null;
-        void load(true);
-      }, 75);
-    };
     const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") forceResync();
+      if (document.visibilityState !== "hidden") return;
+
+      // Cancel a request that was in flight as Chrome backgrounds the page.
+      // On return, the ordinary one-second timer resumes; no focus/pageshow
+      // fetch is injected and therefore no tab-switch refresh is visible.
+      requestControllerRef.current?.abort();
+      requestControllerRef.current = null;
+      inFlightRef.current = false;
     };
 
     document.addEventListener("visibilitychange", onVisibilityChange);
-    window.addEventListener("focus", forceResync);
-    window.addEventListener("pageshow", forceResync);
-    window.addEventListener("online", forceResync);
 
     return () => {
       cancelled = true;
@@ -152,11 +146,7 @@ export function ZeroDteEsOrderFlowPanel({
       requestControllerRef.current = null;
       inFlightRef.current = false;
       window.clearInterval(timer);
-      if (wakeTimer !== null) window.clearTimeout(wakeTimer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      window.removeEventListener("focus", forceResync);
-      window.removeEventListener("pageshow", forceResync);
-      window.removeEventListener("online", forceResync);
     };
   }, [enabled]);
 

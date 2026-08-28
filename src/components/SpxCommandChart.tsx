@@ -1051,50 +1051,33 @@ export default function SpxCommandChart() {
   useEffect(() => {
     if (!autoRefresh) return;
 
-    // Browser background tabs are aggressively timer-throttled and can leave a
-    // fetch suspended while the page is hidden. Do not burn provider/egress
-    // calls while hidden; instead force one clean resync as soon as the page is
-    // visible/focused again. This keeps the live console fresh without
-    // reintroducing the old high-egress background polling behavior.
+    // Keep normal polling tied to the visible console, but do NOT trigger an
+    // extra fetch merely because the operator changed browser tabs/windows.
+    // The previous wake/focus handlers could stack visibility + focus +
+    // pageshow events and make the chart appear to refresh every time the user
+    // returned to WheelDesk. Normal polling resumes on its existing cadence.
     const timer = window.setInterval(() => {
       if (document.visibilityState !== "visible" || !navigator.onLine) return;
       void load();
     }, 5000);
 
-    let wakeTimer: number | null = null;
-    const forceResync = () => {
-      if (document.visibilityState !== "visible" || !navigator.onLine) return;
-
-      if (wakeTimer !== null) window.clearTimeout(wakeTimer);
-      wakeTimer = window.setTimeout(() => {
-        wakeTimer = null;
-
-        // A request that was in flight when Chrome froze the tab can otherwise
-        // trip the same-request guard forever/for a long time after wake. Abort
-        // it and allow the wake refresh to start from a clean controller.
-        loadAbortRef.current?.abort();
-        loadAbortRef.current = null;
-        loadRequestKeyRef.current = null;
-        void load();
-      }, 75);
-    };
-
     const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") forceResync();
+      if (document.visibilityState !== "hidden") return;
+
+      // If Chrome backgrounds the tab while a request is in flight, cancel it
+      // so the same-request guard cannot hold a stale provider request open.
+      // We intentionally do NOT fetch on visibility/focus return; the next
+      // ordinary five-second poll will refresh quietly.
+      loadAbortRef.current?.abort();
+      loadAbortRef.current = null;
+      loadRequestKeyRef.current = null;
     };
 
     document.addEventListener("visibilitychange", onVisibilityChange);
-    window.addEventListener("focus", forceResync);
-    window.addEventListener("pageshow", forceResync);
-    window.addEventListener("online", forceResync);
 
     return () => {
       window.clearInterval(timer);
-      if (wakeTimer !== null) window.clearTimeout(wakeTimer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      window.removeEventListener("focus", forceResync);
-      window.removeEventListener("pageshow", forceResync);
-      window.removeEventListener("online", forceResync);
     };
   }, [autoRefresh, load]);
 
