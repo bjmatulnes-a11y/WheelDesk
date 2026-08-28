@@ -1,7 +1,5 @@
 "use client";
 
-import { authenticatedApiHeaders } from "../lib/auth/authenticated-api";
-
 import {
   CandlestickSeries,
   ColorType,
@@ -95,6 +93,10 @@ import {
   evaluateZeroDteAdaptiveManagement,
   type AdaptiveAuctionContext,
 } from "../lib/zeroDteAdaptiveManagement";
+import {
+  buildShadowLegSnapshots,
+  evaluateAdaptivePortfolioOpportunity,
+} from "../lib/zeroDteAdaptivePortfolio";
 
 type Candle = {
   time: number;
@@ -283,7 +285,6 @@ export default function SpxCommandChart() {
   const [schwabConnection, setSchwabConnection] =
     useState<SchwabConnectionStatus | null>(null);
   const [schwabStatusLoading, setSchwabStatusLoading] = useState(true);
-  const [schwabConnectBusy, setSchwabConnectBusy] = useState(false);
 
   useEffect(() => {
     saveZeroDteRiskPolicy(riskPolicy);
@@ -299,10 +300,7 @@ export default function SpxCommandChart() {
 
     const loadSchwabStatus = async () => {
       try {
-        const response = await fetch("/api/brokers/schwab/status", {
-          headers: await authenticatedApiHeaders(),
-          cache: "no-store",
-        });
+        const response = await fetch("/api/brokers/schwab/status", { cache: "no-store" });
         const json = (await response.json()) as SchwabConnectionStatus;
         if (cancelled) return;
         setSchwabConnection(json);
@@ -330,45 +328,10 @@ export default function SpxCommandChart() {
     };
   }, []);
 
-  const connectSchwab = useCallback(async () => {
-    if (schwabConnectBusy) return;
-    setSchwabConnectBusy(true);
-    try {
-      const response = await fetch("/api/brokers/schwab/connect", {
-        headers: await authenticatedApiHeaders(),
-        cache: "no-store",
-      });
-      const payload = (await response.json()) as {
-        ok?: boolean;
-        authorizeUrl?: string;
-        error?: string;
-      };
-      if (!response.ok || !payload.ok || !payload.authorizeUrl) {
-        throw new Error(payload.error || "Unable to start Schwab authorization.");
-      }
-      window.location.assign(payload.authorizeUrl);
-    } catch (connectError) {
-      setSchwabConnection({
-        ok: false,
-        connected: false,
-        error:
-          connectError instanceof Error
-            ? connectError.message
-            : "Unable to start Schwab authorization.",
-      });
-      setSchwabConnectBusy(false);
-    }
-  }, [schwabConnectBusy]);
-
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
-      try {
-        const response = await fetch("/api/zero-dte/expirations?days=14", {
-          headers: await authenticatedApiHeaders(),
-          cache: "no-store",
-        });
-
+    fetch("/api/zero-dte/expirations?days=14", { cache: "no-store" })
+      .then(async (response) => {
         const json = (await response.json()) as ExpirationListResponse;
         if (!response.ok || !json.ok) {
           throw new Error(json.error || "SPX expiration list failed.");
@@ -377,7 +340,8 @@ export default function SpxCommandChart() {
           setExpirationOptions(json.expirations ?? []);
           setExpirationError(null);
         }
-      } catch (loadError) {
+      })
+      .catch((loadError) => {
         if (!cancelled) {
           setExpirationOptions([]);
           setExpirationError(
@@ -386,8 +350,7 @@ export default function SpxCommandChart() {
               : "SPX expiration list failed.",
           );
         }
-      }
-    })();
+      });
     return () => {
       cancelled = true;
     };
@@ -882,17 +845,16 @@ export default function SpxCommandChart() {
     loadRequestKeyRef.current = requestKey;
 
     try {
-      const authHeaders = await authenticatedApiHeaders();
       const displayHistoryRequest = fetch(
         `/api/brokers/schwab/price-history?symbol=${encodeURIComponent("$SPX")}&frequency=${frequency}`,
-        { headers: authHeaders, cache: "no-store", signal: controller.signal },
+        { cache: "no-store", signal: controller.signal },
       );
       const signalHistoryRequest =
         frequency === 1
           ? null
           : fetch(
               `/api/brokers/schwab/price-history?symbol=${encodeURIComponent("$SPX")}&frequency=1`,
-              { headers: authHeaders, cache: "no-store", signal: controller.signal },
+              { cache: "no-store", signal: controller.signal },
             );
       const harvestParams = new URLSearchParams({
         strict: "1",
@@ -924,7 +886,6 @@ export default function SpxCommandChart() {
         await Promise.all([
           displayHistoryRequest,
           fetch(`/api/zero-dte/harvest-schwab?${harvestParams.toString()}`, {
-            headers: authHeaders,
             cache: "no-store",
             signal: controller.signal,
           }),
@@ -1709,63 +1670,60 @@ export default function SpxCommandChart() {
     for (const signalId of existingSignalIds) {
       shadowOpeningSignalIdsRef.current.delete(signalId);
     }
-    const pending = sellSignals.filter(
-      (signal) =>
-        !existingSignalIds.has(signal.id) &&
-        !shadowOpeningSignalIdsRef.current.has(signal.id),
-    );
+    const pending = sellSignals
+      .filter(
+        (signal) =>
+          !existingSignalIds.has(signal.id) &&
+          !shadowOpeningSignalIdsRef.current.has(signal.id),
+      )
+      .sort((left, right) => left.candleTime - right.candleTime);
     if (!pending.length) return;
 
-    for (const signal of pending) {
-      shadowOpeningSignalIdsRef.current.add(signal.id);
-    }
+    for (const signal of pending) shadowOpeningSignalIdsRef.current.add(signal.id);
 
-    Promise.allSettled(
-      pending.map((signal) =>
-        openZeroDteShadowTrade({
-          signal,
-          spxRows,
-        }),
-      ),
-    ).then((results) => {
-      const opened: ZeroDteShadowTrade[] = [];
+    (async () => {
       const failures: string[] = [];
+      const workingTrades = [...shadowTrades];
 
-      results.forEach((result, index) => {
-        const signal = pending[index];
-        if (!signal) return;
-        if (result.status === "fulfilled" && result.value) {
-          opened.push(result.value);
-          return;
-        }
-
-        // A transient API/DB/quote failure must not blacklist a valid SELL
-        // signal for the rest of the session. Release only failed/null attempts
-        // so the next live refresh can retry them.
-        shadowOpeningSignalIdsRef.current.delete(signal.id);
-        if (result.status === "rejected") {
+      // Every SELL_READY is evaluated as one independent lot. Persist each
+      // decision immediately so a long burst (20+ signals on an event day)
+      // cannot lose admitted lots when the chart refreshes while the queue is
+      // still being processed. Later lots in this same queue see earlier lots.
+      for (const signal of pending) {
+        try {
+          const opportunity = evaluateAdaptivePortfolioOpportunity({
+            signal,
+            rows: spxRows,
+            portfolio: portfolioRead,
+            existingTrades: workingTrades,
+            riskPolicy,
+            auction: liveAuctionManagementRef.current,
+          });
+          const trade = await openZeroDteShadowTrade({ signal, spxRows, opportunity });
+          if (trade) {
+            workingTrades.push(trade);
+            setShadowTrades((current) => {
+              const byId = new Map(current.map((item) => [item.id, item]));
+              byId.set(trade.id, trade);
+              return [...byId.values()];
+            });
+          } else {
+            shadowOpeningSignalIdsRef.current.delete(signal.id);
+            failures.push(
+              `${signal.label}: exact-leg quotes were not complete enough to record the opportunity; retrying while the SELL signal remains valid.`,
+            );
+          }
+        } catch (error) {
+          shadowOpeningSignalIdsRef.current.delete(signal.id);
           failures.push(
-            result.reason instanceof Error
-              ? result.reason.message
-              : "Shadow trade creation failed.",
-          );
-        } else {
-          failures.push(
-            `${signal.label}: exact-leg quotes were not complete enough to paper-enter; retrying while the SELL signal remains valid.`,
+            error instanceof Error ? error.message : "Shadow opportunity persistence failed.",
           );
         }
-      });
-
-      if (opened.length) {
-        setShadowTrades((current) => {
-          const byId = new Map(current.map((trade) => [trade.id, trade]));
-          for (const trade of opened) byId.set(trade.id, trade);
-          return [...byId.values()];
-        });
       }
+
       setShadowError(failures.length ? failures.join(" ") : null);
-    });
-  }, [shadowTrades, signalPaint.signals, spxRows]);
+    })();
+  }, [portfolioRead, riskPolicy, shadowTrades, signalPaint.signals, spxRows]);
 
   useEffect(() => {
     if (
@@ -1788,22 +1746,34 @@ export default function SpxCommandChart() {
       read: ZeroDteExecutionRead;
       currentShortBuybackPrice: number | null;
       currentShortLegMultiple: number | null;
+      currentLegSnapshots: ReturnType<typeof buildShadowLegSnapshots>;
       adaptiveDecision: ReturnType<typeof evaluateZeroDteAdaptiveManagement> | null;
     }> = shadowTrades.flatMap((trade) => {
       if (trade.state !== "open" && trade.adaptiveState !== "open") return [];
       const read = shadowExecutionReads[trade.id];
       if (!read) return [];
       const shortRead = currentShadowShortLegRead(spxRows, trade.entryShortLegs);
+      const adaptiveLegs =
+        trade.adaptiveState === "open" && trade.adaptiveActiveLegs.length
+          ? trade.adaptiveActiveLegs
+          : trade.legs;
+      const currentLegSnapshots = buildShadowLegSnapshots(
+        spxRows,
+        adaptiveLegs,
+        trade.strategy,
+      );
       const adaptiveDecision =
         trade.adaptiveState === "open"
           ? evaluateZeroDteAdaptiveManagement({
               trade,
               read,
               spot: recommendation.spxPrice,
+              rows: spxRows,
+              minSellableCredit: riskPolicy.minSellableCredit,
               auction: liveAuctionManagementRef.current,
             })
           : null;
-      return [{ tradeId: trade.id, read, adaptiveDecision, ...shortRead }];
+      return [{ tradeId: trade.id, read, currentLegSnapshots, adaptiveDecision, ...shortRead }];
     });
     if (!openItems.length) return;
 
@@ -1989,10 +1959,8 @@ export default function SpxCommandChart() {
         </div>
 
         <div style={styles.actions}>
-          <button
-            type="button"
-            onClick={() => void connectSchwab()}
-            disabled={schwabConnectBusy}
+          <a
+            href="/api/brokers/schwab/connect"
             style={
               schwabConnection?.connected
                 ? styles.schwabConnectedButton
@@ -2017,16 +1985,14 @@ export default function SpxCommandChart() {
                   : "0 0 10px rgba(245,158,11,.55)",
               }}
             />
-            {schwabConnectBusy
-              ? "OPENING SCHWAB…"
-              : schwabStatusLoading
-                ? "CHECKING SCHWAB"
-                : schwabConnection?.connected
-                  ? "SCHWAB CONNECTED"
-                  : schwabConnection?.needsReconnect
-                    ? "RECONNECT SCHWAB"
-                    : "CONNECT SCHWAB"}
-          </button>
+            {schwabStatusLoading
+              ? "CHECKING SCHWAB"
+              : schwabConnection?.connected
+                ? "SCHWAB CONNECTED"
+                : schwabConnection?.needsReconnect
+                  ? "RECONNECT SCHWAB"
+                  : "CONNECT SCHWAB"}
+          </a>
 
           <select
             value={selectedExpiration}
@@ -2657,7 +2623,7 @@ export default function SpxCommandChart() {
         volContext={volContext}
       />
 
-      <ZeroDteShadowTradePanel trades={shadowTrades} error={shadowError} />
+      <ZeroDteShadowTradePanel trades={shadowTrades} error={shadowError} portfolio={portfolioRead} />
 
       {mapManager.state ? (
         <MapEnginePanel

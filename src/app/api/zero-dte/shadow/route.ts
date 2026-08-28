@@ -1,15 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseServer } from "../../../../lib/supabase-server";
-import { requirePlanAccessFromRequest } from "../../../../lib/billing/server-access";
+import { getAuthenticatedUserFromRequest } from "../../../../lib/billing/auth-request";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
-  const access = await requirePlanAccessFromRequest(request, "research");
-  if ("response" in access) return access.response;
-  const user = access.access.user;
   try {
+    const user = await getAuthenticatedUserFromRequest(request);
     const tradeDate = request.nextUrl.searchParams.get("tradeDate");
     if (!tradeDate) return jsonError("tradeDate is required", 400);
     const { data, error } = await supabaseServer
@@ -29,10 +27,8 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const access = await requirePlanAccessFromRequest(request, "research");
-  if ("response" in access) return access.response;
-  const user = access.access.user;
   try {
+    const user = await getAuthenticatedUserFromRequest(request);
     const body = await request.json();
     if (body.action === "open") return openShadow(body, user.id);
     if (body.action === "sample-batch") return sampleShadowBatch(body, user.id);
@@ -49,15 +45,32 @@ async function openShadow(body: any, userId: string) {
     return jsonError("Shadow open requires tradeDate, signalId, setupKey, and positive sellable credit.", 400);
   }
 
+  const portfolioDecision = normalizePortfolioDecision(body.portfolioDecision);
+  const accepted = portfolioDecision === "TAKE";
+  const strategy = normalizeStrategy(body.strategy);
+  const legs = Array.isArray(body.legs) ? body.legs : [];
+  const entryLegSnapshots = Array.isArray(body.entryLegSnapshots) ? body.entryLegSnapshots : [];
+  const structureState = strategy === "iron-fly" ? "IF_CENTER" : "CREDIT_SPREAD";
+  const openHistory = accepted
+    ? [{
+        at: body.signalTime,
+        action: "OPEN",
+        strike: shortStrikeFromLegs(legs),
+        price: entryCredit,
+        detail: "Individual shadow lot admitted by the Adaptive Portfolio Governor.",
+        netCashPoints: entryCredit,
+      }]
+    : [];
+
   const payload = {
     user_id: userId,
     trade_date: body.tradeDate,
     signal_id: body.signalId,
-    strategy: normalizeStrategy(body.strategy),
+    strategy,
     setup_key: String(body.setupKey),
     strategy_label: String(body.label ?? body.strategy ?? "Shadow Trade"),
-    legs: Array.isArray(body.legs) ? body.legs : [],
-    state: "open",
+    legs,
+    state: accepted ? "open" : "skipped",
     signal_time: body.signalTime,
     signal_candle_time: numeric(body.signalCandleTime),
     entry_score: numeric(body.entryScore) ?? 0,
@@ -98,6 +111,35 @@ async function openShadow(body: any, userId: string) {
         : null,
     path_terminal_trough: numeric(body.pathTerminalTrough),
     path_terminal_crest: numeric(body.pathTerminalCrest),
+    portfolio_decision: portfolioDecision,
+    portfolio_role: normalizePortfolioRole(body.portfolioRole),
+    portfolio_conviction: normalizeConviction(body.portfolioConviction),
+    portfolio_conviction_score: numeric(body.portfolioConvictionScore),
+    premium_quality_score: numeric(body.premiumQualityScore),
+    premium_quality_label: normalizePremiumQuality(body.premiumQualityLabel),
+    effective_risk_before_dollars: numeric(body.effectiveRiskBeforeDollars),
+    effective_risk_after_dollars: numeric(body.effectiveRiskAfterDollars),
+    incremental_effective_risk_dollars: numeric(body.incrementalEffectiveRiskDollars),
+    available_capacity_after_dollars: numeric(body.availableCapacityAfterDollars),
+    adaptive_reserve_need_dollars: numeric(body.adaptiveReserveNeedDollars),
+    reserve_coverage_x: numeric(body.reserveCoverageX),
+    call_release_reserve_dollars: numeric(body.callReleaseReserveDollars),
+    put_release_reserve_dollars: numeric(body.putReleaseReserveDollars),
+    reserve_dominant_side: normalizeReserveSide(body.reserveDominantSide),
+    portfolio_repair_deficit_dollars: numeric(body.portfolioRepairDeficitDollars),
+    candidate_offset_credit_dollars: numeric(body.candidateOffsetCreditDollars),
+    portfolio_decision_reason: body.portfolioDecisionReason ? String(body.portfolioDecisionReason) : null,
+    entry_leg_snapshots: entryLegSnapshots,
+    current_leg_snapshots: entryLegSnapshots,
+    entry_greeks: body.entryGreeks && typeof body.entryGreeks === "object" ? body.entryGreeks : null,
+    current_greeks: body.entryGreeks && typeof body.entryGreeks === "object" ? body.entryGreeks : null,
+    adaptive_structure_state: accepted ? structureState : null,
+    adaptive_active_legs: accepted ? legs : [],
+    adaptive_net_cash_points: accepted ? entryCredit : null,
+    adaptive_marked_pnl_dollars: accepted ? 0 : null,
+    adaptive_released_short_strike: null,
+    adaptive_reinstated_short_strike: null,
+    adaptive_structure_history: openHistory,
     max_mark_credit: numeric(body.entryMarkCredit),
     min_buyback_debit: null,
     max_adverse_excursion_dollars: 0,
@@ -106,9 +148,9 @@ async function openShadow(body: any, userId: string) {
     hit_one_point_five_x: false,
     hit_two_x: false,
     ran_to_max_loss: false,
-    adaptive_state: "open",
-    adaptive_management_state: "HEALTHY",
-    adaptive_action: "HOLD",
+    adaptive_state: accepted ? "open" : null,
+    adaptive_management_state: accepted ? "HEALTHY" : null,
+    adaptive_action: accepted ? "HOLD" : null,
     adaptive_target_capture_pct: null,
     adaptive_target_debit: null,
     adaptive_target_r: null,
@@ -116,7 +158,9 @@ async function openShadow(body: any, userId: string) {
     adaptive_favorable_score: null,
     adaptive_threat_score: null,
     adaptive_invalidation_score: null,
-    adaptive_reason: "Adaptive shadow manager initialized at SELL_READY.",
+    adaptive_reason: accepted
+      ? "Adaptive portfolio manager initialized for an admitted individual lot."
+      : "Signal recorded by the opportunity ledger but not admitted to the portfolio.",
     adaptive_max_adverse_excursion_dollars: 0,
     adaptive_max_favorable_excursion_dollars: 0,
     adaptive_profit_giveback_pct: null,
@@ -184,6 +228,7 @@ async function sampleShadowBatch(body: any, userId: string) {
     const buybackDebit = numeric(item.buybackDebit);
     const currentShortBuybackPrice = numeric(item.currentShortBuybackPrice);
     const currentShortLegMultiple = numeric(item.currentShortLegMultiple);
+    const currentLegSnapshots = Array.isArray(item.currentLegSnapshots) ? item.currentLegSnapshots : [];
     const entryCredit = numeric(row.entry_sellable_credit) ?? 0;
     const width = numeric(row.width_points);
     const shortStrike = shortStrikeFromLegs(row.legs);
@@ -203,14 +248,17 @@ async function sampleShadowBatch(body: any, userId: string) {
     const adaptive = normalizeAdaptiveDecision(item.adaptiveDecision);
     const adaptiveWasOpen = row.adaptive_state === "open";
     const staticWasOpen = row.state === "open";
+    const adaptiveCurrentPnl =
+      numeric(adaptive?.markedPnlDollars) ??
+      (buybackDebit === null ? null : (entryCredit - buybackDebit) * 100);
+    const adaptiveAdverse = adaptiveCurrentPnl === null ? 0 : Math.max(0, -adaptiveCurrentPnl);
+    const adaptiveFavorable = adaptiveCurrentPnl === null ? 0 : Math.max(0, adaptiveCurrentPnl);
     const adaptiveMae = adaptiveWasOpen
-      ? Math.max(numeric(row.adaptive_max_adverse_excursion_dollars) ?? 0, adverseDollars)
+      ? Math.max(numeric(row.adaptive_max_adverse_excursion_dollars) ?? 0, adaptiveAdverse)
       : numeric(row.adaptive_max_adverse_excursion_dollars) ?? 0;
     const adaptiveMfe = adaptiveWasOpen
-      ? Math.max(numeric(row.adaptive_max_favorable_excursion_dollars) ?? 0, favorableDollars)
+      ? Math.max(numeric(row.adaptive_max_favorable_excursion_dollars) ?? 0, adaptiveFavorable)
       : numeric(row.adaptive_max_favorable_excursion_dollars) ?? 0;
-    const adaptiveCurrentPnl =
-      buybackDebit === null ? null : (entryCredit - buybackDebit) * 100;
     const adaptiveGiveback =
       adaptiveCurrentPnl !== null && adaptiveCurrentPnl >= 0 && adaptiveMfe > 0
         ? Math.max(0, Math.min(100, ((adaptiveMfe - adaptiveCurrentPnl) / adaptiveMfe) * 100))
@@ -256,6 +304,10 @@ async function sampleShadowBatch(body: any, userId: string) {
       adaptive_auction_pressure_pct: numeric(adaptive?.auctionPressurePct),
       adaptive_auction_efficiency_pct: numeric(adaptive?.auctionEfficiencyPct),
       adaptive_projected_poc_spx: numeric(adaptive?.projectedPocSpx),
+      current_leg_snapshots: currentLegSnapshots,
+      current_greeks: adaptive?.currentGreeks ?? null,
+      adaptive_structure_state: adaptive?.structureState ?? row.adaptive_structure_state ?? null,
+      adaptive_marked_pnl_dollars: adaptiveCurrentPnl,
     });
 
     const update: Record<string, unknown> = {
@@ -264,6 +316,8 @@ async function sampleShadowBatch(body: any, userId: string) {
       current_buyback_debit: buybackDebit,
       current_short_buyback_price: currentShortBuybackPrice,
       current_short_leg_multiple: currentShortLegMultiple,
+      current_leg_snapshots: currentLegSnapshots,
+      current_greeks: adaptive?.currentGreeks ?? row.current_greeks ?? null,
     };
 
     // Preserve the original static manager's statistics at its own exit. If the
@@ -318,7 +372,40 @@ async function sampleShadowBatch(body: any, userId: string) {
         adaptive_auction_pressure_pct: numeric(adaptive.auctionPressurePct),
         adaptive_auction_efficiency_pct: numeric(adaptive.auctionEfficiencyPct),
         adaptive_projected_poc_spx: numeric(adaptive.projectedPocSpx),
+        adaptive_marked_pnl_dollars: adaptiveCurrentPnl,
+        adaptive_structure_state: adaptive.structureState ?? row.adaptive_structure_state ?? null,
+        current_greeks: adaptive.currentGreeks ?? row.current_greeks ?? null,
       });
+
+      const transition = normalizeStructureTransition(adaptive.structureTransition);
+      if (transition) {
+        const history = Array.isArray(row.adaptive_structure_history)
+          ? [...row.adaptive_structure_history]
+          : [];
+        history.push({
+          at: generatedAt,
+          action: transition.type,
+          strike: transition.strike,
+          price: transition.executionPrice,
+          detail: transition.detail,
+          netCashPoints: transition.nextNetCashPoints,
+        });
+        Object.assign(update, {
+          adaptive_structure_state: transition.nextStructureState,
+          adaptive_active_legs: transition.nextActiveLegs,
+          adaptive_net_cash_points: transition.nextNetCashPoints,
+          adaptive_structure_history: history,
+          adaptive_released_short_strike:
+            transition.type === "RELEASE_SHORT"
+              ? transition.strike
+              : row.adaptive_released_short_strike ?? null,
+          adaptive_reinstated_short_strike:
+            transition.type === "REINSTATE_SHORT"
+              ? transition.strike
+              : row.adaptive_reinstated_short_strike ?? null,
+        });
+      }
+
       if (adaptive.shouldExit && adaptive.exitReason) {
         Object.assign(update, {
           adaptive_state: "closed",
@@ -326,6 +413,8 @@ async function sampleShadowBatch(body: any, userId: string) {
           adaptive_exit_reason: adaptive.exitReason,
           adaptive_exit_buyback_debit: buybackDebit,
           adaptive_pnl_dollars: adaptiveCurrentPnl,
+          adaptive_marked_pnl_dollars: adaptiveCurrentPnl,
+          adaptive_structure_state: "CLOSED",
         });
       }
     }
@@ -400,7 +489,7 @@ function mapShadowTrade(row: any) {
     setupKey: row.setup_key,
     label: row.strategy_label ?? row.strategy,
     legs: Array.isArray(row.legs) ? row.legs : [],
-    state: row.state === "closed" ? "closed" : "open",
+    state: row.state === "closed" ? "closed" : row.state === "skipped" ? "skipped" : "open",
     signalTime: row.signal_time,
     signalCandleTime: Number(row.signal_candle_time ?? 0),
     entryScore: Number(row.entry_score ?? 0),
@@ -441,6 +530,35 @@ function mapShadowTrade(row: any) {
         : null,
     pathTerminalTrough: numeric(row.path_terminal_trough),
     pathTerminalCrest: numeric(row.path_terminal_crest),
+    portfolioDecision: normalizePortfolioDecision(row.portfolio_decision),
+    portfolioRole: normalizePortfolioRole(row.portfolio_role),
+    portfolioConviction: normalizeConviction(row.portfolio_conviction),
+    portfolioConvictionScore: numeric(row.portfolio_conviction_score),
+    premiumQualityScore: numeric(row.premium_quality_score),
+    premiumQualityLabel: normalizePremiumQuality(row.premium_quality_label),
+    effectiveRiskBeforeDollars: numeric(row.effective_risk_before_dollars),
+    effectiveRiskAfterDollars: numeric(row.effective_risk_after_dollars),
+    incrementalEffectiveRiskDollars: numeric(row.incremental_effective_risk_dollars),
+    availableCapacityAfterDollars: numeric(row.available_capacity_after_dollars),
+    adaptiveReserveNeedDollars: numeric(row.adaptive_reserve_need_dollars),
+    reserveCoverageX: numeric(row.reserve_coverage_x),
+    callReleaseReserveDollars: numeric(row.call_release_reserve_dollars),
+    putReleaseReserveDollars: numeric(row.put_release_reserve_dollars),
+    reserveDominantSide: normalizeReserveSide(row.reserve_dominant_side),
+    portfolioRepairDeficitDollars: numeric(row.portfolio_repair_deficit_dollars),
+    candidateOffsetCreditDollars: numeric(row.candidate_offset_credit_dollars),
+    portfolioDecisionReason: row.portfolio_decision_reason ? String(row.portfolio_decision_reason) : null,
+    entryLegSnapshots: Array.isArray(row.entry_leg_snapshots) ? row.entry_leg_snapshots : [],
+    currentLegSnapshots: Array.isArray(row.current_leg_snapshots) ? row.current_leg_snapshots : [],
+    entryGreeks: row.entry_greeks && typeof row.entry_greeks === "object" ? row.entry_greeks : null,
+    currentGreeks: row.current_greeks && typeof row.current_greeks === "object" ? row.current_greeks : null,
+    adaptiveStructureState: normalizeStructureState(row.adaptive_structure_state),
+    adaptiveActiveLegs: Array.isArray(row.adaptive_active_legs) ? row.adaptive_active_legs : [],
+    adaptiveNetCashPoints: numeric(row.adaptive_net_cash_points),
+    adaptiveMarkedPnlDollars: numeric(row.adaptive_marked_pnl_dollars),
+    adaptiveReleasedShortStrike: numeric(row.adaptive_released_short_strike),
+    adaptiveReinstatedShortStrike: numeric(row.adaptive_reinstated_short_strike),
+    adaptiveStructureHistory: Array.isArray(row.adaptive_structure_history) ? row.adaptive_structure_history : [],
     lastSampleAt: row.last_sample_at ?? null,
     currentMarkCredit: numeric(row.current_mark_credit),
     currentBuybackDebit: numeric(row.current_buyback_debit),
@@ -536,9 +654,67 @@ function normalizeAdaptiveAction(value: any) {
   return value === "HOLD" ||
     value === "HOLD_FOR_DEEPER_HARVEST" ||
     value === "WATCH" ||
+    value === "RELEASE_SHORT" ||
+    value === "REINSTATE_SHORT" ||
+    value === "CLOSE_RUNNER" ||
     value === "EXIT"
     ? value
     : null;
+}
+
+function normalizePortfolioDecision(value: unknown) {
+  return value === "TAKE" || value === "WATCH" || value === "PASS" || value === "BLOCKED_CAPITAL"
+    ? value
+    : null;
+}
+
+function normalizePortfolioRole(value: unknown) {
+  return value === "BUILD" || value === "PAIRED_SIDE" || value === "REPAIR_OFFSET" || value === "REPAIR" || value === "DEFENSE" || value === "NEW_RISK" || value === "IF_CENTER"
+    ? value
+    : null;
+}
+
+function normalizeReserveSide(value: unknown) {
+  return value === "CALL" || value === "PUT" || value === "BALANCED" || value === "NONE"
+    ? value
+    : null;
+}
+
+function normalizeConviction(value: unknown) {
+  return value === "DEFINITIVE" || value === "CONFIRMED" || value === "SUPPORTIVE" || value === "MIXED" || value === "CONFLICT" || value === "INSUFFICIENT"
+    ? value
+    : null;
+}
+
+function normalizePremiumQuality(value: unknown) {
+  return value === "EXCELLENT" || value === "STRONG" || value === "ACCEPTABLE" || value === "WEAK"
+    ? value
+    : null;
+}
+
+function normalizeStructureState(value: unknown) {
+  return value === "CREDIT_SPREAD" || value === "LONG_RUNNER" || value === "REPAIRED_SPREAD" || value === "IF_CENTER" || value === "CLOSED"
+    ? value
+    : null;
+}
+
+function normalizeStructureTransition(value: any) {
+  if (!value || typeof value !== "object") return null;
+  const type = value.type;
+  if (type !== "RELEASE_SHORT" && type !== "REINSTATE_SHORT" && type !== "CLOSE_RUNNER") return null;
+  const executionPrice = numeric(value.executionPrice);
+  const nextNetCashPoints = numeric(value.nextNetCashPoints);
+  const nextStructureState = normalizeStructureState(value.nextStructureState);
+  if (executionPrice === null || executionPrice < 0 || nextNetCashPoints === null || !nextStructureState) return null;
+  return {
+    type,
+    strike: numeric(value.strike),
+    executionPrice,
+    nextStructureState,
+    nextActiveLegs: Array.isArray(value.nextActiveLegs) ? value.nextActiveLegs : [],
+    nextNetCashPoints,
+    detail: String(value.detail ?? type),
+  };
 }
 
 function numeric(value: unknown): number | null {

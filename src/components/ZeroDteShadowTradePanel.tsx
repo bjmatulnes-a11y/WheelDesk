@@ -2,16 +2,29 @@
 
 import type React from "react";
 import type { ZeroDteShadowTrade } from "../lib/zeroDteShadowTrade";
+import type { ZeroDtePortfolioRead } from "../lib/zeroDtePortfolioEngine";
+import {
+  buildAdaptiveMarginEnvelope,
+  buildAdaptiveReserveEnvelope,
+  portfolioRepairDeficitDollars,
+} from "../lib/zeroDteAdaptiveCapital";
 
 export function ZeroDteShadowTradePanel({
   trades,
   error,
+  portfolio,
 }: {
   trades: ZeroDteShadowTrade[];
   error?: string | null;
+  portfolio?: ZeroDtePortfolioRead | null;
 }) {
   const open = trades.filter((trade) => trade.state === "open");
   const closed = trades.filter((trade) => trade.state === "closed");
+  const taken = trades.filter((trade) => trade.portfolioDecision === "TAKE");
+  const watched = trades.filter((trade) => trade.portfolioDecision === "WATCH");
+  const passed = trades.filter(
+    (trade) => trade.portfolioDecision === "PASS" || trade.portfolioDecision === "BLOCKED_CAPITAL",
+  );
   const closedPnl = closed.reduce(
     (sum, trade) => sum + (trade.pnlConservativeDollars ?? 0),
     0,
@@ -37,6 +50,14 @@ export function ZeroDteShadowTradePanel({
       ((trade.adaptivePnlDollars ?? 0) - (trade.pnlConservativeDollars ?? 0)),
     0,
   );
+  const adaptiveMargin = buildAdaptiveMarginEnvelope(trades);
+  const adaptiveReserve = buildAdaptiveReserveEnvelope(trades);
+  const adaptiveRepairDeficit = portfolioRepairDeficitDollars(trades);
+  const adaptiveReserveCoverage =
+    portfolio && adaptiveReserve.verticalReleaseReserveDollars > 0
+      ? Math.max(0, portfolio.riskBudgetDollars - adaptiveMargin.effectiveMarginDollars) /
+        adaptiveReserve.verticalReleaseReserveDollars
+      : null;
   const peakCaptures = trades
     .map((trade) => peakCapturePct(trade))
     .filter((value): value is number => value !== null);
@@ -55,6 +76,21 @@ export function ZeroDteShadowTradePanel({
       </div>
 
       <div style={styles.metrics}>
+        <Metric label="Signals taken" value={String(taken.length)} />
+        <Metric label="Watch / pass" value={`${watched.length} / ${passed.length}`} />
+        <Metric
+          label="Adaptive margin"
+          value={`${money(adaptiveMargin.effectiveMarginDollars)} worst side`}
+        />
+        <Metric
+          label="Short-release reserve"
+          value={`${money(adaptiveReserve.verticalReleaseReserveDollars)} · ${adaptiveReserve.dominantSide}`}
+        />
+        <Metric
+          label="Reserve coverage"
+          value={adaptiveReserveCoverage == null ? "—" : `${adaptiveReserveCoverage.toFixed(2)}×`}
+        />
+        <Metric label="Repair deficit" value={money(adaptiveRepairDeficit)} />
         <Metric label="Static open" value={String(open.length)} />
         <Metric label="Static closed" value={String(closed.length)} />
         <Metric label="Static P/L" value={money(closedPnl)} />
@@ -88,11 +124,10 @@ export function ZeroDteShadowTradePanel({
       </div>
 
       <div style={styles.note}>
-        Static keeps the existing 50% premium TP / 3× short stop / profit-protection
-        policy. Adaptive runs beside it without changing live execution. Verticals
-        can extend harvest to 65–80% only when the thesis strengthens. Iron Flies
-        are managed by center validity and a defined-risk R target rather than by a
-        fixed 50% credit target.
+        V3 evaluates every SELL_READY independently; there is no hardened contract-count target. DEFINITIVE / CONFLICT are
+        conviction evidence rather than sizing commands. The governor now measures margin from the CURRENT adaptive legs,
+        scales short-release reserve with the actual open short inventory, recognizes opposite-side repair offsets, and keeps
+        Iron Flies on their separate center-based manager.
       </div>
 
       {adaptiveClosed.length ? (
@@ -114,6 +149,22 @@ export function ZeroDteShadowTradePanel({
                   <span style={styles.muted}>
                     {formatLegs(trade.legs)} · score {Math.round(trade.entryScore)}
                   </span>
+                  <span style={decisionStyle(trade.portfolioDecision)}>
+                    {trade.portfolioDecision ?? "LEGACY"}
+                    {trade.portfolioRole ? ` · ${trade.portfolioRole}` : ""}
+                    {trade.portfolioConviction ? ` · LIVE ES ${trade.portfolioConviction}` : ""}
+                    {trade.premiumQualityLabel ? ` · PREMIUM ${trade.premiumQualityLabel}` : ""}
+                  </span>
+                  {trade.portfolioDecision ? (
+                    <span style={styles.muted}>
+                      margin {money(trade.effectiveRiskBeforeDollars)} → {money(trade.effectiveRiskAfterDollars)}
+                      {trade.incrementalEffectiveRiskDollars == null ? "" : ` · +${moneyPlain(trade.incrementalEffectiveRiskDollars)} incremental`}
+                      {trade.reserveCoverageX == null ? "" : ` · reserve ${trade.reserveCoverageX.toFixed(2)}×`}
+                      {trade.reserveDominantSide ? ` · ${trade.reserveDominantSide} release ${money(trade.adaptiveReserveNeedDollars)}` : ""}
+                      {(trade.portfolioRepairDeficitDollars ?? 0) > 0 ? ` · repair deficit ${money(trade.portfolioRepairDeficitDollars)}` : ""}
+                      {trade.portfolioRole === "REPAIR_OFFSET" ? ` · offset credit ${money(trade.candidateOffsetCreditDollars)}` : ""}
+                    </span>
+                  ) : null}
                   <span style={styles.muted}>
                     crest {trade.premiumCrestStatus ?? "—"} · path {trade.pathDirection ?? "—"}
                     {trade.pathConfidence == null ? "" : ` ${Math.round(trade.pathConfidence)}%`}
@@ -125,16 +176,20 @@ export function ZeroDteShadowTradePanel({
                   <strong
                     style={{
                       color:
-                        trade.state === "open"
-                          ? "#f5c542"
-                          : (trade.pnlConservativeDollars ?? 0) >= 0
-                            ? "#71e0b4"
-                            : "#ff8a9a",
+                        trade.state === "skipped"
+                          ? "#8296aa"
+                          : trade.state === "open"
+                            ? "#f5c542"
+                            : (trade.pnlConservativeDollars ?? 0) >= 0
+                              ? "#71e0b4"
+                              : "#ff8a9a",
                     }}
                   >
-                    {trade.state === "open"
-                      ? `OPEN · ${credit(trade.currentBuybackDebit)}`
-                      : money(trade.pnlConservativeDollars)}
+                    {trade.state === "skipped"
+                      ? trade.portfolioDecision ?? "SKIPPED"
+                      : trade.state === "open"
+                        ? `OPEN · ${credit(trade.currentBuybackDebit)}`
+                        : money(trade.pnlConservativeDollars)}
                   </strong>
                   <span style={styles.muted}>
                     MAE {money(trade.maxAdverseExcursionDollars)} · MFE{" "}
@@ -158,7 +213,13 @@ export function ZeroDteShadowTradePanel({
 
 function AdaptiveRead({ trade }: { trade: ZeroDteShadowTrade }) {
   if (trade.adaptiveState === null) {
-    return <span style={styles.adaptiveMuted}>ADAPTIVE · legacy row / not tracked</span>;
+    return (
+      <span style={styles.adaptiveMuted}>
+        {trade.portfolioDecision && trade.portfolioDecision !== "TAKE"
+          ? `PORTFOLIO · ${trade.portfolioDecision}${trade.portfolioDecisionReason ? ` · ${trade.portfolioDecisionReason}` : ""}`
+          : "ADAPTIVE · legacy row / not tracked"}
+      </span>
+    );
   }
   const tone = adaptiveTone(trade.adaptiveManagementState, trade.adaptiveState);
   const target =
@@ -181,6 +242,22 @@ function AdaptiveRead({ trade }: { trade: ZeroDteShadowTrade }) {
       <span style={styles.adaptiveText}>
         P/L {money(pnl)} · target {target}
       </span>
+      <span style={styles.adaptiveText}>
+        Structure {trade.adaptiveStructureState ?? "—"}
+        {trade.adaptiveReleasedShortStrike == null ? "" : ` · released ${trade.adaptiveReleasedShortStrike.toFixed(0)}`}
+        {trade.adaptiveReinstatedShortStrike == null ? "" : ` · re-short ${trade.adaptiveReinstatedShortStrike.toFixed(0)}`}
+        {trade.adaptiveNetCashPoints == null ? "" : ` · net cash ${credit(trade.adaptiveNetCashPoints)}`}
+      </span>
+      {trade.currentGreeks ? (
+        <span style={styles.adaptiveText}>
+          Greeks Δ {signedNumber(trade.currentGreeks.delta)} · Γ {signedNumber(trade.currentGreeks.gamma)} · Θ {signedNumber(trade.currentGreeks.theta)} · V {signedNumber(trade.currentGreeks.vega)}
+        </span>
+      ) : null}
+      {trade.currentLegSnapshots.length ? (
+        <span style={styles.adaptiveText}>
+          Legs {formatSnapshotLegs(trade.currentLegSnapshots)}
+        </span>
+      ) : null}
       <span style={styles.adaptiveText}>
         Thesis {score(trade.adaptiveThesisScore)} · Favor {score(trade.adaptiveFavorableScore)} · Threat {score(trade.adaptiveThreatScore)} · Invalid {score(trade.adaptiveInvalidationScore)}
       </span>
@@ -207,6 +284,7 @@ function AdaptiveRead({ trade }: { trade: ZeroDteShadowTrade }) {
 
 function adaptiveCurrentPnl(trade: ZeroDteShadowTrade) {
   if (trade.adaptiveState === "closed") return trade.adaptivePnlDollars ?? 0;
+  if (trade.adaptiveMarkedPnlDollars != null) return trade.adaptiveMarkedPnlDollars;
   if (trade.currentBuybackDebit == null) return 0;
   return (trade.entrySellableCredit - trade.currentBuybackDebit) * 100;
 }
@@ -240,6 +318,25 @@ function formatLegs(legs: ZeroDteShadowTrade["legs"]) {
         `${leg.action === "sell" ? "S" : "B"}${leg.strike.toFixed(0)}${leg.optionType === "call" ? "C" : "P"}`,
     )
     .join(" · ");
+}
+
+function decisionStyle(decision: ZeroDteShadowTrade["portfolioDecision"]): React.CSSProperties {
+  const color = decision === "TAKE" ? "#71e0b4" : decision === "WATCH" ? "#f5c542" : decision === "BLOCKED_CAPITAL" ? "#ff8a9a" : "#8296aa";
+  return { ...styles.muted, color, fontWeight: 850 };
+}
+
+function formatSnapshotLegs(legs: ZeroDteShadowTrade["currentLegSnapshots"]) {
+  return legs
+    .map((leg) => `${leg.role}:${leg.action === "sell" ? "S" : "B"}${leg.strike.toFixed(0)}${leg.optionType === "call" ? "C" : "P"}`)
+    .join(" · ");
+}
+
+function signedNumber(value: number | null | undefined) {
+  return value == null || !Number.isFinite(value) ? "—" : `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
+}
+
+function moneyPlain(value: number) {
+  return `$${Math.abs(value).toFixed(0)}`;
 }
 
 function adaptiveTone(

@@ -48,6 +48,9 @@ export type CandidatePortfolioContribution = {
   score: number;
   projectedNetDelta: number;
   projectedGrossRiskDollars: number;
+  projectedEffectiveRiskDollars: number;
+  incrementalEffectiveRiskDollars: number;
+  availableRiskCapacityAfterDollars: number;
   reasons: string[];
   blockers: string[];
 };
@@ -65,8 +68,13 @@ export type ZeroDtePortfolioRead = {
   netTheta: number;
   openPnlDollars: number;
   grossRiskDollars: number;
+  /** Nominal sum of every spread max loss; useful for concentration, not paired BP. */
   riskBudgetDollars: number;
   riskBudgetUsedPct: number;
+  /** Worst-side defined risk after pairing call and put books; used for portfolio capacity. */
+  effectiveRiskDollars: number;
+  effectiveRiskBudgetUsedPct: number;
+  availableRiskCapacityDollars: number;
   upsideMaxLossDollars: number;
   downsideMaxLossDollars: number;
   nearestPutShort: number | null;
@@ -135,6 +143,12 @@ export function buildZeroDtePortfolioRead(args: {
         : 0),
     0,
   );
+  // Calls and puts cannot both realize their terminal max loss at the same SPX
+  // settlement. Treat opposite-side defined-risk spreads as one worst-side
+  // envelope for capacity, while retaining grossRiskDollars as a concentration
+  // diagnostic. Iron-fly risk belongs to both directions.
+  const effectiveRiskDollars = Math.max(upsideMaxLossDollars, downsideMaxLossDollars);
+  const availableRiskCapacityDollars = Math.max(0, riskBudgetDollars - effectiveRiskDollars);
 
   const putShorts = positionReads
     .filter((item) => item.position.strategy === "put-credit-spread")
@@ -149,6 +163,9 @@ export function buildZeroDtePortfolioRead(args: {
     story,
     netDelta,
     grossRiskDollars,
+    effectiveRiskDollars,
+    upsideMaxLossDollars,
+    downsideMaxLossDollars,
     riskBudgetDollars,
     targetDeltaMin: target.min,
     targetDeltaMax: target.max,
@@ -198,11 +215,11 @@ export function buildZeroDtePortfolioRead(args: {
     positions.length
       ? `${positions.length} open position${positions.length === 1 ? "" : "s"} carry ${signed(netDelta)} net delta points.`
       : "No position is open; the next accepted trade establishes the session profile.",
-    `Gross defined risk is $${Math.round(grossRiskDollars).toLocaleString()} of the $${Math.round(riskBudgetDollars).toLocaleString()} portfolio budget.`,
+    `Effective worst-side risk is $${Math.round(effectiveRiskDollars).toLocaleString()} of the $${Math.round(riskBudgetDollars).toLocaleString()} portfolio budget; nominal gross spread risk is $${Math.round(grossRiskDollars).toLocaleString()}.`,
   ];
   const warnings: string[] = [];
-  if (grossRiskDollars > riskBudgetDollars) {
-    warnings.push("Gross defined risk exceeds the configured 0DTE portfolio budget.");
+  if (effectiveRiskDollars > riskBudgetDollars) {
+    warnings.push("Effective worst-side defined risk exceeds the configured 0DTE portfolio budget.");
   }
   if (invalidPosition) {
     warnings.push(`${invalidPosition.position.label} is structurally invalid and should be managed before adding risk.`);
@@ -231,6 +248,9 @@ export function buildZeroDtePortfolioRead(args: {
     grossRiskDollars: roundMoney(grossRiskDollars),
     riskBudgetDollars,
     riskBudgetUsedPct: round((grossRiskDollars / riskBudgetDollars) * 100),
+    effectiveRiskDollars: roundMoney(effectiveRiskDollars),
+    effectiveRiskBudgetUsedPct: round((effectiveRiskDollars / riskBudgetDollars) * 100),
+    availableRiskCapacityDollars: roundMoney(availableRiskCapacityDollars),
     upsideMaxLossDollars: roundMoney(upsideMaxLossDollars),
     downsideMaxLossDollars: roundMoney(downsideMaxLossDollars),
     nearestPutShort: putShorts.length ? Math.max(...putShorts) : null,
@@ -289,6 +309,9 @@ function scoreCandidateContribution(
     story: ZeroDteMarketStory;
     netDelta: number;
     grossRiskDollars: number;
+    effectiveRiskDollars: number;
+    upsideMaxLossDollars: number;
+    downsideMaxLossDollars: number;
     riskBudgetDollars: number;
     targetDeltaMin: number;
     targetDeltaMax: number;
@@ -303,6 +326,9 @@ function scoreCandidateContribution(
       score: 0,
       projectedNetDelta: context.netDelta,
       projectedGrossRiskDollars: context.grossRiskDollars,
+      projectedEffectiveRiskDollars: context.effectiveRiskDollars,
+      incrementalEffectiveRiskDollars: 0,
+      availableRiskCapacityAfterDollars: Math.max(0, context.riskBudgetDollars - context.effectiveRiskDollars),
       reasons: [],
       blockers: ["No tracked candidate is available."],
     };
@@ -314,12 +340,27 @@ function scoreCandidateContribution(
   const projectedNetDelta = round(context.netDelta + candidateGreeks.delta);
   const candidateRisk = Math.max(0, candidate.maxRiskDollars ?? 0);
   const projectedGrossRiskDollars = context.grossRiskDollars + candidateRisk;
+  const projectedUpsideRisk =
+    context.upsideMaxLossDollars +
+    (candidate.strategy === "call-credit-spread" || candidate.strategy === "iron-fly" ? candidateRisk : 0);
+  const projectedDownsideRisk =
+    context.downsideMaxLossDollars +
+    (candidate.strategy === "put-credit-spread" || candidate.strategy === "iron-fly" ? candidateRisk : 0);
+  const projectedEffectiveRiskDollars = Math.max(projectedUpsideRisk, projectedDownsideRisk);
+  const incrementalEffectiveRiskDollars = Math.max(
+    0,
+    projectedEffectiveRiskDollars - context.effectiveRiskDollars,
+  );
+  const availableRiskCapacityAfterDollars = Math.max(
+    0,
+    context.riskBudgetDollars - projectedEffectiveRiskDollars,
+  );
   const duplicate = context.positions.some(
     (position) => position.setupKey === candidate.setupKey,
   );
   if (duplicate) blockers.push("This exact spread is already open in the portfolio.");
-  if (projectedGrossRiskDollars > context.riskBudgetDollars) {
-    blockers.push("Adding one contract would exceed the configured gross-risk budget.");
+  if (projectedEffectiveRiskDollars > context.riskBudgetDollars) {
+    blockers.push("Adding one contract would exceed the configured effective worst-side risk budget.");
   }
 
   const shortStrike = candidate.legs.find((leg) => leg.action === "sell")?.strike ?? null;
@@ -359,7 +400,7 @@ function scoreCandidateContribution(
 
   const storyScore = storyAlignment(candidate.strategy, context.story);
   const riskScore = clamp(
-    100 - (projectedGrossRiskDollars / context.riskBudgetDollars) * 70,
+    100 - (projectedEffectiveRiskDollars / context.riskBudgetDollars) * 70,
   );
   const concentrationScore = clustered ? 20 : 85;
   let score =
@@ -370,7 +411,11 @@ function scoreCandidateContribution(
   score -= blockers.length * 18;
 
   if (candidateRisk > 0) {
-    reasons.push(`One contract raises gross risk by about $${Math.round(candidateRisk).toLocaleString()}.`);
+    reasons.push(
+      incrementalEffectiveRiskDollars < candidateRisk * 0.5
+        ? `One contract carries about $${Math.round(candidateRisk).toLocaleString()} nominal risk but adds only $${Math.round(incrementalEffectiveRiskDollars).toLocaleString()} to worst-side risk because opposite-side capacity is already in use.`
+        : `One contract adds about $${Math.round(incrementalEffectiveRiskDollars).toLocaleString()} to effective worst-side risk.`,
+    );
   }
   reasons.push(`Projected net delta: ${signed(projectedNetDelta)}.`);
 
@@ -378,6 +423,9 @@ function scoreCandidateContribution(
     score: Math.round(clamp(score)),
     projectedNetDelta,
     projectedGrossRiskDollars: roundMoney(projectedGrossRiskDollars),
+    projectedEffectiveRiskDollars: roundMoney(projectedEffectiveRiskDollars),
+    incrementalEffectiveRiskDollars: roundMoney(incrementalEffectiveRiskDollars),
+    availableRiskCapacityAfterDollars: roundMoney(availableRiskCapacityAfterDollars),
     reasons,
     blockers,
   };

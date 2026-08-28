@@ -13,6 +13,7 @@ export type ZeroDteChainRow = {
   delta?: number | null;
   gamma?: number | null;
   theta?: number | null;
+  vega?: number | null;
   bid?: number | null;
   ask?: number | null;
   mid?: number | null;

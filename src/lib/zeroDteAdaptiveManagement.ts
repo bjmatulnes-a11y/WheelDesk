@@ -1,7 +1,10 @@
 import type { EsOrderFlowState } from "./zeroDteEsOrderFlow";
 import type { ZeroDteExecutionRead } from "./zeroDteExecutionIntelligence";
 import { leastResistanceThreatensShort } from "./zeroDteLeastResistancePath";
-import type { ZeroDteShadowTrade } from "./zeroDteShadowTrade";
+import type { ExecutionLeg } from "./zeroDteExecutionIntelligence";
+import type { ZeroDteChainRow } from "./zeroDteOiIntelligence";
+import type { ZeroDteShadowTrade, AdaptiveStructureState } from "./zeroDteShadowTrade";
+import { aggregateGreeks, buildShadowLegSnapshots, type ShadowGreekSnapshot } from "./zeroDteAdaptivePortfolio";
 
 export type AdaptiveManagementState =
   | "HEALTHY"
@@ -15,6 +18,9 @@ export type AdaptiveManagementAction =
   | "HOLD"
   | "HOLD_FOR_DEEPER_HARVEST"
   | "WATCH"
+  | "RELEASE_SHORT"
+  | "REINSTATE_SHORT"
+  | "CLOSE_RUNNER"
   | "EXIT";
 
 export type AdaptiveExitReason =
@@ -23,6 +29,8 @@ export type AdaptiveExitReason =
   | "ADAPTIVE_INVALIDATION"
   | "ADAPTIVE_SHORT_3X"
   | "ADAPTIVE_IF_NEAR_MAX_LOSS"
+  | "ADAPTIVE_RUNNER_RECOVERED"
+  | "ADAPTIVE_RUNNER_EXHAUSTED"
   | "ADAPTIVE_SESSION_CLOSE";
 
 /**
@@ -39,6 +47,16 @@ export type AdaptiveAuctionContext = {
   pocMigration5mSpx: number | null;
   observedVolume: number;
   classificationPct: number | null;
+};
+
+export type AdaptiveStructureTransition = {
+  type: "RELEASE_SHORT" | "REINSTATE_SHORT" | "CLOSE_RUNNER";
+  strike: number | null;
+  executionPrice: number;
+  nextStructureState: AdaptiveStructureState;
+  nextActiveLegs: ExecutionLeg[];
+  nextNetCashPoints: number;
+  detail: string;
 };
 
 export type AdaptiveManagementDecision = {
@@ -61,6 +79,10 @@ export type AdaptiveManagementDecision = {
   auctionPressurePct: number | null;
   auctionEfficiencyPct: number | null;
   projectedPocSpx: number | null;
+  structureState: AdaptiveStructureState | null;
+  structureTransition: AdaptiveStructureTransition | null;
+  markedPnlDollars: number | null;
+  currentGreeks: ShadowGreekSnapshot | null;
   reasons: string[];
 };
 
@@ -68,13 +90,20 @@ export function evaluateZeroDteAdaptiveManagement(args: {
   trade: ZeroDteShadowTrade;
   read: ZeroDteExecutionRead;
   spot: number;
+  rows?: ZeroDteChainRow[];
+  minSellableCredit?: number;
   auction?: AdaptiveAuctionContext | null;
 }): AdaptiveManagementDecision {
   const { trade, read, spot } = args;
   const auction = args.auction ?? null;
   const debit = finitePositiveOrZero(read.currentBuybackDebit ?? read.currentCredit);
+  const structureMark =
+    trade.strategy === "iron-fly" || !args.rows?.length
+      ? null
+      : markAdaptiveVerticalStructure(trade, args.rows);
   const currentPnlDollars =
-    debit === null ? null : (trade.entrySellableCredit - debit) * 100;
+    structureMark?.markedPnlDollars ??
+    (debit === null ? null : (trade.entrySellableCredit - debit) * 100);
   const currentAdverse = currentPnlDollars === null ? 0 : Math.max(0, -currentPnlDollars);
   const currentFavorable = currentPnlDollars === null ? 0 : Math.max(0, currentPnlDollars);
   const priorAdaptiveMae = trade.adaptiveMaxAdverseExcursionDollars ?? 0;
@@ -132,6 +161,9 @@ export function evaluateZeroDteAdaptiveManagement(args: {
     adaptiveMfe,
     profitGivebackPct,
     auction,
+    rows: args.rows ?? [],
+    minSellableCredit: Math.max(0, args.minSellableCredit ?? 0.75),
+    structureMark,
   });
 }
 
@@ -145,6 +177,9 @@ function evaluateVertical(args: {
   adaptiveMfe: number;
   profitGivebackPct: number | null;
   auction: AdaptiveAuctionContext | null;
+  rows: ZeroDteChainRow[];
+  minSellableCredit: number;
+  structureMark: ReturnType<typeof markAdaptiveVerticalStructure> | null;
 }): AdaptiveManagementDecision {
   const {
     trade,
@@ -156,12 +191,18 @@ function evaluateVertical(args: {
     adaptiveMfe,
     profitGivebackPct,
     auction,
+    rows,
+    minSellableCredit,
+    structureMark,
   } = args;
   const isPut = trade.strategy === "put-credit-spread";
-  const shortStrike = firstShortStrike(trade);
+  const shortStrike =
+    structureMark?.activeLegs.find((leg) => leg.action === "sell")?.strike ??
+    firstShortStrike(trade);
   const shortDistance = shortStrike === null ? null : isPut ? spot - shortStrike : shortStrike - spot;
   const shortBreached = shortDistance !== null && shortDistance <= 0;
-  const worstShortMultiple = read.worstShortLegMultiple ?? trade.currentShortLegMultiple;
+  const worstShortMultiple =
+    structureMark?.shortMultiple ?? trade.currentShortLegMultiple;
   const threeXShort = worstShortMultiple !== null && worstShortMultiple >= 3;
   const adverseRail = isPut ? read.railBreached === "LOWER" : read.railBreached === "UPPER";
   const mapShift = read.mapCenter - trade.entryMapCenter;
@@ -206,6 +247,36 @@ function evaluateVertical(args: {
   const pocMigratingFavorable = pocMigration !== null && (isPut ? pocMigration > 0.5 : pocMigration < -0.5);
   const pocMigratingAdverse = pocMigration !== null && (isPut ? pocMigration < -0.5 : pocMigration > 0.5);
 
+  const structureDecision = evaluateVerticalStructureTransition({
+    trade,
+    read,
+    spot,
+    rows,
+    minSellableCredit,
+    structureMark,
+    auction,
+    shortBreached,
+    threeXShort,
+    adverseRelease,
+    efficiency,
+    confidence,
+    pocBeyondShort,
+    pocMigratingAdverse,
+    adverseMapShift,
+  });
+  if (structureDecision) return structureDecision;
+  const verticalDecision = (value: Parameters<typeof decision>[0]) =>
+    decision({
+      ...value,
+      structureState: trade.adaptiveStructureState ?? "CREDIT_SPREAD",
+      markedPnlDollars: structureMark?.markedPnlDollars ?? value.currentPnlDollars,
+      currentGreeks: structureMark?.currentGreeks ?? null,
+    });
+  const managementDebit =
+    structureMark?.markedPnlDollars != null
+      ? Math.max(0, trade.entrySellableCredit - structureMark.markedPnlDollars / 100)
+      : debit;
+
   let favorableScore = 0;
   if (favorableRelease) favorableScore += 36;
   else if (recoveryAuction) favorableScore += 18;
@@ -245,12 +316,11 @@ function evaluateVertical(args: {
     0,
     100,
   );
-  if (threeXShort) invalidationScore = 100;
+  if (threeXShort) invalidationScore = Math.max(invalidationScore, 88);
 
   const thesisScore = clamp(78 + favorableScore * 0.28 - threatScore * 0.55, 0, 100);
   const invalidated = Boolean(
-    threeXShort ||
-      (invalidationScore >= 75 && priceFailure && (auctionFailure || structuralFailureCount >= 2)),
+    invalidationScore >= 75 && priceFailure && (auctionFailure || structuralFailureCount >= 2),
   );
 
   let targetCapturePct = 50;
@@ -259,9 +329,9 @@ function evaluateVertical(args: {
   if (read.timeRegime.regime === "FINAL_ENTRY") targetCapturePct = Math.min(targetCapturePct, 50);
   const targetDebit = Math.max(0, trade.entrySellableCredit * (1 - targetCapturePct / 100));
   const capturedPct =
-    debit === null || trade.entrySellableCredit <= 0
+    managementDebit === null || trade.entrySellableCredit <= 0
       ? null
-      : ((trade.entrySellableCredit - debit) / trade.entrySellableCredit) * 100;
+      : ((trade.entrySellableCredit - managementDebit) / trade.entrySellableCredit) * 100;
 
   const meaningfulMfe = 100;
   const retainedProfit = 50;
@@ -293,29 +363,32 @@ function evaluateVertical(args: {
   if (threeXShort) reasons.push(`Worst short leg is ${worstShortMultiple?.toFixed(2)}× its entry premium.`);
 
   if (threeXShort) {
-    return decision({
-      state: "INVALIDATED",
-      action: "EXIT",
-      shouldExit: true,
-      exitReason: "ADAPTIVE_SHORT_3X",
+    return verticalDecision({
+      state: "THREATENED",
+      action: "WATCH",
+      shouldExit: false,
+      exitReason: null,
       targetCapturePct,
       targetDebit,
       targetR: null,
       thesisScore,
       favorableScore,
-      threatScore,
+      threatScore: Math.max(threatScore, 90),
       invalidationScore,
       currentPnlDollars,
       adaptiveMae,
       adaptiveMfe,
       profitGivebackPct,
       auction,
-      reasons: [...reasons, "Vertical 3× short-premium hard protection is active."],
+      reasons: [
+        ...reasons,
+        "The short has reached the 3× release threshold, but a leg-level transition could not be executed from the available exact-leg quote state. Do not liquidate the valuable long automatically; keep the short-release action armed.",
+      ],
     });
   }
 
   if (invalidated) {
-    return decision({
+    return verticalDecision({
       state: "INVALIDATED",
       action: "EXIT",
       shouldExit: true,
@@ -336,8 +409,8 @@ function evaluateVertical(args: {
     });
   }
 
-  if (debit !== null && debit <= targetDebit) {
-    return decision({
+  if (managementDebit !== null && managementDebit <= targetDebit) {
+    return verticalDecision({
       state: "HARVEST",
       action: "EXIT",
       shouldExit: true,
@@ -359,7 +432,7 @@ function evaluateVertical(args: {
   }
 
   if (profitProtection) {
-    return decision({
+    return verticalDecision({
       state: "HARVEST",
       action: "EXIT",
       shouldExit: true,
@@ -381,7 +454,7 @@ function evaluateVertical(args: {
   }
 
   if (recoveredFromPain) {
-    return decision({
+    return verticalDecision({
       state: "RECOVERY",
       action: "HOLD",
       shouldExit: false,
@@ -403,7 +476,7 @@ function evaluateVertical(args: {
   }
 
   if (threatScore >= 45) {
-    return decision({
+    return verticalDecision({
       state: "THREATENED",
       action: "WATCH",
       shouldExit: false,
@@ -425,7 +498,7 @@ function evaluateVertical(args: {
   }
 
   if (targetCapturePct > 50) {
-    return decision({
+    return verticalDecision({
       state: "FAVORABLE_RELEASE",
       action: "HOLD_FOR_DEEPER_HARVEST",
       shouldExit: false,
@@ -446,7 +519,7 @@ function evaluateVertical(args: {
     });
   }
 
-  return decision({
+  return verticalDecision({
     state: "HEALTHY",
     action: "HOLD",
     shouldExit: false,
@@ -514,7 +587,7 @@ function evaluateIronFly(args: {
   );
   const efficiency = auction?.efficiencyPct ?? 0;
   const flowConfidence = auction?.flowConfidencePct ?? 0;
-  const worstShortMultiple = read.worstShortLegMultiple ?? trade.currentShortLegMultiple;
+  const worstShortMultiple = trade.currentShortLegMultiple;
   const severeShort = worstShortMultiple !== null && worstShortMultiple >= 3;
   const nearMaxLoss = Boolean(
     wingWidth !== null && debit !== null && debit >= wingWidth * 0.985,
@@ -789,6 +862,491 @@ function evaluateIronFly(args: {
   });
 }
 
+
+function markAdaptiveVerticalStructure(
+  trade: ZeroDteShadowTrade,
+  rows: ZeroDteChainRow[],
+) {
+  const activeLegs = trade.adaptiveActiveLegs?.length
+    ? trade.adaptiveActiveLegs
+    : trade.legs;
+  const netCashPoints =
+    trade.adaptiveNetCashPoints ?? trade.entrySellableCredit;
+  const snapshots = buildShadowLegSnapshots(rows, activeLegs, trade.strategy);
+  let closeValuePoints = 0;
+  let complete = activeLegs.length > 0;
+  for (const snapshot of snapshots) {
+    if (snapshot.action === "buy") {
+      if (snapshot.bid === null) complete = false;
+      else closeValuePoints += snapshot.bid;
+    } else {
+      if (snapshot.ask === null) complete = false;
+      else closeValuePoints -= snapshot.ask;
+    }
+  }
+  const markedPnlDollars = complete
+    ? (netCashPoints + closeValuePoints) * 100
+    : null;
+  const short = activeLegs.find((leg) => leg.action === "sell") ?? null;
+  const shortSnapshot = short
+    ? snapshots.find(
+        (leg) =>
+          leg.action === "sell" &&
+          leg.optionType === short.optionType &&
+          Math.abs(leg.strike - short.strike) < 0.01,
+      ) ?? null
+    : null;
+  const shortEntryPrice = short
+    ? adaptiveShortEntryPrice(trade, short)
+    : null;
+  const shortMultiple =
+    shortSnapshot?.ask != null && shortEntryPrice != null && shortEntryPrice > 0
+      ? shortSnapshot.ask / shortEntryPrice
+      : null;
+  return {
+    activeLegs,
+    netCashPoints,
+    snapshots,
+    currentGreeks: aggregateGreeks(snapshots),
+    closeValuePoints: complete ? closeValuePoints : null,
+    markedPnlDollars,
+    shortMultiple,
+  };
+}
+
+function adaptiveShortEntryPrice(
+  trade: ZeroDteShadowTrade,
+  short: ExecutionLeg,
+) {
+  const repair = [...(trade.adaptiveStructureHistory ?? [])]
+    .reverse()
+    .find(
+      (item) =>
+        item.action === "REINSTATE_SHORT" &&
+        item.strike !== null &&
+        Math.abs(item.strike - short.strike) < 0.01 &&
+        item.price !== null &&
+        item.price > 0,
+    );
+  if (repair?.price) return repair.price;
+  return (
+    trade.entryShortLegs.find(
+      (item) =>
+        item.optionType === short.optionType &&
+        Math.abs(item.strike - short.strike) < 0.01,
+    )?.sellPrice ?? null
+  );
+}
+
+function evaluateVerticalStructureTransition(args: {
+  trade: ZeroDteShadowTrade;
+  read: ZeroDteExecutionRead;
+  spot: number;
+  rows: ZeroDteChainRow[];
+  minSellableCredit: number;
+  structureMark: ReturnType<typeof markAdaptiveVerticalStructure> | null;
+  auction: AdaptiveAuctionContext | null;
+  shortBreached: boolean;
+  threeXShort: boolean;
+  adverseRelease: boolean;
+  efficiency: number;
+  confidence: number;
+  pocBeyondShort: boolean;
+  pocMigratingAdverse: boolean;
+  adverseMapShift: boolean;
+}): AdaptiveManagementDecision | null {
+  const {
+    trade,
+    read,
+    spot,
+    rows,
+    minSellableCredit,
+    structureMark,
+    auction,
+  } = args;
+  if (!structureMark || trade.strategy === "iron-fly") return null;
+
+  const structureState: AdaptiveStructureState =
+    trade.adaptiveStructureState ?? "CREDIT_SPREAD";
+  const isPut = trade.strategy === "put-credit-spread";
+  const activeLong = structureMark.activeLegs.find((leg) => leg.action === "buy") ?? null;
+  const activeShort = structureMark.activeLegs.find((leg) => leg.action === "sell") ?? null;
+  const currentPnl = structureMark.markedPnlDollars;
+  const currentAdverse = currentPnl === null ? 0 : Math.max(0, -currentPnl);
+  const currentFavorable = currentPnl === null ? 0 : Math.max(0, currentPnl);
+  const adaptiveMae = Math.max(trade.adaptiveMaxAdverseExcursionDollars ?? 0, currentAdverse);
+  const adaptiveMfe = Math.max(trade.adaptiveMaxFavorableExcursionDollars ?? 0, currentFavorable);
+  const profitGivebackPct =
+    currentPnl !== null && currentPnl >= 0 && adaptiveMfe > 0
+      ? clamp(((adaptiveMfe - currentPnl) / adaptiveMfe) * 100, 0, 100)
+      : null;
+
+  if (structureState === "LONG_RUNNER") {
+    if (!activeLong) return null;
+    const longSnapshot = structureMark.snapshots.find(
+      (item) =>
+        item.action === "buy" &&
+        item.optionType === activeLong.optionType &&
+        Math.abs(item.strike - activeLong.strike) < 0.01,
+    );
+    if (!longSnapshot || longSnapshot.bid === null) {
+      return decision({
+        state: "THREATENED",
+        action: "WATCH",
+        shouldExit: false,
+        exitReason: null,
+        targetCapturePct: null,
+        targetDebit: null,
+        targetR: null,
+        thesisScore: 50,
+        favorableScore: 0,
+        threatScore: 45,
+        invalidationScore: 20,
+        currentPnlDollars: currentPnl,
+        adaptiveMae,
+        adaptiveMfe,
+        profitGivebackPct,
+        auction,
+        structureState,
+        markedPnlDollars: currentPnl,
+        currentGreeks: structureMark.currentGreeks,
+        reasons: ["Released-short runner is active, but the long-leg executable bid is unavailable."],
+      });
+    }
+
+    // Rare but clean branch: if the long has repaired the entire episode, close it.
+    if (currentPnl !== null && currentPnl >= 0) {
+      const nextNetCash = structureMark.netCashPoints + longSnapshot.bid;
+      return decision({
+        state: "HARVEST",
+        action: "CLOSE_RUNNER",
+        shouldExit: true,
+        exitReason: "ADAPTIVE_RUNNER_RECOVERED",
+        targetCapturePct: null,
+        targetDebit: null,
+        targetR: null,
+        thesisScore: 100,
+        favorableScore: 80,
+        threatScore: 0,
+        invalidationScore: 0,
+        currentPnlDollars: currentPnl,
+        adaptiveMae,
+        adaptiveMfe,
+        profitGivebackPct,
+        auction,
+        structureState,
+        markedPnlDollars: currentPnl,
+        currentGreeks: structureMark.currentGreeks,
+        structureTransition: {
+          type: "CLOSE_RUNNER",
+          strike: activeLong.strike,
+          executionPrice: longSnapshot.bid,
+          nextStructureState: "CLOSED",
+          nextActiveLegs: [],
+          nextNetCashPoints: nextNetCash,
+          detail: `Long ${activeLong.strike.toFixed(0)} recovered the short-release deficit; close the runner at its executable bid.`,
+        },
+        reasons: ["The released long has recovered the episode-level short buyback damage; the rare full-repair condition is satisfied."],
+      });
+    }
+
+    const entryLongSnapshot = (trade.entryLegSnapshots ?? []).find(
+      (item) =>
+        item.action === "buy" &&
+        item.optionType === activeLong.optionType &&
+        Math.abs(item.strike - activeLong.strike) < 0.01,
+    ) ?? null;
+    const longDeltaAbs = Math.abs(longSnapshot.delta ?? 0);
+    const entryLongDeltaAbs = Math.max(0.03, Math.abs(entryLongSnapshot?.delta ?? 0));
+    const longDeltaExpansion = longDeltaAbs / entryLongDeltaAbs;
+    const longGammaAbs = Math.abs(longSnapshot.gamma ?? 0);
+    const greekContinuationSupport =
+      longDeltaAbs >= 0.3 && longDeltaExpansion >= 1.35 && longGammaAbs > 0;
+
+    const directionContinuation = isPut
+      ? auction?.state === "RELEASE_DOWN" || auction?.state === "REVERSAL_DOWN"
+      : auction?.state === "RELEASE_UP" || auction?.state === "REVERSAL_UP";
+    const directionExhaustion = isPut
+      ? auction?.state === "ABSORBING_LOW" ||
+        auction?.state === "EXHAUSTING_DOWN" ||
+        auction?.state === "REVERSAL_UP"
+      : auction?.state === "ABSORBING_HIGH" ||
+        auction?.state === "EXHAUSTING_UP" ||
+        auction?.state === "REVERSAL_DOWN";
+    const projectedTerminal = isPut
+      ? read.leastResistancePath?.terminalTrough ?? null
+      : read.leastResistancePath?.terminalCrest ?? null;
+    const projectedRoom = projectedTerminal === null
+      ? null
+      : isPut
+        ? spot - projectedTerminal
+        : projectedTerminal - spot;
+    const pocMigration = auction?.pocMigration5mSpx ?? 0;
+    const pocContinuing = isPut ? pocMigration < -0.5 : pocMigration > 0.5;
+    const continuationStrong = Boolean(
+      directionContinuation &&
+      (auction?.efficiencyPct ?? 0) >= 45 &&
+      (auction?.flowConfidencePct ?? 0) >= 35 &&
+      (pocContinuing || (projectedRoom ?? 0) > 7 || greekContinuationSupport),
+    );
+    const exhaustion = Boolean(
+      directionExhaustion ||
+      ((projectedRoom ?? 999) <= 5 && (auction?.efficiencyPct ?? 0) < 42),
+    );
+
+    if (exhaustion && !continuationStrong) {
+      const releasedShort =
+        trade.adaptiveReleasedShortStrike ?? firstShortStrike(trade);
+      const repair = findInteriorRepairShort({
+        rows,
+        strategy: trade.strategy,
+        longStrike: activeLong.strike,
+        releasedShortStrike: releasedShort,
+        minSellableCredit,
+      });
+      if (repair) {
+        const repairLeg: ExecutionLeg = {
+          optionType: activeLong.optionType,
+          action: "sell",
+          strike: repair.strike,
+        };
+        const nextNetCash = structureMark.netCashPoints + repair.bid;
+        return decision({
+          state: "RECOVERY",
+          action: "REINSTATE_SHORT",
+          shouldExit: false,
+          exitReason: null,
+          targetCapturePct: null,
+          targetDebit: null,
+          targetR: null,
+          thesisScore: 65,
+          favorableScore: 45,
+          threatScore: 25,
+          invalidationScore: 15,
+          currentPnlDollars: currentPnl,
+          adaptiveMae,
+          adaptiveMfe,
+          profitGivebackPct,
+          auction,
+          structureState,
+          markedPnlDollars: currentPnl,
+          currentGreeks: structureMark.currentGreeks,
+          structureTransition: {
+            type: "REINSTATE_SHORT",
+            strike: repair.strike,
+            executionPrice: repair.bid,
+            nextStructureState: "REPAIRED_SPREAD",
+            nextActiveLegs: [repairLeg, activeLong],
+            nextNetCashPoints: nextNetCash,
+            detail: `Continuation exhausted; sell ${repair.strike.toFixed(0)} inside the existing ${activeLong.strike.toFixed(0)} long for ${repair.bid.toFixed(2)} credit.`,
+          },
+          reasons: [
+            `The runner has not fully recovered (${currentPnl === null ? "P/L unavailable" : `$${currentPnl.toFixed(0)}`}), but continuation is exhausting.`,
+            `Re-short ${repair.strike.toFixed(0)} inside the fixed ${activeLong.strike.toFixed(0)} long to narrow margin and bring in richer repair credit.`,
+          ],
+        });
+      }
+
+      // No interior strike exists (common after a 5-wide repair). Exit the long
+      // rather than allow an exhausted runner to decay with no repair geometry.
+      const nextNetCash = structureMark.netCashPoints + longSnapshot.bid;
+      return decision({
+        state: "HARVEST",
+        action: "CLOSE_RUNNER",
+        shouldExit: true,
+        exitReason: "ADAPTIVE_RUNNER_EXHAUSTED",
+        targetCapturePct: null,
+        targetDebit: null,
+        targetR: null,
+        thesisScore: 25,
+        favorableScore: 10,
+        threatScore: 55,
+        invalidationScore: 45,
+        currentPnlDollars: currentPnl,
+        adaptiveMae,
+        adaptiveMfe,
+        profitGivebackPct,
+        auction,
+        structureState,
+        markedPnlDollars: currentPnl,
+        currentGreeks: structureMark.currentGreeks,
+        structureTransition: {
+          type: "CLOSE_RUNNER",
+          strike: activeLong.strike,
+          executionPrice: longSnapshot.bid,
+          nextStructureState: "CLOSED",
+          nextActiveLegs: [],
+          nextNetCashPoints: nextNetCash,
+          detail: "Runner continuation exhausted and there is no valid interior re-short strike; harvest the remaining long value.",
+        },
+        reasons: ["Continuation has exhausted and the original long contains no remaining interior repair strike."],
+      });
+    }
+
+    return decision({
+      state: continuationStrong ? "FAVORABLE_RELEASE" : "RECOVERY",
+      action: continuationStrong ? "HOLD_FOR_DEEPER_HARVEST" : "HOLD",
+      shouldExit: false,
+      exitReason: null,
+      targetCapturePct: null,
+      targetDebit: null,
+      targetR: null,
+      thesisScore: continuationStrong ? 78 : 60,
+      favorableScore: continuationStrong ? 75 : 42,
+      threatScore: continuationStrong ? 18 : 32,
+      invalidationScore: 10,
+      currentPnlDollars: currentPnl,
+      adaptiveMae,
+      adaptiveMfe,
+      profitGivebackPct,
+      auction,
+      structureState,
+      markedPnlDollars: currentPnl,
+      currentGreeks: structureMark.currentGreeks,
+      reasons: [
+        continuationStrong
+          ? `Short has been released; map/ES continuation still supports running the ${activeLong.strike.toFixed(0)} long.`
+          : `Short has been released; keep the ${activeLong.strike.toFixed(0)} long as a temporary repair runner while waiting for either recovery or a valid re-short exhaustion.`,
+        projectedRoom === null
+          ? "Map terminal projection is unavailable."
+          : `Map terminal projection leaves about ${Math.max(0, projectedRoom).toFixed(1)} points of directional room.`,
+        `Runner Greeks: |delta| ${longDeltaAbs.toFixed(2)}, delta expansion ${longDeltaExpansion.toFixed(2)}× versus entry, |gamma| ${longGammaAbs.toFixed(4)}${greekContinuationSupport ? " — convexity supports continuation." : "."}`,
+      ],
+    });
+  }
+
+  if (!activeShort || !activeLong) return null;
+  const shortSnapshot = structureMark.snapshots.find(
+    (item) =>
+      item.action === "sell" &&
+      item.optionType === activeShort.optionType &&
+      Math.abs(item.strike - activeShort.strike) < 0.01,
+  );
+  if (!shortSnapshot || shortSnapshot.ask === null) return null;
+  const longSnapshot = structureMark.snapshots.find(
+    (item) =>
+      item.action === "buy" &&
+      item.optionType === activeLong.optionType &&
+      Math.abs(item.strike - activeLong.strike) < 0.01,
+  ) ?? null;
+  const entryShortSnapshot = (trade.entryLegSnapshots ?? []).find(
+    (item) =>
+      item.action === "sell" &&
+      item.optionType === activeShort.optionType &&
+      Math.abs(item.strike - activeShort.strike) < 0.01,
+  ) ?? null;
+  const entryLongSnapshot = (trade.entryLegSnapshots ?? []).find(
+    (item) =>
+      item.action === "buy" &&
+      item.optionType === activeLong.optionType &&
+      Math.abs(item.strike - activeLong.strike) < 0.01,
+  ) ?? null;
+  const shortDeltaAbs = Math.abs(shortSnapshot.delta ?? 0);
+  const entryShortDeltaAbs = Math.max(0.05, Math.abs(entryShortSnapshot?.delta ?? 0));
+  const shortDeltaExpansion = shortDeltaAbs / entryShortDeltaAbs;
+  const longDeltaAbs = Math.abs(longSnapshot?.delta ?? 0);
+  const entryLongDeltaAbs = Math.max(0.03, Math.abs(entryLongSnapshot?.delta ?? 0));
+  const longDeltaExpansion = longDeltaAbs / entryLongDeltaAbs;
+  const shortGammaAbs = Math.abs(shortSnapshot.gamma ?? 0);
+  const longGammaAbs = Math.abs(longSnapshot?.gamma ?? 0);
+  const greekShortThreat =
+    shortDeltaAbs >= 0.45 &&
+    shortDeltaExpansion >= 1.5 &&
+    (shortGammaAbs > 0 || longDeltaExpansion >= 1.3);
+  const longConvexityAvailable =
+    longSnapshot?.bid != null &&
+    longDeltaAbs >= 0.2 &&
+    (longGammaAbs > 0 || longDeltaExpansion >= 1.25);
+
+  const pathThroughLong = isPut
+    ? (read.leastResistancePath?.terminalTrough ?? Infinity) <= activeLong.strike
+    : (read.leastResistancePath?.terminalCrest ?? -Infinity) >= activeLong.strike;
+  const continuationEvidenceCount = [
+    args.adverseRelease && args.efficiency >= 40 && args.confidence >= 30,
+    args.pocBeyondShort,
+    args.pocMigratingAdverse,
+    pathThroughLong,
+    args.adverseMapShift,
+    greekShortThreat,
+  ].filter(Boolean).length;
+  const releaseConfirmed = Boolean(
+    args.threeXShort ||
+      (args.shortBreached && continuationEvidenceCount >= 2),
+  );
+
+  if (!releaseConfirmed) return null;
+
+  const nextNetCash = structureMark.netCashPoints - shortSnapshot.ask;
+  return decision({
+    state: "THREATENED",
+    action: "RELEASE_SHORT",
+    shouldExit: false,
+    exitReason: null,
+    targetCapturePct: null,
+    targetDebit: null,
+    targetR: null,
+    thesisScore: 35,
+    favorableScore: 15,
+    threatScore: 88,
+    invalidationScore: 82,
+    currentPnlDollars: currentPnl,
+    adaptiveMae,
+    adaptiveMfe,
+    profitGivebackPct,
+    auction,
+    structureState,
+    markedPnlDollars: currentPnl,
+    currentGreeks: structureMark.currentGreeks,
+    structureTransition: {
+      type: "RELEASE_SHORT",
+      strike: activeShort.strike,
+      executionPrice: shortSnapshot.ask,
+      nextStructureState: "LONG_RUNNER",
+      nextActiveLegs: [activeLong],
+      nextNetCashPoints: nextNetCash,
+      detail: `Confirmed continuation through ${activeShort.strike.toFixed(0)}: buy back the short at ${shortSnapshot.ask.toFixed(2)} and retain the ${activeLong.strike.toFixed(0)} long.`,
+    },
+    reasons: [
+      args.threeXShort
+        ? `The ${activeShort.strike.toFixed(0)} short reached the 3× release threshold; the trigger applies to the short leg, not the entire vertical.`
+        : `The ${activeShort.strike.toFixed(0)} short is breached and ${continuationEvidenceCount} continuation factors are aligned; do not liquidate the long automatically.`,
+      `Release the short liability and let the ${activeLong.strike.toFixed(0)} long participate while map projection / ES continuation is reassessed.`,
+      `Greek support: short |delta| ${shortDeltaAbs.toFixed(2)} (${shortDeltaExpansion.toFixed(2)}× entry), long |delta| ${longDeltaAbs.toFixed(2)} (${longDeltaExpansion.toFixed(2)}× entry)${greekShortThreat ? "; short gamma/delta behavior supports release" : ""}${longConvexityAvailable ? "; long convexity is available" : ""}.`,
+    ],
+  });
+}
+
+function findInteriorRepairShort(args: {
+  rows: ZeroDteChainRow[];
+  strategy: ZeroDteShadowTrade["strategy"];
+  longStrike: number;
+  releasedShortStrike: number | null;
+  minSellableCredit: number;
+}) {
+  const releasedShortStrike = args.releasedShortStrike;
+  if (releasedShortStrike === null) return null;
+  const isCall = args.strategy === "call-credit-spread";
+  const optionType = isCall ? "call" : "put";
+  const candidates = args.rows
+    .filter(
+      (row) =>
+        row.optionType === optionType &&
+        Number.isFinite(row.bid) &&
+        Number(row.bid) >= args.minSellableCredit &&
+        (isCall
+          ? row.strike > releasedShortStrike && row.strike < args.longStrike
+          : row.strike < releasedShortStrike && row.strike > args.longStrike),
+    )
+    .map((row) => ({ strike: row.strike, bid: Number(row.bid) }));
+  if (!candidates.length) return null;
+  // Narrow the repair toward the existing long. For 7735/7745 this selects
+  // 7740; for 7700/7690 puts it selects 7695.
+  candidates.sort((left, right) =>
+    Math.abs(left.strike - args.longStrike) - Math.abs(right.strike - args.longStrike),
+  );
+  return candidates[0];
+}
+
 function decision(args: {
   state: AdaptiveManagementState;
   action: AdaptiveManagementAction;
@@ -806,6 +1364,10 @@ function decision(args: {
   adaptiveMfe: number;
   profitGivebackPct: number | null;
   auction: AdaptiveAuctionContext | null;
+  structureState?: AdaptiveStructureState | null;
+  structureTransition?: AdaptiveStructureTransition | null;
+  markedPnlDollars?: number | null;
+  currentGreeks?: ShadowGreekSnapshot | null;
   reasons: string[];
 }): AdaptiveManagementDecision {
   return {
@@ -828,6 +1390,10 @@ function decision(args: {
     auctionPressurePct: args.auction?.directionalPressurePct ?? null,
     auctionEfficiencyPct: args.auction?.efficiencyPct ?? null,
     projectedPocSpx: args.auction?.projectedPocSpx ?? null,
+    structureState: args.structureState ?? null,
+    structureTransition: args.structureTransition ?? null,
+    markedPnlDollars: args.markedPnlDollars ?? args.currentPnlDollars,
+    currentGreeks: args.currentGreeks ?? null,
     reasons: unique(args.reasons),
   };
 }

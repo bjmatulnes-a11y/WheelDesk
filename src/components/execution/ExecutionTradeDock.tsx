@@ -59,7 +59,7 @@ export function ExecutionTradeDock({
   read,
   portfolio,
   positionReads,
-  executionPositions = [],
+  executionPositions,
   candidates,
   tracks,
   riskPolicy,
@@ -83,11 +83,11 @@ export function ExecutionTradeDock({
   const [collapsed, setCollapsed] = useState(false);
   const [overrideEnabled, setOverrideEnabled] = useState(false);
   const [overrideReason, setOverrideReason] = useState("");
-  const [shortEntryPremiums, setShortEntryPremiums] = useState<Record<string, string>>({});
 
   const candidate = candidates[selectedStrategy] ?? null;
   const candidateKey = candidate?.setupKey ?? `${selectedStrategy}:none`;
-  const positions = portfolio?.positions ?? executionPositions.map((position) => ({ position }));
+  const positions =
+    executionPositions ?? (portfolio?.positions ?? []).map((item) => item.position);
 
   useEffect(() => {
     if (!positions.length) setShowEntry(true);
@@ -96,7 +96,6 @@ export function ExecutionTradeDock({
   useEffect(() => {
     setOverrideEnabled(false);
     setOverrideReason("");
-    setShortEntryPremiums({});
   }, [candidateKey, setupMode, selectedStrategy]);
 
   useEffect(() => {
@@ -211,35 +210,54 @@ export function ExecutionTradeDock({
     setupMode,
   ]);
 
+  if (!read) {
+    return (
+      <div style={styles.card}>
+        <div style={styles.eyebrow}>Portfolio Dock</div>
+        <div style={styles.empty}>Waiting for live execution intelligence.</div>
+      </div>
+    );
+  }
+
   const activeRead =
     setupMode === "manual" && ticket.candidate && evaluateCandidate
       ? evaluateCandidate(ticket.candidate) ?? read
       : read;
-  const signalCleared = Boolean(
-    activeRead?.lifecycle === "SELL_READY" && !activeRead?.entryHardBlocked,
-  );
+  const signalCleared =
+    activeRead.lifecycle === "SELL_READY" && !activeRead.entryHardBlocked;
   const ticketRiskDollars =
     (ticket.candidate?.maxRiskDollars ?? 0) * parsedQuantity;
-  const projectedGrossRiskDollars =
-    (portfolio?.grossRiskDollars ?? 0) + ticketRiskDollars;
+  const projectedEffectiveRiskDollars = (() => {
+    if (!portfolio || !ticket.candidate || ticketRiskDollars <= 0) {
+      return portfolio?.effectiveRiskDollars ?? ticketRiskDollars;
+    }
+    const strategy = ticket.candidate.strategy;
+    const projectedUpside =
+      portfolio.upsideMaxLossDollars +
+      (strategy === "call-credit-spread" || strategy === "iron-fly" ? ticketRiskDollars : 0);
+    const projectedDownside =
+      portfolio.downsideMaxLossDollars +
+      (strategy === "put-credit-spread" || strategy === "iron-fly" ? ticketRiskDollars : 0);
+    return Math.max(projectedUpside, projectedDownside);
+  })();
   const ticketRiskExceedsBudget = Boolean(
     portfolio &&
       ticketRiskDollars > 0 &&
-      projectedGrossRiskDollars > portfolio.riskBudgetDollars,
+      projectedEffectiveRiskDollars > portfolio.riskBudgetDollars,
   );
   const remainingRiskBudget = portfolio
-    ? Math.max(0, portfolio.riskBudgetDollars - portfolio.grossRiskDollars)
+    ? portfolio.availableRiskCapacityDollars
     : null;
   const oneLotRisk = ticket.candidate?.maxRiskDollars ?? null;
   const accountRiskBudget = accountRiskBudgetDollars(riskPolicy);
   const regimeAdjustedAccountRiskBudget =
     accountRiskBudget === null
       ? null
-      : accountRiskBudget * (activeRead?.recommendedSizeMultiplier ?? 1);
+      : accountRiskBudget * activeRead.recommendedSizeMultiplier;
   const regimeAdjustedPortfolioRoom =
     remainingRiskBudget === null
       ? null
-      : remainingRiskBudget * (activeRead?.recommendedSizeMultiplier ?? 1);
+      : remainingRiskBudget * activeRead.recommendedSizeMultiplier;
   const effectiveTicketRiskBudget =
     regimeAdjustedAccountRiskBudget === null
       ? regimeAdjustedPortfolioRoom
@@ -267,27 +285,9 @@ export function ExecutionTradeDock({
   const overrideValid =
     overrideEnabled && overrideReason.trim().length >= 4;
   const isManualActualPosition = setupMode === "manual";
-  const entryShortLegs: ExecutionShortLegEntry[] = (ticket.candidate?.legs ?? [])
-    .filter((leg) => leg.action === "sell")
-    .map((leg) => {
-      const key = shortLegKey(leg);
-      const typed = parsePositive(shortEntryPremiums[key]);
-      const liveQuote = activeRead?.shortLegQuotes.find(
-        (quote) =>
-          quote.optionType === leg.optionType &&
-          Math.abs(quote.strike - leg.strike) < 0.01,
-      );
-      const liveBid = liveQuote?.bid ?? null;
-      return {
-        optionType: leg.optionType,
-        strike: leg.strike,
-        sellPrice: typed ?? liveBid,
-        source: typed !== null ? "actual" : liveBid !== null ? "live-bid" : "unknown",
-      };
-    });
   const canOpen =
     !readOnly &&
-    (!entryLocked || isManualActualPosition) &&
+    !entryLocked &&
     !busy &&
     ticket.candidate !== null &&
     parsedEntryCredit !== null &&
@@ -317,7 +317,7 @@ export function ExecutionTradeDock({
                 : "rgba(245,197,66,.42)",
             }}
           >
-            {(activeRead?.lifecycle ?? (isManualActualPosition ? "MANUAL TRACK" : "WAITING")).replaceAll("_", " ")}
+            {activeRead.lifecycle.replaceAll("_", " ")}
           </div>
           <button type="button" onClick={() => setCollapsed((current) => !current)} style={styles.collapseButton}>
             {collapsed ? "+" : "−"}
@@ -338,7 +338,7 @@ export function ExecutionTradeDock({
             <div style={styles.error}>
               <strong>NEW ENTRY LOCKED</strong>
               <span> {entryLockedReason ?? "Live execution data failed a freshness or integrity gate."}</span>
-              <div>Engine entries remain locked. Manual Actual Position recording is still allowed so an already-open broker position can be tracked; live management will wait for exact quotes.</div>
+              <div>Existing positions remain manageable; this lock cannot be bypassed with a manual override.</div>
             </div>
           ) : null}
 
@@ -346,11 +346,11 @@ export function ExecutionTradeDock({
 
       {positions.length ? (
         <div style={styles.positionStack}>
-          {positions.map((item) => (
+          {positions.map((position) => (
             <PortfolioPositionCard
-              key={item.position.id}
-              position={item.position}
-              read={positionReads[item.position.id] ?? null}
+              key={position.id}
+              position={position}
+              read={positionReads[position.id] ?? null}
               busy={busy}
               onClose={onClose}
             />
@@ -371,9 +371,9 @@ export function ExecutionTradeDock({
       {showEntry ? (
         <>
           <div style={styles.regimeBar}>
-            <span>{activeRead?.timeRegime.label ?? "Live execution read unavailable"}</span>
-            <strong>{activeRead ? `${activeRead.timeRegime.centralTime} CT` : "—"}</strong>
-            <em>{Math.round((activeRead?.recommendedSizeMultiplier ?? 1) * 100)}% size</em>
+            <span>{activeRead.timeRegime.label}</span>
+            <strong>{activeRead.timeRegime.centralTime} CT</strong>
+            <em>{Math.round(activeRead.recommendedSizeMultiplier * 100)}% size</em>
           </div>
 
           <div style={styles.strategyGrid}>
@@ -420,13 +420,13 @@ export function ExecutionTradeDock({
               </span>
               <strong style={styles.trackingValue}>{formatLegs(ticket.candidate?.legs ?? candidate?.legs ?? [])}</strong>
             </div>
-            <div style={styles.trackingCell}><span>Age</span><strong style={styles.trackingValue}>{activeRead?.candidateAgeCandles ?? 0} candles</strong></div>
+            <div style={styles.trackingCell}><span>Age</span><strong style={styles.trackingValue}>{activeRead.candidateAgeCandles} candles</strong></div>
             <div style={styles.trackingCell}><span>Lock Credit</span><strong style={styles.trackingValue}>{money(tracks?.[selectedStrategy]?.lockedCredit)}</strong></div>
-            <div style={styles.trackingCell}><span>Mark</span><strong style={styles.trackingValue}>{money(activeRead?.currentCredit)}</strong></div>
-            <div style={styles.trackingCell}><span>Sellable</span><strong style={styles.trackingValue}>{money(activeRead?.currentSellableCredit)}</strong></div>
-            <div style={styles.trackingCell}><span>Buyback</span><strong style={styles.trackingValue}>{money(activeRead?.currentBuybackDebit)}</strong></div>
-            <div style={styles.trackingCell}><span>Peak</span><strong style={styles.trackingValue}>{money(activeRead?.peakCredit)}</strong></div>
-            <div style={styles.trackingCell}><span>Tape</span><strong style={styles.trackingValue}>{activeRead?.premiumSampleCount ?? 0} pts</strong></div>
+            <div style={styles.trackingCell}><span>Mark</span><strong style={styles.trackingValue}>{money(activeRead.currentCredit)}</strong></div>
+            <div style={styles.trackingCell}><span>Sellable</span><strong style={styles.trackingValue}>{money(activeRead.currentSellableCredit)}</strong></div>
+            <div style={styles.trackingCell}><span>Buyback</span><strong style={styles.trackingValue}>{money(activeRead.currentBuybackDebit)}</strong></div>
+            <div style={styles.trackingCell}><span>Peak</span><strong style={styles.trackingValue}>{money(activeRead.peakCredit)}</strong></div>
+            <div style={styles.trackingCell}><span>Tape</span><strong style={styles.trackingValue}>{activeRead.premiumSampleCount} pts</strong></div>
           </div>
 
           <div style={styles.modeRow}>
@@ -498,63 +498,6 @@ export function ExecutionTradeDock({
             </div>
           )}
 
-          {ticket.candidate ? (
-            <div style={styles.shortEntryBox}>
-              <div style={styles.smallCaps}>Short-leg entry premium · 3× stop baseline</div>
-              <div style={styles.shortEntryGrid}>
-                {ticket.candidate.legs
-                  .filter((leg) => leg.action === "sell")
-                  .map((leg) => {
-                    const key = shortLegKey(leg);
-                    const live = activeRead?.shortLegQuotes.find(
-                      (quote) =>
-                        quote.optionType === leg.optionType &&
-                        Math.abs(quote.strike - leg.strike) < 0.01,
-                    )?.bid ?? null;
-                    return (
-                      <label key={key} style={styles.fieldLabel}>
-                        {leg.strike.toFixed(0)} {leg.optionType.toUpperCase()} short sale
-                        <input
-                          value={shortEntryPremiums[key] ?? ""}
-                          onChange={(event) =>
-                            setShortEntryPremiums((current) => ({
-                              ...current,
-                              [key]: event.target.value,
-                            }))
-                          }
-                          type="number"
-                          min="0"
-                          step="0.05"
-                          placeholder={live == null ? "optional" : `live bid ${live.toFixed(2)}`}
-                          style={styles.input}
-                        />
-                        <button
-                          type="button"
-                          disabled={live == null}
-                          onClick={() => {
-                            if (live == null) return;
-                            setShortEntryPremiums((current) => ({
-                              ...current,
-                              [key]: live.toFixed(2),
-                            }));
-                          }}
-                          style={{
-                            ...styles.useLiveButton,
-                            opacity: live == null ? 0.45 : 1,
-                          }}
-                        >
-                          Use live bid {money(live)}
-                        </button>
-                      </label>
-                    );
-                  })}
-              </div>
-              <div style={styles.shortEntryHint}>
-                Enter the broker short-leg sale premium when known. This applies to both engine and manual actual positions. If blank, WheelDesk captures the live bid; if neither is available, the position is still recorded and the 3× stop waits for a valid baseline.
-              </div>
-            </div>
-          ) : null}
-
           <div style={styles.twoColumn}>
             <label style={styles.fieldLabel}>
               Quantity
@@ -580,30 +523,30 @@ export function ExecutionTradeDock({
               />
               <button
                 type="button"
-                disabled={(activeRead?.currentSellableCredit ?? activeRead?.currentCredit) == null}
+                disabled={(activeRead.currentSellableCredit ?? activeRead.currentCredit) == null}
                 onClick={() => {
-                  const live = activeRead?.currentSellableCredit ?? activeRead?.currentCredit;
+                  const live = activeRead.currentSellableCredit ?? activeRead.currentCredit;
                   if (live == null) return;
                   setEntryCredit(live.toFixed(2));
                 }}
                 style={{
                   ...styles.useLiveButton,
-                  opacity: (activeRead?.currentSellableCredit ?? activeRead?.currentCredit) == null ? 0.45 : 1,
+                  opacity: (activeRead.currentSellableCredit ?? activeRead.currentCredit) == null ? 0.45 : 1,
                 }}
               >
-                Use Sellable {money(activeRead?.currentSellableCredit ?? activeRead?.currentCredit)}
+                Use Sellable {money(activeRead.currentSellableCredit ?? activeRead.currentCredit)}
               </button>
             </label>
           </div>
 
           <div style={styles.metricGrid}>
-            <DockMetric label="Tape Open" value={money(activeRead?.openingCredit)} />
+            <DockMetric label="Tape Open" value={money(activeRead.openingCredit)} />
             <DockMetric
               label="Velocity"
               value={
-                activeRead?.premiumVelocityPerMinute == null
+                activeRead.premiumVelocityPerMinute == null
                   ? "—"
-                  : `${activeRead?.premiumVelocityPerMinute >= 0 ? "+" : ""}${activeRead?.premiumVelocityPerMinute.toFixed(3)}/m`
+                  : `${activeRead.premiumVelocityPerMinute >= 0 ? "+" : ""}${activeRead.premiumVelocityPerMinute.toFixed(3)}/m`
               }
             />
             <DockMetric
@@ -627,39 +570,39 @@ export function ExecutionTradeDock({
             <DockMetric
               label="Short Distance"
               value={
-                activeRead?.shortDistancePoints == null
+                activeRead.shortDistancePoints == null
                   ? "—"
-                  : `${activeRead?.shortDistancePoints.toFixed(1)} pts`
+                  : `${activeRead.shortDistancePoints.toFixed(1)} pts`
               }
             />
             <DockMetric
               label="Delta / Touch Proxy"
               value={
-                activeRead?.shortDeltaAbs == null
+                activeRead.shortDeltaAbs == null
                   ? "—"
-                  : `${activeRead?.shortDeltaAbs.toFixed(2)} / ~${Math.round(activeRead?.touchRiskProxyPct ?? 0)}%`
+                  : `${activeRead.shortDeltaAbs.toFixed(2)} / ~${Math.round(activeRead.touchRiskProxyPct ?? 0)}%`
               }
             />
             <DockMetric
               label="Signal Gate"
-              value={`${Math.round(activeRead?.entryScore ?? 0)} / ${activeRead?.minimumEntryScore ?? 0}`}
+              value={`${Math.round(activeRead.entryScore)} / ${activeRead.minimumEntryScore}`}
             />
             <DockMetric
               label="Signal Grade"
-              value={`${activeRead?.signalGrade ?? "WATCH"} · A+ ${activeRead?.aPlusEntryScore ?? 0}`}
+              value={`${activeRead.signalGrade} · A+ ${activeRead.aPlusEntryScore}`}
             />
           </div>
 
           {ticketRiskExceedsBudget ? (
             <div style={styles.error}>
-              This quantity would raise gross defined risk to {dollars(projectedGrossRiskDollars)},
+              This quantity would raise effective worst-side defined risk to {dollars(projectedEffectiveRiskDollars)},
               above the {dollars(portfolio?.riskBudgetDollars ?? 0)} policy budget.
               Recording it requires an explicit override.
             </div>
           ) : null}
           {ticketSizeExceedsRecommendation ? (
             <div style={styles.error}>
-              This quantity exceeds the engine's {Math.round((activeRead?.recommendedSizeMultiplier ?? 1) * 100)}%
+              This quantity exceeds the engine's {Math.round(activeRead.recommendedSizeMultiplier * 100)}%
               regime/event-risk size recommendation
               {recommendedMaxQuantity !== null ? ` (max ${recommendedMaxQuantity} contract${recommendedMaxQuantity === 1 ? "" : "s"})` : ""}.
               Recording it requires an explicit override.
@@ -679,8 +622,7 @@ export function ExecutionTradeDock({
           {isManualActualPosition ? (
             <div style={styles.warning}>
               Manual Actual Position: WheelDesk will record and manage these exact legs
-              even when the scanner has no tracked candidate or the live-data entry gate is stale.
-              Engine approval is informational; quote status is {activeRead?.quoteStatus ?? "WAITING_FOR_QUOTES"}.
+              even when the scanner has no tracked candidate. Engine entry approval is informational only.
             </div>
           ) : null}
 
@@ -702,9 +644,9 @@ export function ExecutionTradeDock({
                   style={styles.input}
                 />
               ) : null}
-              {activeRead?.entryHardBlocked ? (
+              {activeRead.entryHardBlocked ? (
                 <div style={styles.error}>
-                  Hard block: {(activeRead?.warnings ?? []).join(" ") || "Execution safety gate failed."}
+                  Hard block: {activeRead.warnings.join(" ") || "Execution safety gate failed."}
                 </div>
               ) : null}
             </div>
@@ -729,15 +671,24 @@ export function ExecutionTradeDock({
                   : engineCleared
                     ? null
                     : overrideReason.trim(),
-                entryShortLegs,
+                entryShortLegs: ticket.candidate.legs.flatMap<ExecutionShortLegEntry>((leg) =>
+                  leg.action === "sell"
+                    ? [{
+                        optionType: leg.optionType,
+                        strike: leg.strike,
+                        sellPrice: null,
+                        source: "unknown",
+                      }]
+                    : [],
+                ),
               });
             }}
             style={{ ...styles.openButton, opacity: canOpen ? 1 : 0.45 }}
           >
             {readOnly
               ? "Research Only · Entry Disabled"
-              : entryLocked && !isManualActualPosition
-                ? "New Engine Entry Locked · Waiting for Fresh Data"
+              : entryLocked
+                ? "New Entry Locked · Waiting for Fresh Data"
                 : busy
                 ? "Saving…"
                 : `Add / Track ${strategyName(selectedStrategy)}`}
@@ -765,8 +716,16 @@ function PortfolioSummary({ portfolio }: { portfolio: ZeroDtePortfolioRead }) {
         />
         <DockMetric label="Open P/L" value={dollars(portfolio.openPnlDollars)} />
         <DockMetric
-          label="Gross Risk"
-          value={`${dollars(portfolio.grossRiskDollars)} · ${Math.round(portfolio.riskBudgetUsedPct)}%`}
+          label="Effective Risk"
+          value={`${dollars(portfolio.effectiveRiskDollars)} · ${Math.round(portfolio.effectiveRiskBudgetUsedPct)}%`}
+        />
+        <DockMetric
+          label="Nominal Gross"
+          value={dollars(portfolio.grossRiskDollars)}
+        />
+        <DockMetric
+          label="Adaptive Capacity"
+          value={dollars(portfolio.availableRiskCapacityDollars)}
         />
       </div>
       {portfolio.warnings.length ? (
@@ -825,30 +784,11 @@ function PortfolioPositionCard({
         <DockMetric label="Buyback" value={money(read?.currentBuybackDebit ?? read?.currentCredit)} />
         <DockMetric label="Captured" value={percent(read?.capturedPremiumPct)} />
         <DockMetric label="P/L" value={dollars(read?.livePnlDollars)} />
-        <DockMetric label="MFE" value={dollars(read?.maxFavorableExcursionDollars)} />
-        <DockMetric label="MAE" value={dollars(read?.maxAdverseExcursionDollars)} />
-        <DockMetric label="Giveback" value={percent(read?.profitGivebackPct)} />
-        <DockMetric label="Quotes" value={read?.quoteStatus.replaceAll("_", " ") ?? "WAITING FOR QUOTES"} />
       </div>
 
       {expanded ? (
         <div style={styles.expandedPosition}>
           <LegList legs={position.legs} title="Open legs" />
-          {read?.shortLegRisk.length ? (
-            <div style={styles.shortRiskBox}>
-              <div style={styles.smallCaps}>3× short-premium stop</div>
-              {read.shortLegRisk.map((leg) => (
-                <div key={`${leg.optionType}:${leg.strike}`} style={styles.shortRiskRow}>
-                  <span>{leg.strike.toFixed(0)} {leg.optionType.toUpperCase()}</span>
-                  <strong>entry {money(leg.sellPrice)}</strong>
-                  <strong>ask {money(leg.currentAsk)}</strong>
-                  <em>{leg.multiple == null ? "WAIT" : `${leg.multiple.toFixed(2)}× / 3.00×`}</em>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div style={styles.warning}>Short-leg stop baseline is waiting for a stored entry premium / live quote.</div>
-          )}
           <div style={styles.closePreview}>
             <div style={styles.smallCaps}>Closing Order</div>
             {closeLegs.map((leg, index) => (
@@ -1059,16 +999,6 @@ function formatLegs(legs: ExecutionLeg[]) {
   return legs
     .map((leg) => `${leg.action === "sell" ? "S" : "B"}${leg.strike.toFixed(0)}${leg.optionType[0].toUpperCase()}`)
     .join(" · ");
-}
-
-function shortLegKey(leg: Pick<ExecutionLeg, "optionType" | "strike">) {
-  return `${leg.optionType}:${leg.strike.toFixed(2)}`;
-}
-
-function parsePositive(value: string | undefined) {
-  if (!value?.trim()) return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 function parseNonNegative(value: string) {
@@ -1295,39 +1225,6 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 7,
     padding: "7px 8px",
     textAlign: "right",
-  },
-  shortRiskBox: {
-    display: "grid",
-    gap: 5,
-    border: "1px solid #213b50",
-    borderRadius: 8,
-    padding: 8,
-  },
-  shortRiskRow: {
-    display: "grid",
-    gridTemplateColumns: "1fr auto auto auto",
-    gap: 8,
-    alignItems: "center",
-    fontSize: 9,
-    color: "#9bb1c3",
-  },
-  shortEntryBox: {
-    border: "1px solid #1d3b53",
-    borderRadius: 10,
-    padding: 10,
-    background: "rgba(8,25,39,.55)",
-    display: "grid",
-    gap: 8,
-  },
-  shortEntryGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-    gap: 8,
-  },
-  shortEntryHint: {
-    fontSize: 11,
-    lineHeight: 1.45,
-    color: "#8ca6ba",
   },
   twoColumn: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 7 },
   fieldLabel: {

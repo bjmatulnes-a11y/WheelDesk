@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePlanAccessFromRequest } from "../../../../lib/billing/server-access";
+import { getAuthenticatedUserFromRequest } from "../../../../lib/billing/auth-request";
 import {
   buildZeroDteRecommendation,
   type ZeroDteChainRow,
@@ -33,9 +33,7 @@ function json(data: unknown, status = 200) {
 }
 
 export async function GET(request: NextRequest) {
-  const access = await requirePlanAccessFromRequest(request, "research");
-  if ("response" in access) return access.response;
-  const userId = access.access.user.id;
+  const user = await getAuthenticatedUserFromRequest(request);
   const generatedAt = new Date().toISOString();
   const tradeDate =
     request.nextUrl.searchParams.get("date") ?? nyDateString(new Date());
@@ -75,7 +73,7 @@ export async function GET(request: NextRequest) {
   // latency. Partial failures are still reported independently below.
   const [spxResult, spyResult] = await Promise.allSettled([
     harvestSchwabSymbol({
-      userId,
+      userId: user.id,
       symbol: "SPX",
       providerSymbol: process.env.SCHWAB_SPX_SYMBOL?.trim() || "$SPX",
       tradeDate,
@@ -85,7 +83,7 @@ export async function GET(request: NextRequest) {
       anchorSpot: spxAnchor,
     }),
     harvestSchwabSymbol({
-      userId,
+      userId: user.id,
       symbol: "SPY",
       providerSymbol: process.env.SCHWAB_SPY_SYMBOL?.trim() || "SPY",
       tradeDate,
@@ -122,7 +120,7 @@ export async function GET(request: NextRequest) {
   if (recommendation && spx) {
     try {
       const marketData = await loadZeroDteMoodMarketData({
-        userId,
+        userId: user.id,
         tradeDate,
         generatedAt,
         spxProviderSymbol: spx.providerSymbol,
@@ -378,6 +376,8 @@ function mapContract(
     last,
     delta: finite(contract.delta),
     gamma: finite(contract.gamma),
+    theta: finite(contract.theta),
+    vega: finite(contract.vega),
   };
 }
 

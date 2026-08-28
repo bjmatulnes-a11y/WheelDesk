@@ -9,8 +9,30 @@ import type {
   AdaptiveManagementAction,
   AdaptiveManagementState,
 } from "./zeroDteAdaptiveManagement";
+import type {
+  LiveEsConvictionTier,
+  ShadowGreekSnapshot,
+  ShadowLegSnapshot,
+  ShadowPortfolioDecision,
+  ShadowPortfolioRole,
+} from "./zeroDteAdaptivePortfolio";
 
-export type ZeroDteShadowTradeState = "open" | "closed";
+export type ZeroDteShadowTradeState = "open" | "closed" | "skipped";
+export type AdaptiveStructureState =
+  | "CREDIT_SPREAD"
+  | "LONG_RUNNER"
+  | "REPAIRED_SPREAD"
+  | "IF_CENTER"
+  | "CLOSED";
+
+export type AdaptiveStructureHistoryItem = {
+  at: string;
+  action: "OPEN" | "RELEASE_SHORT" | "REINSTATE_SHORT" | "CLOSE_RUNNER" | "EXIT";
+  strike: number | null;
+  price: number | null;
+  detail: string;
+  netCashPoints: number;
+};
 
 export type ZeroDteShadowTrade = {
   id: string;
@@ -49,6 +71,35 @@ export type ZeroDteShadowTrade = {
   pathFlowSource: "engine" | "fallback" | null;
   pathTerminalTrough: number | null;
   pathTerminalCrest: number | null;
+  portfolioDecision: ShadowPortfolioDecision | null;
+  portfolioRole: ShadowPortfolioRole | null;
+  portfolioConviction: LiveEsConvictionTier | null;
+  portfolioConvictionScore: number | null;
+  premiumQualityScore: number | null;
+  premiumQualityLabel: "EXCELLENT" | "STRONG" | "ACCEPTABLE" | "WEAK" | null;
+  effectiveRiskBeforeDollars: number | null;
+  effectiveRiskAfterDollars: number | null;
+  incrementalEffectiveRiskDollars: number | null;
+  availableCapacityAfterDollars: number | null;
+  adaptiveReserveNeedDollars: number | null;
+  reserveCoverageX: number | null;
+  callReleaseReserveDollars: number | null;
+  putReleaseReserveDollars: number | null;
+  reserveDominantSide: "CALL" | "PUT" | "BALANCED" | "NONE" | null;
+  portfolioRepairDeficitDollars: number | null;
+  candidateOffsetCreditDollars: number | null;
+  portfolioDecisionReason: string | null;
+  entryLegSnapshots: ShadowLegSnapshot[];
+  currentLegSnapshots: ShadowLegSnapshot[];
+  entryGreeks: ShadowGreekSnapshot | null;
+  currentGreeks: ShadowGreekSnapshot | null;
+  adaptiveStructureState: AdaptiveStructureState | null;
+  adaptiveActiveLegs: ExecutionLeg[];
+  adaptiveNetCashPoints: number | null;
+  adaptiveMarkedPnlDollars: number | null;
+  adaptiveReleasedShortStrike: number | null;
+  adaptiveReinstatedShortStrike: number | null;
+  adaptiveStructureHistory: AdaptiveStructureHistoryItem[];
   lastSampleAt: string | null;
   currentMarkCredit: number | null;
   currentBuybackDebit: number | null;
