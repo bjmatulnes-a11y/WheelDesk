@@ -1050,8 +1050,52 @@ export default function SpxCommandChart() {
 
   useEffect(() => {
     if (!autoRefresh) return;
-    const timer = window.setInterval(load, 5000);
-    return () => window.clearInterval(timer);
+
+    // Browser background tabs are aggressively timer-throttled and can leave a
+    // fetch suspended while the page is hidden. Do not burn provider/egress
+    // calls while hidden; instead force one clean resync as soon as the page is
+    // visible/focused again. This keeps the live console fresh without
+    // reintroducing the old high-egress background polling behavior.
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "visible" || !navigator.onLine) return;
+      void load();
+    }, 5000);
+
+    let wakeTimer: number | null = null;
+    const forceResync = () => {
+      if (document.visibilityState !== "visible" || !navigator.onLine) return;
+
+      if (wakeTimer !== null) window.clearTimeout(wakeTimer);
+      wakeTimer = window.setTimeout(() => {
+        wakeTimer = null;
+
+        // A request that was in flight when Chrome froze the tab can otherwise
+        // trip the same-request guard forever/for a long time after wake. Abort
+        // it and allow the wake refresh to start from a clean controller.
+        loadAbortRef.current?.abort();
+        loadAbortRef.current = null;
+        loadRequestKeyRef.current = null;
+        void load();
+      }, 75);
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") forceResync();
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", forceResync);
+    window.addEventListener("pageshow", forceResync);
+    window.addEventListener("online", forceResync);
+
+    return () => {
+      window.clearInterval(timer);
+      if (wakeTimer !== null) window.clearTimeout(wakeTimer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", forceResync);
+      window.removeEventListener("pageshow", forceResync);
+      window.removeEventListener("online", forceResync);
+    };
   }, [autoRefresh, load]);
 
   useEffect(() => {

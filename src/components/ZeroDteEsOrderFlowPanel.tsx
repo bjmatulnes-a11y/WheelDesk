@@ -63,6 +63,7 @@ export function ZeroDteEsOrderFlowPanel({
   const [sandboxOpen, setSandboxOpen] = useState(true);
   const [footprintBuckets, setFootprintBuckets] = useState<Record<string, FootprintBucket>>({});
   const inFlightRef = useRef(false);
+  const requestControllerRef = useRef<AbortController | null>(null);
   const processedFootprintTimestampRef = useRef<string | null>(null);
   const managementPocHistoryRef = useRef<Array<{
     timestamp: string;
@@ -74,26 +75,33 @@ export function ZeroDteEsOrderFlowPanel({
     if (!enabled) return;
     let cancelled = false;
 
-    const load = async () => {
-      if (inFlightRef.current) return;
+    const load = async (force = false) => {
+      if (inFlightRef.current) {
+        if (!force) return;
+        requestControllerRef.current?.abort();
+      }
+
+      const controller = new AbortController();
+      requestControllerRef.current = controller;
       inFlightRef.current = true;
       try {
         const response = await fetch("/api/zero-dte/order-flow", {
           headers: await authenticatedApiHeaders(),
           cache: "no-store",
+          signal: controller.signal,
         });
         const body = (await response.json()) as OrderFlowApiResponse;
         if (!response.ok || !body.ok || !body.snapshot) {
           throw new Error(body.error || `ES order-flow request failed (${response.status}).`);
         }
-        if (cancelled) return;
+        if (cancelled || controller.signal.aborted) return;
         setCapabilities(body.capabilities ?? null);
         setFieldNames(body.availableQuoteFields ?? []);
         setRead((current) => updateEsOrderFlow(current.samples, body.snapshot!));
         setLastSuccessAt(Date.now());
         setError(null);
       } catch (loadError) {
-        if (!cancelled) {
+        if (!cancelled && !controller.signal.aborted) {
           setError(
             loadError instanceof Error
               ? loadError.message
@@ -101,15 +109,54 @@ export function ZeroDteEsOrderFlowPanel({
           );
         }
       } finally {
-        inFlightRef.current = false;
+        if (requestControllerRef.current === controller) {
+          requestControllerRef.current = null;
+          inFlightRef.current = false;
+        }
       }
     };
 
     void load();
-    const timer = window.setInterval(load, 1_000);
+
+    // One-second REST snapshots are useful only while the operator can consume
+    // them. Chrome throttles/suspends background timers anyway, so explicitly
+    // pause hidden-tab polling and perform a forced clean snapshot immediately
+    // on wake. This avoids both stale-return behavior and needless background
+    // provider traffic.
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "visible" || !navigator.onLine) return;
+      void load();
+    }, 1_000);
+
+    let wakeTimer: number | null = null;
+    const forceResync = () => {
+      if (document.visibilityState !== "visible" || !navigator.onLine) return;
+      if (wakeTimer !== null) window.clearTimeout(wakeTimer);
+      wakeTimer = window.setTimeout(() => {
+        wakeTimer = null;
+        void load(true);
+      }, 75);
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") forceResync();
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", forceResync);
+    window.addEventListener("pageshow", forceResync);
+    window.addEventListener("online", forceResync);
+
     return () => {
       cancelled = true;
+      requestControllerRef.current?.abort();
+      requestControllerRef.current = null;
+      inFlightRef.current = false;
       window.clearInterval(timer);
+      if (wakeTimer !== null) window.clearTimeout(wakeTimer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", forceResync);
+      window.removeEventListener("pageshow", forceResync);
+      window.removeEventListener("online", forceResync);
     };
   }, [enabled]);
 
