@@ -270,17 +270,26 @@ function buildPositionRead(
   rows: ZeroDteChainRow[],
   spot: number,
 ): PortfolioPositionRead {
-  const currentDebit = calculateCredit(rows, position.legs);
+  const activeLegs =
+    position.adaptiveActiveLegs?.length
+      ? position.adaptiveActiveLegs
+      : position.legs;
+  const cashBasis = position.adaptiveNetCashPoints ?? position.entryCredit;
+  const mark = calculateAdaptiveCloseValue(rows, activeLegs);
   const pnlDollars =
-    currentDebit === null
+    mark === null
       ? null
-      : (position.entryCredit - currentDebit) * 100 * position.quantity;
+      : (cashBasis + mark) * 100 * position.quantity;
+  const currentDebit =
+    mark === null
+      ? null
+      : Math.max(0, -mark);
   const capturedPremiumPct =
     currentDebit === null || position.entryCredit <= 0
       ? null
       : ((position.entryCredit - currentDebit) / position.entryCredit) * 100;
-  const greeks = calculateLegGreeks(rows, position.legs, position.quantity);
-  const shortStrike = position.legs.find((leg) => leg.action === "sell")?.strike ?? null;
+  const greeks = calculateLegGreeks(rows, activeLegs, position.quantity);
+  const shortStrike = activeLegs.find((leg) => leg.action === "sell")?.strike ?? null;
 
   return {
     position,
@@ -299,8 +308,49 @@ function buildPositionRead(
           : position.strategy === "call-credit-spread"
             ? shortStrike - spot
             : Math.abs(spot - shortStrike),
-    maxRiskDollars: Math.max(0, position.maxRiskDollars ?? 0) * position.quantity,
+    maxRiskDollars: activePositionRiskDollars(position, activeLegs),
   };
+}
+
+function calculateAdaptiveCloseValue(
+  rows: ZeroDteChainRow[],
+  legs: ExecutionLeg[],
+) {
+  if (!legs.length) return 0;
+  let value = 0;
+  for (const leg of legs) {
+    const row = findRow(rows, leg);
+    if (!row) return null;
+    const bid = Number.isFinite(row.bid) && Number(row.bid) >= 0 ? Number(row.bid) : null;
+    const ask = Number.isFinite(row.ask) && Number(row.ask) >= 0 ? Number(row.ask) : null;
+    if (leg.action === "buy") {
+      if (bid === null) return null;
+      value += bid;
+    } else {
+      if (ask === null) return null;
+      value -= ask;
+    }
+  }
+  return roundMoney(value);
+}
+
+function activePositionRiskDollars(
+  position: ExecutionPositionMemory,
+  activeLegs: ExecutionLeg[],
+) {
+  if (position.adaptiveStructureState === "CLOSED" || !activeLegs.length) return 0;
+  if (position.strategy === "iron-fly") {
+    return Math.max(0, position.maxRiskDollars ?? 0) * position.quantity;
+  }
+  const short = activeLegs.find((leg) => leg.action === "sell") ?? null;
+  if (!short) return 0;
+  const protectiveLong = activeLegs
+    .filter((leg) => leg.action === "buy" && leg.optionType === short.optionType)
+    .sort((a, b) => Math.abs(a.strike - short.strike) - Math.abs(b.strike - short.strike))[0] ?? null;
+  if (!protectiveLong) {
+    return Math.max(0, position.maxRiskDollars ?? 0) * position.quantity;
+  }
+  return Math.abs(protectiveLong.strike - short.strike) * 100 * position.quantity;
 }
 
 function scoreCandidateContribution(

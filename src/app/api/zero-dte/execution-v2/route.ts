@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { requirePlanAccessFromRequest } from "../../../../lib/billing/server-access";
 import { supabaseServer } from "../../../../lib/supabase-server";
 import type {
+  ExecutionAdaptiveManagementHistoryItem,
+  ExecutionAdaptiveTransitionMemory,
   ExecutionClosedTrade,
   ExecutionLeg,
   ExecutionPositionMemory,
@@ -172,6 +174,67 @@ const normalizeShortLegEntries = (value: unknown): ExecutionShortLegEntry[] => {
   });
 };
 
+type AdaptiveStructureStateMemory = NonNullable<ExecutionPositionMemory["adaptiveStructureState"]>;
+
+const normalizeAdaptiveStructureState = (value: unknown): AdaptiveStructureStateMemory | null =>
+  value === "CREDIT_SPREAD" ||
+  value === "LONG_RUNNER" ||
+  value === "REPAIRED_SPREAD" ||
+  value === "IF_CENTER" ||
+  value === "CLOSED"
+    ? value
+    : null;
+
+const normalizeAdaptiveTransition = (value: unknown): ExecutionAdaptiveTransitionMemory | null => {
+  if (!value || typeof value !== "object") return null;
+  const item = value as Record<string, unknown>;
+  if (
+    item.type !== "RELEASE_SHORT" &&
+    item.type !== "REINSTATE_SHORT" &&
+    item.type !== "CLOSE_RUNNER"
+  ) return null;
+  const executionPrice = numeric(item.executionPrice);
+  const nextStructureState = normalizeAdaptiveStructureState(item.nextStructureState);
+  const nextActiveLegs = normalizeLegs(item.nextActiveLegs);
+  if (executionPrice === null || executionPrice < 0 || nextStructureState === null) return null;
+  return {
+    type: item.type,
+    strike: numeric(item.strike),
+    executionPrice,
+    nextStructureState,
+    nextActiveLegs,
+    nextNetCashPoints: numeric(item.nextNetCashPoints) ?? 0,
+    detail: typeof item.detail === "string" ? item.detail : item.type,
+  };
+};
+
+const normalizeAdaptiveHistory = (value: unknown): ExecutionAdaptiveManagementHistoryItem[] => {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const event = item as Record<string, unknown>;
+    const kind =
+      event.kind === "RECOMMENDATION" ||
+      event.kind === "CONFIRMATION" ||
+      event.kind === "OPEN" ||
+      event.kind === "EXIT"
+        ? event.kind
+        : null;
+    if (!kind || typeof event.at !== "string" || typeof event.action !== "string") return [];
+    return [{
+      at: event.at,
+      kind,
+      state: typeof event.state === "string" ? event.state : null,
+      action: event.action,
+      strike: numeric(event.strike),
+      price: numeric(event.price),
+      detail: typeof event.detail === "string" ? event.detail : event.action,
+      netCashPoints: numeric(event.netCashPoints),
+      markedPnlDollars: numeric(event.markedPnlDollars),
+    }];
+  });
+};
+
 function legacyLegs(strategy: ExecutionStrategy, day: any): ExecutionLeg[] {
   if (strategy === "put-credit-spread") {
     const shortStrike = numeric(day.locked_put_short);
@@ -312,6 +375,21 @@ async function loadMemory(tradeDate: string): Promise<ZeroDteExecutionMemory> {
       entryRangeConsumptionPct: numeric(row.entry_range_consumption_pct),
       entryEventRisk: row.entry_event_risk === "HIGH" ? "HIGH" : row.entry_event_risk === "NORMAL" ? "NORMAL" : null,
       entryShortLegs: normalizeShortLegEntries(row.entry_short_legs),
+      adaptiveManagementState: typeof row.adaptive_management_state === "string" ? row.adaptive_management_state : null,
+      adaptiveAction: typeof row.adaptive_action === "string" ? row.adaptive_action : null,
+      adaptiveReason: typeof row.adaptive_reason === "string" ? row.adaptive_reason : null,
+      adaptiveStructureState: normalizeAdaptiveStructureState(row.adaptive_structure_state),
+      adaptiveActiveLegs: normalizeLegs(row.adaptive_active_legs),
+      adaptiveNetCashPoints: numeric(row.adaptive_net_cash_points),
+      adaptiveReleasedShortStrike: numeric(row.adaptive_released_short_strike),
+      adaptiveReinstatedShortStrike: numeric(row.adaptive_reinstated_short_strike),
+      adaptiveMarkedPnlDollars: numeric(row.adaptive_marked_pnl_dollars),
+      adaptiveMaxAdverseExcursionDollars: numeric(row.adaptive_max_adverse_excursion_dollars) ?? 0,
+      adaptiveMaxFavorableExcursionDollars: numeric(row.adaptive_max_favorable_excursion_dollars) ?? 0,
+      adaptiveLastUpdatedAt: row.adaptive_last_updated_at ?? null,
+      adaptiveLastRecommendationKey: row.adaptive_last_recommendation_key ?? null,
+      adaptiveLastRecommendedTransition: normalizeAdaptiveTransition(row.adaptive_last_recommended_transition),
+      adaptiveManagementHistory: normalizeAdaptiveHistory(row.adaptive_management_history),
     };
   };
 
@@ -667,6 +745,23 @@ export async function POST(request: NextRequest) {
           entry_event_risk:
             body.entryEventRisk === "HIGH" ? "HIGH" : "NORMAL",
           entry_short_legs: normalizeShortLegEntries(body.entryShortLegs),
+          adaptive_structure_state:
+            candidate.strategy === "iron-fly" ? "IF_CENTER" : "CREDIT_SPREAD",
+          adaptive_active_legs: legs,
+          adaptive_net_cash_points: entryCredit,
+          adaptive_max_adverse_excursion_dollars: 0,
+          adaptive_max_favorable_excursion_dollars: 0,
+          adaptive_management_history: [{
+            at: body.entryTime,
+            kind: "OPEN",
+            state: candidate.strategy === "iron-fly" ? "IF_CENTER" : "CREDIT_SPREAD",
+            action: "OPEN",
+            strike: null,
+            price: entryCredit,
+            detail: `Actual ${candidate.label ?? candidate.strategy} entered into the adaptive position ledger.`,
+            netCashPoints: entryCredit,
+            markedPnlDollars: 0,
+          }],
         });
 
       if (error) throw error;
@@ -675,6 +770,178 @@ export async function POST(request: NextRequest) {
         ok: true,
         memory: await loadMemory(body.tradeDate),
       });
+    }
+
+    if (body.action === "adaptive-observe") {
+      const requestedPosition = memory.positions.find((position) => position.id === body.positionId);
+      if (!requestedPosition) return err("A valid open positionId is required", 409);
+      const decision = body.decision && typeof body.decision === "object"
+        ? body.decision as Record<string, unknown>
+        : null;
+      if (!decision) return err("Missing adaptive management decision", 400);
+
+      const state = typeof decision.state === "string" ? decision.state : null;
+      const action = typeof decision.action === "string" ? decision.action : null;
+      if (!state || !action) return err("Adaptive decision is incomplete", 400);
+      const transition = normalizeAdaptiveTransition(decision.structureTransition);
+      const recommendationKey = typeof body.recommendationKey === "string"
+        ? body.recommendationKey
+        : [state, action, requestedPosition.adaptiveStructureState ?? "NONE", transition?.type ?? "NONE", transition?.strike ?? "NONE"].join("|");
+      const generatedAt = typeof body.generatedAt === "string" ? body.generatedAt : new Date().toISOString();
+
+      const { data: currentRow, error: currentError } = await supabaseServer
+        .from("zero_dte_execution_positions")
+        .select("adaptive_management_history,adaptive_last_recommendation_key,adaptive_structure_state")
+        .eq("id", requestedPosition.id)
+        .eq("state", "open")
+        .single();
+      if (currentError) throw currentError;
+
+      const history = normalizeAdaptiveHistory(currentRow.adaptive_management_history);
+      if (currentRow.adaptive_last_recommendation_key !== recommendationKey) {
+        history.push({
+          at: generatedAt,
+          kind: "RECOMMENDATION",
+          state,
+          action,
+          strike: transition?.strike ?? null,
+          price: transition?.executionPrice ?? null,
+          detail:
+            Array.isArray(decision.reasons)
+              ? decision.reasons.filter((item): item is string => typeof item === "string").join(" ")
+              : action,
+          netCashPoints: requestedPosition.adaptiveNetCashPoints ?? requestedPosition.entryCredit,
+          markedPnlDollars: numeric(decision.markedPnlDollars ?? decision.currentPnlDollars),
+        });
+      }
+
+      const { error: updateError } = await supabaseServer
+        .from("zero_dte_execution_positions")
+        .update({
+          adaptive_management_state: state,
+          adaptive_action: action,
+          adaptive_reason:
+            Array.isArray(decision.reasons)
+              ? decision.reasons.filter((item): item is string => typeof item === "string").join(" ")
+              : null,
+          adaptive_structure_state:
+            normalizeAdaptiveStructureState(decision.structureState) ??
+            normalizeAdaptiveStructureState(currentRow.adaptive_structure_state) ??
+            (requestedPosition.strategy === "iron-fly" ? "IF_CENTER" : "CREDIT_SPREAD"),
+          adaptive_marked_pnl_dollars: numeric(decision.markedPnlDollars ?? decision.currentPnlDollars),
+          adaptive_max_adverse_excursion_dollars: Math.max(
+            requestedPosition.adaptiveMaxAdverseExcursionDollars ?? 0,
+            numeric(decision.maxAdverseExcursionDollars) ?? 0,
+          ),
+          adaptive_max_favorable_excursion_dollars: Math.max(
+            requestedPosition.adaptiveMaxFavorableExcursionDollars ?? 0,
+            numeric(decision.maxFavorableExcursionDollars) ?? 0,
+          ),
+          adaptive_last_updated_at: generatedAt,
+          adaptive_last_recommendation_key: recommendationKey,
+          adaptive_last_recommended_transition: transition,
+          adaptive_management_history: history.slice(-200),
+          updated_at: generatedAt,
+        })
+        .eq("id", requestedPosition.id)
+        .eq("state", "open");
+      if (updateError) throw updateError;
+
+      return NextResponse.json({ ok: true, memory: await loadMemory(body.tradeDate) });
+    }
+
+    if (body.action === "adaptive-confirm") {
+      const requestedPosition = memory.positions.find((position) => position.id === body.positionId);
+      if (!requestedPosition) return err("A valid open positionId is required", 409);
+      const actualPrice = numeric(body.actualPrice);
+      if (actualPrice === null || actualPrice < 0) return err("Invalid actual leg fill", 400);
+      const confirmedAt = typeof body.confirmedAt === "string" ? body.confirmedAt : new Date().toISOString();
+
+      const { data: row, error: rowError } = await supabaseServer
+        .from("zero_dte_execution_positions")
+        .select("*")
+        .eq("id", requestedPosition.id)
+        .eq("state", "open")
+        .single();
+      if (rowError) throw rowError;
+      const transition = normalizeAdaptiveTransition(row.adaptive_last_recommended_transition);
+      if (!transition) return err("There is no actionable adaptive leg recommendation to confirm", 409);
+      const expectedRecommendationKey =
+        typeof body.expectedRecommendationKey === "string"
+          ? body.expectedRecommendationKey
+          : null;
+      if (
+        !expectedRecommendationKey ||
+        expectedRecommendationKey !== row.adaptive_last_recommendation_key
+      ) {
+        return err(
+          "Adaptive recommendation changed before confirmation. Review the current live leg action before recording the broker fill.",
+          409,
+        );
+      }
+
+      const currentNetCash = numeric(row.adaptive_net_cash_points) ?? Number(row.entry_credit ?? 0);
+      const nextNetCash =
+        transition.type === "RELEASE_SHORT"
+          ? currentNetCash - actualPrice
+          : currentNetCash + actualPrice;
+      const history = normalizeAdaptiveHistory(row.adaptive_management_history);
+      history.push({
+        at: confirmedAt,
+        kind: "CONFIRMATION",
+        state: transition.nextStructureState,
+        action: transition.type,
+        strike: transition.strike,
+        price: actualPrice,
+        detail: `${transition.detail} Confirmed broker fill ${actualPrice.toFixed(2)}.`,
+        netCashPoints: nextNetCash,
+        markedPnlDollars: numeric(row.adaptive_marked_pnl_dollars),
+      });
+
+      const update: Record<string, unknown> = {
+        adaptive_structure_state: transition.nextStructureState,
+        adaptive_active_legs: transition.nextActiveLegs,
+        adaptive_net_cash_points: nextNetCash,
+        adaptive_released_short_strike:
+          transition.type === "RELEASE_SHORT"
+            ? transition.strike
+            : row.adaptive_released_short_strike ?? null,
+        adaptive_reinstated_short_strike:
+          transition.type === "REINSTATE_SHORT"
+            ? transition.strike
+            : row.adaptive_reinstated_short_strike ?? null,
+        adaptive_action: "HOLD",
+        adaptive_reason: `Confirmed ${transition.type} at ${actualPrice.toFixed(2)}; waiting for the next live adaptive evaluation.`,
+        adaptive_last_recommended_transition: null,
+        adaptive_last_recommendation_key: null,
+        adaptive_management_history: history.slice(-200),
+        adaptive_last_updated_at: confirmedAt,
+        updated_at: confirmedAt,
+      };
+
+      if (transition.type === "CLOSE_RUNNER" || transition.nextStructureState === "CLOSED") {
+        const realizedPnl = nextNetCash * 100 * Math.max(1, Number(row.contracts ?? 1));
+        Object.assign(update, {
+          state: "closed",
+          exit_time: confirmedAt,
+          exit_debit: 0,
+          exit_score: numeric(row.exit_score) ?? 0,
+          exit_reason: "ADAPTIVE_CLOSE_RUNNER",
+          exit_emergency: false,
+          realized_pnl: realizedPnl,
+          duration_minutes: Math.max(0, (Date.parse(confirmedAt) - Date.parse(row.entry_time)) / 60_000),
+          adaptive_marked_pnl_dollars: realizedPnl,
+        });
+      }
+
+      const { error: updateError } = await supabaseServer
+        .from("zero_dte_execution_positions")
+        .update(update)
+        .eq("id", requestedPosition.id)
+        .eq("state", "open");
+      if (updateError) throw updateError;
+
+      return NextResponse.json({ ok: true, memory: await loadMemory(body.tradeDate) });
     }
 
     if (body.action === "close") {
@@ -692,8 +959,24 @@ export async function POST(request: NextRequest) {
         return err("Invalid exit debit", 400);
       }
 
+      const closeCashBasis =
+        requestedPosition.adaptiveNetCashPoints ?? requestedPosition.entryCredit;
+      const activeLegs =
+        requestedPosition.adaptiveActiveLegs?.length
+          ? requestedPosition.adaptiveActiveLegs
+          : requestedPosition.legs;
+      const closingLongRunner =
+        activeLegs.length > 0 &&
+        activeLegs.every((leg) => leg.action === "buy");
+      // The legacy field/request name is exitDebit. For a confirmed long-only
+      // repair runner the user is SELLING the long, so the positive number
+      // entered by Portfolio Dock is closing CREDIT instead. Keep the DB
+      // exit_debit field at zero in that case and preserve the actual credit in
+      // the adaptive EXIT ledger event / cumulative cash basis.
+      const closingCashFlow = closingLongRunner ? exitDebit : -exitDebit;
+      const finalNetCash = closeCashBasis + closingCashFlow;
       const pnl =
-        (requestedPosition.entryCredit - exitDebit) *
+        finalNetCash *
         100 *
         requestedPosition.quantity;
       const durationMinutes = Math.max(
@@ -707,13 +990,35 @@ export async function POST(request: NextRequest) {
         .update({
           state: "closed",
           exit_time: body.exitTime,
-          exit_debit: exitDebit,
+          exit_debit: closingLongRunner ? 0 : exitDebit,
           exit_score: numeric(body.exitScore),
           exit_buyback_score: numeric(body.exitScore),
           exit_reason: body.reason ?? null,
           exit_emergency: Boolean(body.emergencyExit),
           realized_pnl: pnl,
           duration_minutes: durationMinutes,
+          adaptive_structure_state: "CLOSED",
+          adaptive_active_legs: [],
+          adaptive_net_cash_points: finalNetCash,
+          adaptive_marked_pnl_dollars: pnl,
+          adaptive_last_recommended_transition: null,
+          adaptive_last_recommendation_key: null,
+          adaptive_management_history: [
+            ...(requestedPosition.adaptiveManagementHistory ?? []),
+            {
+              at: body.exitTime,
+              kind: "EXIT",
+              state: "CLOSED",
+              action: "EXIT",
+              strike: null,
+              price: exitDebit,
+              detail: closingLongRunner
+                ? `${body.reason ?? "Actual position closed from Portfolio Dock."} Long-runner sale credit ${exitDebit.toFixed(2)}.`
+                : body.reason ?? "Actual position closed from Portfolio Dock.",
+              netCashPoints: finalNetCash,
+              markedPnlDollars: pnl,
+            },
+          ].slice(-200),
           updated_at: new Date().toISOString(),
         })
         .eq("id", requestedPosition.id)

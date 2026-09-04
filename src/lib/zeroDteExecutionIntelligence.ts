@@ -154,6 +154,28 @@ export type ExecutionShortLegRiskRead = ExecutionShortLegEntry & {
   multiple: number | null;
 };
 
+export type ExecutionAdaptiveManagementHistoryItem = {
+  at: string;
+  kind: "RECOMMENDATION" | "CONFIRMATION" | "OPEN" | "EXIT";
+  state: string | null;
+  action: string;
+  strike: number | null;
+  price: number | null;
+  detail: string;
+  netCashPoints: number | null;
+  markedPnlDollars: number | null;
+};
+
+export type ExecutionAdaptiveTransitionMemory = {
+  type: "RELEASE_SHORT" | "REINSTATE_SHORT" | "CLOSE_RUNNER";
+  strike: number | null;
+  executionPrice: number;
+  nextStructureState: "CREDIT_SPREAD" | "LONG_RUNNER" | "REPAIRED_SPREAD" | "IF_CENTER" | "CLOSED";
+  nextActiveLegs: ExecutionLeg[];
+  nextNetCashPoints: number;
+  detail: string;
+};
+
 export type ExecutionPositionMemory = {
   id: string;
   strategy: ExecutionStrategy;
@@ -183,6 +205,24 @@ export type ExecutionPositionMemory = {
   entryRangeConsumptionPct?: number | null;
   entryEventRisk?: "NORMAL" | "HIGH" | null;
   entryShortLegs?: ExecutionShortLegEntry[];
+  /** Actual-position adaptive ledger. Original legs remain immutable audit data. */
+  adaptiveManagementState?: string | null;
+  adaptiveAction?: string | null;
+  adaptiveReason?: string | null;
+  adaptiveStructureState?: "CREDIT_SPREAD" | "LONG_RUNNER" | "REPAIRED_SPREAD" | "IF_CENTER" | "CLOSED" | null;
+  adaptiveActiveLegs?: ExecutionLeg[];
+  /** Cumulative per-contract cash points after confirmed partial-leg actions. */
+  adaptiveNetCashPoints?: number | null;
+  adaptiveReleasedShortStrike?: number | null;
+  adaptiveReinstatedShortStrike?: number | null;
+  /** Dollar values below are total-position values, already multiplied by quantity. */
+  adaptiveMarkedPnlDollars?: number | null;
+  adaptiveMaxAdverseExcursionDollars?: number;
+  adaptiveMaxFavorableExcursionDollars?: number;
+  adaptiveLastUpdatedAt?: string | null;
+  adaptiveLastRecommendationKey?: string | null;
+  adaptiveLastRecommendedTransition?: ExecutionAdaptiveTransitionMemory | null;
+  adaptiveManagementHistory?: ExecutionAdaptiveManagementHistoryItem[];
 };
 
 export type ExecutionClosedTrade = ExecutionPositionMemory & {
@@ -353,7 +393,15 @@ export function buildZeroDteExecutionRead(args: {
   });
   const strategy = position?.strategy ?? candidate?.strategy ?? null;
   const setupKey = position?.setupKey ?? candidate?.setupKey ?? null;
-  const legs = position?.legs ?? candidate?.legs ?? [];
+  // Once an actual position has a confirmed adaptive leg action, the live
+  // execution read must follow the CURRENT geometry rather than continuing to
+  // quote/manage the immutable entry spread. The original `position.legs` are
+  // retained for audit; `adaptiveActiveLegs` are the broker-confirmed live legs.
+  const legs = position
+    ? position.adaptiveActiveLegs?.length
+      ? position.adaptiveActiveLegs
+      : position.legs
+    : candidate?.legs ?? [];
   const packageQuote = legs.length
     ? calculateStrategyPackageQuote(spxRows, legs)
     : null;
@@ -362,7 +410,7 @@ export function buildZeroDteExecutionRead(args: {
   const currentBuybackDebit = packageQuote?.buybackDebit ?? null;
   const shortLegQuotes = buildShortLegQuoteReads(spxRows, legs);
   const quoteStatus = strategyQuoteStatus(spxRows, legs);
-  const shortLegRisk = buildShortLegRiskReads(position, shortLegQuotes);
+  const shortLegRisk = buildShortLegRiskReads(position, shortLegQuotes, legs);
   const worstShortLegMultiple = shortLegRisk.reduce<number | null>(
     (worst, leg) =>
       leg.multiple === null
@@ -440,7 +488,7 @@ export function buildZeroDteExecutionRead(args: {
   const shortDistance = position
     ? strategyShortDistance(
         position.strategy,
-        position.legs,
+        legs,
         recommendation.spxPrice,
         remainingMove.expectedMoveRemaining,
       )
@@ -483,10 +531,17 @@ export function buildZeroDteExecutionRead(args: {
   });
 
   const managementDebitForPnl = position ? currentBuybackDebit ?? currentCredit : null;
+  const adaptiveCloseValue = position
+    ? calculatePositionCloseValue(spxRows, legs)
+    : null;
   const livePnlDollars =
-    position && managementDebitForPnl !== null
-      ? (position.entryCredit - managementDebitForPnl) * 100 * position.quantity
-      : null;
+    position && adaptiveCloseValue !== null
+      ? ((position.adaptiveNetCashPoints ?? position.entryCredit) + adaptiveCloseValue) *
+        100 *
+        position.quantity
+      : position && managementDebitForPnl !== null
+        ? (position.entryCredit - managementDebitForPnl) * 100 * position.quantity
+        : null;
   const pnlHistory = position
     ? memory.samples
         .filter(
@@ -507,12 +562,14 @@ export function buildZeroDteExecutionRead(args: {
   if (livePnlDollars !== null && Number.isFinite(livePnlDollars)) {
     pnlHistory.push(livePnlDollars);
   }
-  const maxFavorableExcursionDollars = pnlHistory.length
-    ? Math.max(0, ...pnlHistory)
-    : 0;
-  const maxAdverseExcursionDollars = pnlHistory.length
-    ? Math.max(0, ...pnlHistory.map((value) => -value))
-    : 0;
+  const maxFavorableExcursionDollars = Math.max(
+    position?.adaptiveMaxFavorableExcursionDollars ?? 0,
+    pnlHistory.length ? Math.max(0, ...pnlHistory) : 0,
+  );
+  const maxAdverseExcursionDollars = Math.max(
+    position?.adaptiveMaxAdverseExcursionDollars ?? 0,
+    pnlHistory.length ? Math.max(0, ...pnlHistory.map((value) => -value)) : 0,
+  );
   const profitGivebackPct =
     livePnlDollars !== null && maxFavorableExcursionDollars > 0
       ? Math.max(
@@ -607,9 +664,10 @@ export function buildZeroDteExecutionRead(args: {
   }
 
   const entryCredit = position?.entryCredit ?? null;
+  const hasManagedShort = legs.some((leg) => leg.action === "sell");
   const managementDebit = position ? currentBuybackDebit ?? currentCredit : currentCredit;
   const capturedPremiumPct =
-    position && managementDebit !== null && position.entryCredit > 0
+    position && hasManagedShort && managementDebit !== null && position.entryCredit > 0
       ? ((position.entryCredit - managementDebit) / position.entryCredit) * 100
       : null;
   const maxRiskDollars =
@@ -1631,7 +1689,10 @@ function buildExitRead(args: {
   let mapFailure = false;
   let wallFailure = false;
   let hardThreat = false;
-  const shortStrike = position.legs.find((leg) => leg.action === "sell")?.strike ?? null;
+  const managementLegs = position.adaptiveActiveLegs?.length
+    ? position.adaptiveActiveLegs
+    : position.legs;
+  const shortStrike = managementLegs.find((leg) => leg.action === "sell")?.strike ?? null;
   const spot = recommendation.spxPrice;
   const shortDistancePoints = shortStrike === null
     ? null
@@ -2067,10 +2128,11 @@ function buildShortLegQuoteReads(
 function buildShortLegRiskReads(
   position: ExecutionPositionMemory | null,
   quotes: ExecutionShortLegQuoteRead[],
+  activeLegs: ExecutionLeg[],
 ): ExecutionShortLegRiskRead[] {
   if (!position) return [];
   const entries = position.entryShortLegs ?? [];
-  return position.legs
+  return activeLegs
     .filter((leg) => leg.action === "sell")
     .map((leg) => {
       const entry = entries.find(
@@ -2078,12 +2140,23 @@ function buildShortLegRiskReads(
           item.optionType === leg.optionType &&
           Math.abs(item.strike - leg.strike) < 0.01,
       );
+      const repairedEntry = [...(position.adaptiveManagementHistory ?? [])]
+        .reverse()
+        .find(
+          (item) =>
+            item.kind === "CONFIRMATION" &&
+            item.action === "REINSTATE_SHORT" &&
+            item.strike !== null &&
+            Math.abs(item.strike - leg.strike) < 0.01 &&
+            item.price !== null &&
+            item.price > 0,
+        );
       const quote = quotes.find(
         (item) =>
           item.optionType === leg.optionType &&
           Math.abs(item.strike - leg.strike) < 0.01,
       );
-      const sellPrice = entry?.sellPrice ?? null;
+      const sellPrice = repairedEntry?.price ?? entry?.sellPrice ?? null;
       const currentAsk = quote?.ask ?? null;
       const multiple =
         sellPrice !== null && sellPrice > 0 && currentAsk !== null
@@ -2093,11 +2166,37 @@ function buildShortLegRiskReads(
         optionType: leg.optionType,
         strike: leg.strike,
         sellPrice,
-        source: entry?.source ?? "unknown",
+        source: repairedEntry ? "actual" : entry?.source ?? "unknown",
         currentAsk,
         multiple,
       };
     });
+}
+
+/**
+ * Signed executable value obtained by flattening the current confirmed legs.
+ * Buying back a short is negative cash; selling a long is positive cash.
+ * This lets a released long runner carry a real P/L instead of looking like an
+ * unquoted version of the original spread.
+ */
+function calculatePositionCloseValue(
+  rows: ZeroDteChainRow[],
+  legs: ExecutionLeg[],
+): number | null {
+  if (!legs.length) return 0;
+  let value = 0;
+  for (const leg of legs) {
+    const quote = optionQuote(rows, leg.strike, leg.optionType);
+    if (!quote) return null;
+    if (leg.action === "sell") {
+      if (quote.ask === null) return null;
+      value -= quote.ask;
+    } else {
+      if (quote.bid === null) return null;
+      value += quote.bid;
+    }
+  }
+  return roundCredit(value);
 }
 
 function strategyQuoteStatus(

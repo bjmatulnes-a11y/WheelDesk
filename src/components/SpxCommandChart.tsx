@@ -38,9 +38,11 @@ import {
 } from "../lib/zeroDteExecutionIntelligence";
 import {
   closeExecutionPositionDb,
+  confirmExecutionAdaptiveTransitionDb,
   loadExecutionMemoryDb,
   openExecutionPositionDb,
   openManualExecutionPositionDb,
+  persistExecutionAdaptiveObservationDb,
   persistExecutionSample,
   persistExecutionSamples,
 } from "../lib/zeroDteExecutionRepository";
@@ -94,6 +96,10 @@ import {
   evaluateZeroDteAdaptiveManagement,
   type AdaptiveAuctionContext,
 } from "../lib/zeroDteAdaptiveManagement";
+import {
+  evaluateExecutionPositionAdaptiveManagement,
+  executionAdaptiveRecommendationKey,
+} from "../lib/zeroDteExecutionAdaptiveLedger";
 import {
   buildShadowLegSnapshots,
   evaluateAdaptivePortfolioOpportunity,
@@ -299,7 +305,9 @@ export default function SpxCommandChart() {
   const [shadowError, setShadowError] = useState<string | null>(null);
   const shadowOpeningSignalIdsRef = useRef<Set<string>>(new Set());
   const shadowSampleKeyRef = useRef<string | null>(null);
+  const executionAdaptiveObservationRef = useRef<Map<string, string>>(new Map());
   const liveAuctionManagementRef = useRef<AdaptiveAuctionContext | null>(null);
+  const [liveAuctionManagement, setLiveAuctionManagement] = useState<AdaptiveAuctionContext | null>(null);
   const [premiumBaselineReadySetupKeys, setPremiumBaselineReadySetupKeys] =
     useState<string[]>([]);
   const [schwabConnection, setSchwabConnection] =
@@ -432,6 +440,7 @@ export default function SpxCommandChart() {
   const handleLiveAuctionManagementRead = useCallback(
     (read: AdaptiveAuctionContext | null) => {
       liveAuctionManagementRef.current = read;
+      setLiveAuctionManagement(read);
     },
     [],
   );
@@ -1569,6 +1578,110 @@ export default function SpxCommandChart() {
     strikeFlow,
   ]);
 
+  const positionAdaptiveDecisions = useMemo(() => {
+    if (
+      manualChainResearch ||
+      !recommendation ||
+      !executionMemory
+    ) {
+      return {} as Record<string, ReturnType<typeof evaluateExecutionPositionAdaptiveManagement>>;
+    }
+
+    return Object.fromEntries(
+      (executionMemory.positions ?? []).flatMap((position) => {
+        const read = positionExecutionReads[position.id];
+        if (!read) return [];
+        return [[
+          position.id,
+          evaluateExecutionPositionAdaptiveManagement({
+            position,
+            read,
+            spot: recommendation.spxPrice,
+            rows: spxRows,
+            riskPolicy,
+            auction: liveAuctionManagement,
+          }),
+        ]];
+      }),
+    ) as Record<string, ReturnType<typeof evaluateExecutionPositionAdaptiveManagement>>;
+  }, [
+    executionMemory,
+    liveAuctionManagement,
+    manualChainResearch,
+    positionExecutionReads,
+    recommendation,
+    riskPolicy,
+    spxRows,
+  ]);
+
+  useEffect(() => {
+    if (
+      manualChainResearch ||
+      !harvest?.tradeDate ||
+      !harvest.generatedAt ||
+      !executionMemory?.positions?.length
+    ) return;
+
+    const generatedAtMs = Date.parse(harvest.generatedAt);
+    const pending = executionMemory.positions.flatMap((position) => {
+      const decision = positionAdaptiveDecisions[position.id];
+      if (!decision) return [];
+      const key = executionAdaptiveRecommendationKey(decision);
+      const locallySent = executionAdaptiveObservationRef.current.get(position.id);
+      const lastUpdatedMs = position.adaptiveLastUpdatedAt
+        ? Date.parse(position.adaptiveLastUpdatedAt)
+        : 0;
+      const heartbeatDue =
+        Number.isFinite(generatedAtMs) &&
+        (!Number.isFinite(lastUpdatedMs) || generatedAtMs - lastUpdatedMs >= 60_000);
+      const recommendationChanged = position.adaptiveLastRecommendationKey !== key;
+      if ((!recommendationChanged && !heartbeatDue) || locallySent === key) return [];
+      return [{ position, decision, key }];
+    });
+    if (!pending.length) return;
+
+    let cancelled = false;
+    void (async () => {
+      for (const item of pending) {
+        if (cancelled) return;
+        executionAdaptiveObservationRef.current.set(item.position.id, item.key);
+        try {
+          const memory = await persistExecutionAdaptiveObservationDb({
+            tradeDate: harvest.tradeDate,
+            positionId: item.position.id,
+            generatedAt: harvest.generatedAt,
+            recommendationKey: item.key,
+            decision: item.decision as unknown as Record<string, unknown>,
+          });
+          executionAdaptiveObservationRef.current.delete(item.position.id);
+          if (!cancelled) {
+            setExecutionMemory(memory);
+            setExecutionDbError(null);
+          }
+        } catch (error) {
+          executionAdaptiveObservationRef.current.delete(item.position.id);
+          if (!cancelled) {
+            setExecutionDbError(
+              error instanceof Error
+                ? error.message
+                : "Adaptive actual-position ledger persistence failed.",
+            );
+          }
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    executionMemory,
+    harvest?.generatedAt,
+    harvest?.tradeDate,
+    manualChainResearch,
+    positionAdaptiveDecisions,
+  ]);
+
   const liveExecutionRead = useMemo(() => {
     const positionReads = Object.values(positionExecutionReads);
     if (!positionReads.length) return entryExecutionRead;
@@ -2390,6 +2503,7 @@ export default function SpxCommandChart() {
             portfolio={portfolioRead}
             positionReads={manualChainResearch ? {} : positionExecutionReads}
             executionPositions={manualChainResearch ? [] : executionMemory?.positions ?? []}
+            positionAdaptiveDecisions={manualChainResearch ? {} : positionAdaptiveDecisions}
             candidates={executionCandidates}
             tracks={manualChainResearch ? null : stableCandidateTracker.tracks}
             riskPolicy={riskPolicy}
@@ -2642,6 +2756,35 @@ export default function SpxCommandChart() {
                   openError instanceof Error
                     ? openError.message
                     : "Could not open execution position.",
+                );
+              } finally {
+                setExecutionBusy(false);
+              }
+            }}
+            onConfirmAdaptive={async (positionId, actualPrice) => {
+              if (manualChainResearch || !harvest?.tradeDate) return;
+              setExecutionBusy(true);
+              try {
+                const position = executionMemory?.positions.find((item) => item.id === positionId);
+                const expectedRecommendationKey = position?.adaptiveLastRecommendationKey ?? null;
+                if (!expectedRecommendationKey) {
+                  throw new Error("Adaptive recommendation is not persisted yet. Wait for the ledger to update and confirm the current action.");
+                }
+                const memory = await confirmExecutionAdaptiveTransitionDb({
+                  tradeDate: harvest.tradeDate,
+                  positionId,
+                  confirmedAt: new Date().toISOString(),
+                  actualPrice,
+                  expectedRecommendationKey,
+                });
+                executionAdaptiveObservationRef.current.delete(positionId);
+                setExecutionMemory(memory);
+                setExecutionDbError(null);
+              } catch (error) {
+                setExecutionDbError(
+                  error instanceof Error
+                    ? error.message
+                    : "Adaptive broker-fill confirmation failed.",
                 );
               } finally {
                 setExecutionBusy(false);

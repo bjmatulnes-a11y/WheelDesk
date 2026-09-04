@@ -15,12 +15,14 @@ import type { StableExecutionCandidateTrack } from "../../lib/execution/useStabl
 import type { ZeroDtePortfolioRead } from "../../lib/zeroDtePortfolioEngine";
 import type { ZeroDteRiskPolicy } from "../../lib/zeroDteRiskPolicy";
 import { accountRiskBudgetDollars } from "../../lib/zeroDteRiskPolicy";
+import type { AdaptiveManagementDecision } from "../../lib/zeroDteAdaptiveManagement";
 
 type Props = {
   read: ZeroDteExecutionRead | null;
   portfolio: ZeroDtePortfolioRead | null;
   positionReads: Record<string, ZeroDteExecutionRead>;
   executionPositions?: ExecutionPositionMemory[];
+  positionAdaptiveDecisions?: Record<string, AdaptiveManagementDecision>;
   candidates: Partial<Record<ExecutionStrategy, ExecutionCandidate | null>>;
   tracks: Record<ExecutionStrategy, StableExecutionCandidateTrack> | null;
   riskPolicy: ZeroDteRiskPolicy;
@@ -37,6 +39,7 @@ type Props = {
     entryShortLegs: ExecutionShortLegEntry[];
   }) => void | Promise<void>;
   onClose: (positionId: string, exitDebit: number) => void | Promise<void>;
+  onConfirmAdaptive?: (positionId: string, actualPrice: number) => void | Promise<void>;
   readOnly?: boolean;
   readOnlyReason?: string | null;
   /** Non-overridable live-data safety lock for NEW entries; closes remain available. */
@@ -60,6 +63,7 @@ export function ExecutionTradeDock({
   portfolio,
   positionReads,
   executionPositions,
+  positionAdaptiveDecisions = {},
   candidates,
   tracks,
   riskPolicy,
@@ -68,6 +72,7 @@ export function ExecutionTradeDock({
   evaluateCandidate,
   onOpen,
   onClose,
+  onConfirmAdaptive,
   readOnly = false,
   readOnlyReason = null,
   entryLocked = false,
@@ -351,8 +356,10 @@ export function ExecutionTradeDock({
               key={position.id}
               position={position}
               read={positionReads[position.id] ?? null}
+              adaptiveDecision={positionAdaptiveDecisions[position.id] ?? null}
               busy={busy}
               onClose={onClose}
+              onConfirmAdaptive={onConfirmAdaptive}
             />
           ))}
         </div>
@@ -738,23 +745,48 @@ function PortfolioSummary({ portfolio }: { portfolio: ZeroDtePortfolioRead }) {
 function PortfolioPositionCard({
   position,
   read,
+  adaptiveDecision,
   busy,
   onClose,
+  onConfirmAdaptive,
 }: {
   position: ExecutionPositionMemory;
   read: ZeroDteExecutionRead | null;
+  adaptiveDecision: AdaptiveManagementDecision | null;
   busy: boolean;
   onClose: (positionId: string, exitDebit: number) => void | Promise<void>;
+  onConfirmAdaptive?: (positionId: string, actualPrice: number) => void | Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [exitDebit, setExitDebit] = useState("");
+  const [adaptiveFill, setAdaptiveFill] = useState("");
 
   useEffect(() => {
     setExitDebit("");
-  }, [position.id]);
+    setAdaptiveFill("");
+  }, [position.id, adaptiveDecision?.structureTransition?.type, adaptiveDecision?.structureTransition?.strike]);
 
   const parsedExitDebit = parseNonNegative(exitDebit);
-  const closeLegs = position.legs.map(invertLeg);
+  const parsedAdaptiveFill = parseNonNegative(adaptiveFill);
+  const activeLegs = position.adaptiveActiveLegs?.length ? position.adaptiveActiveLegs : position.legs;
+  const closeLegs = activeLegs.map(invertLeg);
+  const longRunnerOnly = activeLegs.length > 0 && activeLegs.every((leg) => leg.action === "buy");
+  const liveRunnerExitCredit =
+    longRunnerOnly && adaptiveDecision?.markedPnlDollars != null
+      ? Math.max(
+          0,
+          adaptiveDecision.markedPnlDollars / (100 * Math.max(1, position.quantity)) -
+            (position.adaptiveNetCashPoints ?? position.entryCredit),
+        )
+      : null;
+  const liveCloseValue = longRunnerOnly
+    ? liveRunnerExitCredit
+    : read?.currentBuybackDebit ?? read?.currentCredit ?? null;
+  const transition = adaptiveDecision?.structureTransition ?? position.adaptiveLastRecommendedTransition ?? null;
+  // Confirm only after the recommendation has been persisted into the actual
+  // position ledger; this prevents a race between a live recommendation and
+  // the broker-fill confirmation request.
+  const actionable = Boolean(position.adaptiveLastRecommendedTransition && transition && onConfirmAdaptive);
 
   return (
     <div
@@ -783,12 +815,83 @@ function PortfolioPositionCard({
         <DockMetric label="Entry" value={money(position.entryCredit)} />
         <DockMetric label="Buyback" value={money(read?.currentBuybackDebit ?? read?.currentCredit)} />
         <DockMetric label="Captured" value={percent(read?.capturedPremiumPct)} />
-        <DockMetric label="P/L" value={dollars(read?.livePnlDollars)} />
+        <DockMetric label="P/L" value={dollars(adaptiveDecision?.markedPnlDollars ?? read?.livePnlDollars)} />
+        <DockMetric label="Adaptive" value={adaptiveDecision?.action ?? position.adaptiveAction ?? "WARMING"} />
+        <DockMetric label="Structure" value={position.adaptiveStructureState ?? (position.strategy === "iron-fly" ? "IF_CENTER" : "CREDIT_SPREAD")} />
+        <DockMetric label="Short" value={read?.worstShortLegMultiple == null ? "—" : `${read.worstShortLegMultiple.toFixed(2)}×`} />
+        <DockMetric label="MAE" value={dollars(adaptiveDecision?.maxAdverseExcursionDollars ?? position.adaptiveMaxAdverseExcursionDollars ?? 0)} />
       </div>
+
+      {adaptiveDecision ? (
+        <div style={adaptiveDecision.action === "RELEASE_SHORT" || adaptiveDecision.action === "REINSTATE_SHORT" || adaptiveDecision.action === "CLOSE_RUNNER" ? styles.adaptiveAlert : styles.adaptiveStatus}>
+          <strong>{`ADAPTIVE ${adaptiveDecision.state} · ${adaptiveDecision.action}`}</strong>
+          <span>{adaptiveDecision.reasons[0] ?? "Live adaptive position manager is evaluating this actual position."}</span>
+          {transition ? (
+            <span>
+              {transition.detail} · model {money(transition.executionPrice)}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
 
       {expanded ? (
         <div style={styles.expandedPosition}>
-          <LegList legs={position.legs} title="Open legs" />
+          <LegList legs={activeLegs} title={position.adaptiveStructureState && position.adaptiveStructureState !== "CREDIT_SPREAD" ? "Current adaptive legs" : "Open legs"} />
+          {position.adaptiveStructureState && position.adaptiveStructureState !== "CREDIT_SPREAD" && position.adaptiveStructureState !== "IF_CENTER" ? (
+            <div style={styles.ledgerStrip}>Original {formatLegs(position.legs)} · net cash {money(position.adaptiveNetCashPoints ?? position.entryCredit)}</div>
+          ) : null}
+
+          {actionable && transition ? (
+            <div style={styles.adaptiveConfirmBox}>
+              <div style={styles.smallCaps}>Adaptive Leg Action</div>
+              <strong>{adaptiveActionLabel(transition.type, transition.strike)}</strong>
+              <span>{transition.detail}</span>
+              <label style={styles.fieldLabel}>
+                Actual broker fill
+                <input
+                  value={adaptiveFill}
+                  onChange={(event) => setAdaptiveFill(event.target.value)}
+                  type="number"
+                  min="0"
+                  step="0.05"
+                  placeholder={transition.executionPrice.toFixed(2)}
+                  style={styles.input}
+                />
+                <button
+                  type="button"
+                  onClick={() => setAdaptiveFill(transition.executionPrice.toFixed(2))}
+                  style={styles.useLiveButton}
+                >
+                  Use Model {money(transition.executionPrice)}
+                </button>
+              </label>
+              <button
+                type="button"
+                disabled={busy || parsedAdaptiveFill == null}
+                onClick={() => {
+                  if (parsedAdaptiveFill == null || !onConfirmAdaptive) return;
+                  void onConfirmAdaptive(position.id, parsedAdaptiveFill);
+                }}
+                style={{ ...styles.adaptiveConfirmButton, opacity: busy || parsedAdaptiveFill == null ? 0.45 : 1 }}
+              >
+                {busy ? "Saving…" : "Confirm Broker Leg Fill"}
+              </button>
+            </div>
+          ) : null}
+
+          {(position.adaptiveManagementHistory ?? []).length ? (
+            <div style={styles.ledgerBox}>
+              <div style={styles.smallCaps}>Position Management Ledger</div>
+              {[...(position.adaptiveManagementHistory ?? [])].slice(-8).reverse().map((item, index) => (
+                <div key={`${item.at}-${item.action}-${index}`} style={styles.ledgerRow}>
+                  <strong>{item.kind} · {item.action}</strong>
+                  <span>{new Date(item.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+                  <small>{item.detail}</small>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
           <div style={styles.closePreview}>
             <div style={styles.smallCaps}>Closing Order</div>
             {closeLegs.map((leg, index) => (
@@ -804,30 +907,29 @@ function PortfolioPositionCard({
             ))}
           </div>
           <label style={styles.fieldLabel}>
-            Actual closing debit
+            {longRunnerOnly ? "Actual closing credit" : "Actual closing debit"}
             <input
               value={exitDebit}
               onChange={(event) => setExitDebit(event.target.value)}
               type="number"
               min="0"
               step="0.05"
-              placeholder="enter actual buyback"
+              placeholder={longRunnerOnly ? "enter actual long sale credit" : "enter actual buyback"}
               style={styles.input}
             />
             <button
               type="button"
-              disabled={(read?.currentBuybackDebit ?? read?.currentCredit) == null}
+              disabled={liveCloseValue == null}
               onClick={() => {
-                const live = read?.currentBuybackDebit ?? read?.currentCredit;
-                if (live == null) return;
-                setExitDebit(live.toFixed(2));
+                if (liveCloseValue == null) return;
+                setExitDebit(liveCloseValue.toFixed(2));
               }}
               style={{
                 ...styles.useLiveButton,
-                opacity: (read?.currentBuybackDebit ?? read?.currentCredit) == null ? 0.45 : 1,
+                opacity: liveCloseValue == null ? 0.45 : 1,
               }}
             >
-              Use Buyback {money(read?.currentBuybackDebit ?? read?.currentCredit)}
+              {longRunnerOnly ? "Use Long Bid" : "Use Buyback"} {money(liveCloseValue)}
             </button>
           </label>
           <button
@@ -842,7 +944,7 @@ function PortfolioPositionCard({
               opacity: busy || parsedExitDebit == null ? 0.45 : 1,
             }}
           >
-            {busy ? "Saving…" : "Buy Back / Close This Position"}
+            {busy ? "Saving…" : longRunnerOnly ? "Sell Long Runner / Close Position" : "Buy Back / Close This Position"}
           </button>
         </div>
       ) : null}
@@ -867,6 +969,16 @@ function LegList({ legs, title }: { legs: ExecutionLeg[]; title: string }) {
       ))}
     </div>
   );
+}
+
+function adaptiveActionLabel(
+  type: "RELEASE_SHORT" | "REINSTATE_SHORT" | "CLOSE_RUNNER",
+  strike: number | null,
+) {
+  const strikeText = strike == null ? "" : ` ${strike.toFixed(0)}`;
+  if (type === "RELEASE_SHORT") return `BUY TO CLOSE SHORT${strikeText}`;
+  if (type === "REINSTATE_SHORT") return `SELL TO OPEN REPAIR SHORT${strikeText}`;
+  return `SELL TO CLOSE LONG RUNNER${strikeText}`;
 }
 
 function DockMetric({ label, value }: { label: string; value: string }) {
@@ -1028,6 +1140,63 @@ function signed(value: number) {
 }
 
 const styles: Record<string, React.CSSProperties> = {
+  adaptiveStatus: {
+    display: "grid",
+    gap: 4,
+    padding: "8px 10px",
+    border: "1px solid rgba(113,224,180,.24)",
+    borderRadius: 10,
+    background: "rgba(10,30,42,.72)",
+    fontSize: 11,
+  },
+  adaptiveAlert: {
+    display: "grid",
+    gap: 4,
+    padding: "8px 10px",
+    border: "1px solid rgba(245,197,66,.58)",
+    borderRadius: 10,
+    background: "rgba(58,42,8,.48)",
+    fontSize: 11,
+  },
+  adaptiveConfirmBox: {
+    display: "grid",
+    gap: 8,
+    padding: 10,
+    border: "1px solid rgba(245,197,66,.46)",
+    borderRadius: 10,
+    background: "rgba(35,28,8,.52)",
+  },
+  adaptiveConfirmButton: {
+    border: "1px solid rgba(245,197,66,.65)",
+    borderRadius: 9,
+    background: "rgba(245,197,66,.14)",
+    color: "#f7d86f",
+    padding: "9px 10px",
+    fontWeight: 800,
+    cursor: "pointer",
+  },
+  ledgerStrip: {
+    fontSize: 11,
+    color: "#8eb3ca",
+    padding: "6px 8px",
+    borderRadius: 8,
+    background: "rgba(8,25,36,.8)",
+  },
+  ledgerBox: {
+    display: "grid",
+    gap: 6,
+    padding: 9,
+    border: "1px solid #17364d",
+    borderRadius: 9,
+    background: "rgba(5,17,25,.72)",
+  },
+  ledgerRow: {
+    display: "grid",
+    gridTemplateColumns: "1fr auto",
+    gap: "2px 8px",
+    fontSize: 10,
+    color: "#a9c4d8",
+  },
   card: {
     flex: "0 0 auto",
     minWidth: 0,

@@ -1057,11 +1057,19 @@ function evaluateVerticalStructureTransition(args: {
         Math.abs(item.strike - activeLong.strike) < 0.01,
     ) ?? null;
     const longDeltaAbs = Math.abs(longSnapshot.delta ?? 0);
-    const entryLongDeltaAbs = Math.max(0.03, Math.abs(entryLongSnapshot?.delta ?? 0));
-    const longDeltaExpansion = longDeltaAbs / entryLongDeltaAbs;
+    const entryLongDeltaAbs = entryLongSnapshot?.delta == null
+      ? null
+      : Math.max(0.03, Math.abs(entryLongSnapshot.delta));
+    const longDeltaExpansion = entryLongDeltaAbs === null
+      ? null
+      : longDeltaAbs / entryLongDeltaAbs;
     const longGammaAbs = Math.abs(longSnapshot.gamma ?? 0);
-    const greekContinuationSupport =
-      longDeltaAbs >= 0.3 && longDeltaExpansion >= 1.35 && longGammaAbs > 0;
+    const greekContinuationSupport = Boolean(
+      entryLongDeltaAbs !== null &&
+      longDeltaAbs >= 0.3 &&
+      (longDeltaExpansion ?? 0) >= 1.35 &&
+      longGammaAbs > 0,
+    );
 
     const directionContinuation = isPut
       ? auction?.state === "RELEASE_DOWN" || auction?.state === "REVERSAL_DOWN"
@@ -1089,9 +1097,13 @@ function evaluateVerticalStructureTransition(args: {
       (auction?.flowConfidencePct ?? 0) >= 35 &&
       (pocContinuing || (projectedRoom ?? 0) > 7 || greekContinuationSupport),
     );
+    const priceExhaustion = Boolean(
+      read.priceRejectionReady && read.priceRejectionScore >= 55,
+    );
     const exhaustion = Boolean(
       directionExhaustion ||
-      ((projectedRoom ?? 999) <= 5 && (auction?.efficiencyPct ?? 0) < 42),
+      priceExhaustion ||
+      ((projectedRoom ?? 999) <= 7 && (auction?.efficiencyPct ?? 0) < 45),
     );
 
     if (exhaustion && !continuationStrong) {
@@ -1210,7 +1222,7 @@ function evaluateVerticalStructureTransition(args: {
         projectedRoom === null
           ? "Map terminal projection is unavailable."
           : `Map terminal projection leaves about ${Math.max(0, projectedRoom).toFixed(1)} points of directional room.`,
-        `Runner Greeks: |delta| ${longDeltaAbs.toFixed(2)}, delta expansion ${longDeltaExpansion.toFixed(2)}× versus entry, |gamma| ${longGammaAbs.toFixed(4)}${greekContinuationSupport ? " — convexity supports continuation." : "."}`,
+        `Runner Greeks: |delta| ${longDeltaAbs.toFixed(2)}, delta expansion ${longDeltaExpansion === null ? "n/a" : `${longDeltaExpansion.toFixed(2)}×`} versus entry, |gamma| ${longGammaAbs.toFixed(4)}${greekContinuationSupport ? " — convexity supports continuation." : "."}`,
       ],
     });
   }
@@ -1242,21 +1254,36 @@ function evaluateVerticalStructureTransition(args: {
       Math.abs(item.strike - activeLong.strike) < 0.01,
   ) ?? null;
   const shortDeltaAbs = Math.abs(shortSnapshot.delta ?? 0);
-  const entryShortDeltaAbs = Math.max(0.05, Math.abs(entryShortSnapshot?.delta ?? 0));
-  const shortDeltaExpansion = shortDeltaAbs / entryShortDeltaAbs;
+  const entryShortDeltaAbs = entryShortSnapshot?.delta == null
+    ? null
+    : Math.max(0.05, Math.abs(entryShortSnapshot.delta));
+  const shortDeltaExpansion = entryShortDeltaAbs === null
+    ? null
+    : shortDeltaAbs / entryShortDeltaAbs;
   const longDeltaAbs = Math.abs(longSnapshot?.delta ?? 0);
-  const entryLongDeltaAbs = Math.max(0.03, Math.abs(entryLongSnapshot?.delta ?? 0));
-  const longDeltaExpansion = longDeltaAbs / entryLongDeltaAbs;
+  const entryLongDeltaAbs = entryLongSnapshot?.delta == null
+    ? null
+    : Math.max(0.03, Math.abs(entryLongSnapshot.delta));
+  const longDeltaExpansion = entryLongDeltaAbs === null
+    ? null
+    : longDeltaAbs / entryLongDeltaAbs;
   const shortGammaAbs = Math.abs(shortSnapshot.gamma ?? 0);
   const longGammaAbs = Math.abs(longSnapshot?.gamma ?? 0);
-  const greekShortThreat =
+  // Do not manufacture a Greek continuation vote when the actual position has
+  // no stored entry-Greek baseline. Shadow trades usually have it; actual
+  // broker positions currently do not. Missing evidence stays missing.
+  const greekShortThreat = Boolean(
+    entryShortDeltaAbs !== null &&
     shortDeltaAbs >= 0.45 &&
-    shortDeltaExpansion >= 1.5 &&
-    (shortGammaAbs > 0 || longDeltaExpansion >= 1.3);
-  const longConvexityAvailable =
+    (shortDeltaExpansion ?? 0) >= 1.5 &&
+    (shortGammaAbs > 0 || (longDeltaExpansion ?? 0) >= 1.3),
+  );
+  const longConvexityAvailable = Boolean(
     longSnapshot?.bid != null &&
     longDeltaAbs >= 0.2 &&
-    (longGammaAbs > 0 || longDeltaExpansion >= 1.25);
+    (longGammaAbs > 0 ||
+      (entryLongDeltaAbs !== null && (longDeltaExpansion ?? 0) >= 1.25)),
+  );
 
   const pathThroughLong = isPut
     ? (read.leastResistancePath?.terminalTrough ?? Infinity) <= activeLong.strike
@@ -1269,6 +1296,11 @@ function evaluateVerticalStructureTransition(args: {
     args.adverseMapShift,
     greekShortThreat,
   ].filter(Boolean).length;
+  // Preserve the agreed short-release rule: the deterministic trigger is 3×
+  // the short-leg sale premium. A breached short can also release when two
+  // independent continuation factors confirm that price is not merely probing
+  // the strike. The actual-position ledger fix below makes this logic run on
+  // real Portfolio Dock positions; do not move the 3× threshold silently.
   const releaseConfirmed = Boolean(
     args.threeXShort ||
       (args.shortBreached && continuationEvidenceCount >= 2),
@@ -1311,7 +1343,7 @@ function evaluateVerticalStructureTransition(args: {
         ? `The ${activeShort.strike.toFixed(0)} short reached the 3× release threshold; the trigger applies to the short leg, not the entire vertical.`
         : `The ${activeShort.strike.toFixed(0)} short is breached and ${continuationEvidenceCount} continuation factors are aligned; do not liquidate the long automatically.`,
       `Release the short liability and let the ${activeLong.strike.toFixed(0)} long participate while map projection / ES continuation is reassessed.`,
-      `Greek support: short |delta| ${shortDeltaAbs.toFixed(2)} (${shortDeltaExpansion.toFixed(2)}× entry), long |delta| ${longDeltaAbs.toFixed(2)} (${longDeltaExpansion.toFixed(2)}× entry)${greekShortThreat ? "; short gamma/delta behavior supports release" : ""}${longConvexityAvailable ? "; long convexity is available" : ""}.`,
+      `Greek support: short |delta| ${shortDeltaAbs.toFixed(2)} (${shortDeltaExpansion === null ? "baseline n/a" : `${shortDeltaExpansion.toFixed(2)}× entry`}), long |delta| ${longDeltaAbs.toFixed(2)} (${longDeltaExpansion === null ? "baseline n/a" : `${longDeltaExpansion.toFixed(2)}× entry`})${greekShortThreat ? "; short gamma/delta behavior supports release" : ""}${longConvexityAvailable ? "; long convexity is available" : ""}.`,
     ],
   });
 }

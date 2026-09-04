@@ -229,3 +229,29 @@ function flowStateForRead(
           ? strikeFlow?.putWall.state
           : "center";
 }
+
+export async function persistExecutionAdaptiveObservationDb(args: {
+  tradeDate: string;
+  positionId: string;
+  generatedAt: string;
+  recommendationKey: string;
+  decision: Record<string, unknown>;
+}): Promise<ZeroDteExecutionMemory> {
+  return call({
+    action: "adaptive-observe",
+    ...args,
+  });
+}
+
+export async function confirmExecutionAdaptiveTransitionDb(args: {
+  tradeDate: string;
+  positionId: string;
+  confirmedAt: string;
+  actualPrice: number;
+  expectedRecommendationKey: string;
+}): Promise<ZeroDteExecutionMemory> {
+  return call({
+    action: "adaptive-confirm",
+    ...args,
+  });
+}
