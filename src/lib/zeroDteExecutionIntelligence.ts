@@ -154,6 +154,69 @@ export type ExecutionShortLegRiskRead = ExecutionShortLegEntry & {
   multiple: number | null;
 };
 
+/**
+ * Live, leg-level execution profile used by both the visible management
+ * workbench and the background adaptive manager. Greeks are the raw option
+ * Greeks from the current SPX chain; `exposure*` fields include position side,
+ * quantity, and the standard 100x contract multiplier.
+ */
+export type ExecutionLegProfileRead = {
+  optionType: "call" | "put";
+  action: "sell" | "buy";
+  strike: number;
+  role:
+    | "LOWER_WING"
+    | "PUT_SHORT"
+    | "CALL_SHORT"
+    | "UPPER_WING"
+    | "SHORT"
+    | "WING"
+    | "LONG_RUNNER";
+  quantity: number;
+  bid: number | null;
+  ask: number | null;
+  mid: number | null;
+  last: number | null;
+  iv: number | null;
+  delta: number | null;
+  gamma: number | null;
+  theta: number | null;
+  vega: number | null;
+  closePrice: number | null;
+  shortEntryPrice: number | null;
+  shortPremiumMultiple: number | null;
+  distanceFromSpot: number;
+  exposureDelta: number;
+  exposureGamma: number;
+  exposureTheta: number;
+  exposureVega: number;
+};
+
+export type ExecutionSideProfileRead = {
+  side: "put" | "call";
+  legCount: number;
+  shortCount: number;
+  longCount: number;
+  shortStrike: number | null;
+  wingStrike: number | null;
+  widthPoints: number | null;
+  shortPremiumMultiple: number | null;
+  shortDistancePoints: number | null;
+  closeValuePoints: number | null;
+  netDelta: number;
+  netGamma: number;
+  netTheta: number;
+  netVega: number;
+  state: "HEALTHY" | "WATCH" | "PRESSURED" | "RELEASE" | "LONG_RUNNER";
+};
+
+export type ExecutionGreekProfileRead = {
+  delta: number;
+  gamma: number;
+  theta: number;
+  vega: number;
+};
+
 export type ExecutionAdaptiveManagementHistoryItem = {
   at: string;
   kind: "RECOMMENDATION" | "CONFIRMATION" | "OPEN" | "EXIT";
@@ -269,6 +332,12 @@ export type ZeroDteExecutionRead = {
   quoteStatus: "LIVE" | "DEGRADED" | "WAITING_FOR_QUOTES";
   shortLegQuotes: ExecutionShortLegQuoteRead[];
   shortLegRisk: ExecutionShortLegRiskRead[];
+  /** Full current-leg quote/Greek surface for the actual position workbench. */
+  legProfiles?: ExecutionLegProfileRead[];
+  /** Put-side and call-side risk/Greek rollups from the exact live legs. */
+  sideProfiles?: ExecutionSideProfileRead[];
+  /** Total signed Greek exposure for the exact live legs. */
+  greekProfile?: ExecutionGreekProfileRead;
   worstShortLegMultiple: number | null;
   shortDeltaAbs: number | null;
   touchRiskProxyPct: number | null;
@@ -411,6 +480,15 @@ export function buildZeroDteExecutionRead(args: {
   const shortLegQuotes = buildShortLegQuoteReads(spxRows, legs);
   const quoteStatus = strategyQuoteStatus(spxRows, legs);
   const shortLegRisk = buildShortLegRiskReads(position, shortLegQuotes, legs);
+  const legProfiles = buildExecutionLegProfiles({
+    rows: spxRows,
+    legs,
+    position,
+    spot: recommendation.spxPrice,
+    shortLegRisk,
+  });
+  const sideProfiles = buildExecutionSideProfiles(legProfiles);
+  const greekProfile = aggregateExecutionLegProfiles(legProfiles);
   const worstShortLegMultiple = shortLegRisk.reduce<number | null>(
     (worst, leg) =>
       leg.multiple === null
@@ -719,6 +797,9 @@ export function buildZeroDteExecutionRead(args: {
     quoteStatus,
     shortLegQuotes,
     shortLegRisk,
+    legProfiles,
+    sideProfiles,
+    greekProfile,
     worstShortLegMultiple,
     shortDeltaAbs,
     touchRiskProxyPct,
@@ -2216,6 +2297,156 @@ function strategyQuoteStatus(
   }
   if (complete === legs.length) return "LIVE";
   return present > 0 ? "DEGRADED" : "WAITING_FOR_QUOTES";
+}
+
+function buildExecutionLegProfiles(args: {
+  rows: ZeroDteChainRow[];
+  legs: ExecutionLeg[];
+  position: ExecutionPositionMemory | null;
+  spot: number;
+  shortLegRisk: ExecutionShortLegRiskRead[];
+}): ExecutionLegProfileRead[] {
+  const quantity = Math.max(1, args.position?.quantity ?? 1);
+  const isIronFly = args.position?.strategy === "iron-fly" || isIronFlyGeometry(args.legs);
+  const longOnly = args.legs.length > 0 && args.legs.every((leg) => leg.action === "buy");
+
+  return args.legs.map((leg) => {
+    const row = args.rows.find(
+      (item) => item.optionType === leg.optionType && Math.abs(item.strike - leg.strike) < 0.01,
+    );
+    const quote = optionQuote(args.rows, leg.strike, leg.optionType);
+    const risk = args.shortLegRisk.find(
+      (item) => item.optionType === leg.optionType && Math.abs(item.strike - leg.strike) < 0.01,
+    );
+    const sign = leg.action === "buy" ? 1 : -1;
+    const exposureScale = sign * quantity * 100;
+    const delta = finiteOrNull(row?.delta);
+    const gamma = finiteOrNull(row?.gamma);
+    const theta = finiteOrNull(row?.theta);
+    const vega = finiteOrNull(row?.vega);
+
+    return {
+      optionType: leg.optionType,
+      action: leg.action,
+      strike: leg.strike,
+      role: executionLegRole(leg, isIronFly, longOnly),
+      quantity,
+      bid: quote?.bid ?? null,
+      ask: quote?.ask ?? null,
+      mid: quote?.mid ?? null,
+      last: finiteOrNull(row?.last),
+      iv: finiteOrNull(row?.iv),
+      delta,
+      gamma,
+      theta,
+      vega,
+      closePrice: leg.action === "sell" ? quote?.ask ?? null : quote?.bid ?? null,
+      shortEntryPrice: risk?.sellPrice ?? null,
+      shortPremiumMultiple: risk?.multiple ?? null,
+      distanceFromSpot: leg.optionType === "put" ? args.spot - leg.strike : leg.strike - args.spot,
+      exposureDelta: roundGreek((delta ?? 0) * exposureScale),
+      exposureGamma: roundGreek((gamma ?? 0) * exposureScale),
+      exposureTheta: roundGreek((theta ?? 0) * exposureScale),
+      exposureVega: roundGreek((vega ?? 0) * exposureScale),
+    };
+  });
+}
+
+function buildExecutionSideProfiles(
+  legProfiles: ExecutionLegProfileRead[],
+): ExecutionSideProfileRead[] {
+  return (["put", "call"] as const).flatMap((side) => {
+    const legs = legProfiles.filter((leg) => leg.optionType === side);
+    if (!legs.length) return [];
+    const shorts = legs.filter((leg) => leg.action === "sell");
+    const longs = legs.filter((leg) => leg.action === "buy");
+    const short = shorts
+      .slice()
+      .sort((a, b) => (b.shortPremiumMultiple ?? -1) - (a.shortPremiumMultiple ?? -1))[0] ?? null;
+    const wing = short
+      ? longs.slice().sort((a, b) => Math.abs(a.strike - short.strike) - Math.abs(b.strike - short.strike))[0] ?? null
+      : longs[0] ?? null;
+    const shortMultiple = short?.shortPremiumMultiple ?? null;
+    const closePricesAvailable = legs.every((leg) => leg.closePrice !== null);
+    const closeValuePoints = closePricesAvailable
+      ? roundGreek(
+          legs.reduce(
+            (sum, leg) => sum + (leg.action === "buy" ? Number(leg.closePrice) : -Number(leg.closePrice)),
+            0,
+          ),
+        )
+      : null;
+
+    return [{
+      side,
+      legCount: legs.length,
+      shortCount: shorts.length,
+      longCount: longs.length,
+      shortStrike: short?.strike ?? null,
+      wingStrike: wing?.strike ?? null,
+      widthPoints: short && wing ? Math.abs(short.strike - wing.strike) : null,
+      shortPremiumMultiple: shortMultiple,
+      shortDistancePoints: short?.distanceFromSpot ?? null,
+      closeValuePoints,
+      netDelta: roundGreek(legs.reduce((sum, leg) => sum + leg.exposureDelta, 0)),
+      netGamma: roundGreek(legs.reduce((sum, leg) => sum + leg.exposureGamma, 0)),
+      netTheta: roundGreek(legs.reduce((sum, leg) => sum + leg.exposureTheta, 0)),
+      netVega: roundGreek(legs.reduce((sum, leg) => sum + leg.exposureVega, 0)),
+      state: sideProfileState(shortMultiple, shorts.length, longs.length),
+    }];
+  });
+}
+
+function aggregateExecutionLegProfiles(
+  legs: ExecutionLegProfileRead[],
+): ExecutionGreekProfileRead {
+  return {
+    delta: roundGreek(legs.reduce((sum, leg) => sum + leg.exposureDelta, 0)),
+    gamma: roundGreek(legs.reduce((sum, leg) => sum + leg.exposureGamma, 0)),
+    theta: roundGreek(legs.reduce((sum, leg) => sum + leg.exposureTheta, 0)),
+    vega: roundGreek(legs.reduce((sum, leg) => sum + leg.exposureVega, 0)),
+  };
+}
+
+function sideProfileState(
+  shortMultiple: number | null,
+  shortCount: number,
+  longCount: number,
+): ExecutionSideProfileRead["state"] {
+  if (shortCount === 0 && longCount > 0) return "LONG_RUNNER";
+  if (shortMultiple !== null && shortMultiple >= 3) return "RELEASE";
+  if (shortMultiple !== null && shortMultiple >= 2) return "PRESSURED";
+  if (shortMultiple !== null && shortMultiple >= 1.5) return "WATCH";
+  return "HEALTHY";
+}
+
+function executionLegRole(
+  leg: ExecutionLeg,
+  isIronFly: boolean,
+  longOnly: boolean,
+): ExecutionLegProfileRead["role"] {
+  if (longOnly) return "LONG_RUNNER";
+  if (isIronFly) {
+    if (leg.action === "buy" && leg.optionType === "put") return "LOWER_WING";
+    if (leg.action === "sell" && leg.optionType === "put") return "PUT_SHORT";
+    if (leg.action === "sell" && leg.optionType === "call") return "CALL_SHORT";
+    return "UPPER_WING";
+  }
+  return leg.action === "sell" ? "SHORT" : "WING";
+}
+
+function isIronFlyGeometry(legs: ExecutionLeg[]) {
+  const shortPut = legs.find((leg) => leg.action === "sell" && leg.optionType === "put");
+  const shortCall = legs.find((leg) => leg.action === "sell" && leg.optionType === "call");
+  return Boolean(shortPut && shortCall && Math.abs(shortPut.strike - shortCall.strike) < 0.01);
+}
+
+function finiteOrNull(value: number | null | undefined) {
+  return Number.isFinite(value) ? Number(value) : null;
+}
+
+function roundGreek(value: number) {
+  return Math.round(value * 10000) / 10000;
 }
 
 function optionQuote(
