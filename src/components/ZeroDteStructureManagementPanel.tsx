@@ -3,6 +3,7 @@
 import type React from "react";
 import type {
   ExecutionCandidate,
+  ExecutionLeg,
   ExecutionLegProfileRead,
   ExecutionPositionMemory,
   ExecutionSideProfileRead,
@@ -10,6 +11,8 @@ import type {
   ZeroDteExecutionRead,
 } from "../lib/zeroDteExecutionIntelligence";
 import type { AdaptiveManagementDecision } from "../lib/zeroDteAdaptiveManagement";
+import type { ZeroDteShadowTrade } from "../lib/zeroDteShadowTrade";
+import type { ZeroDteChainRow } from "../lib/zeroDteOiIntelligence";
 
 type Props = {
   positions: ExecutionPositionMemory[];
@@ -17,6 +20,9 @@ type Props = {
   adaptiveDecisions: Record<string, AdaptiveManagementDecision>;
   candidates: Partial<Record<ExecutionStrategy, ExecutionCandidate | null>>;
   evaluateCandidate?: (candidate: ExecutionCandidate) => ZeroDteExecutionRead | null;
+  shadowTrades: ZeroDteShadowTrade[];
+  spxRows: ZeroDteChainRow[];
+  spot: number | null;
 };
 
 type ManagedLegRow = ExecutionLegProfileRead & {
@@ -39,17 +45,35 @@ export function ZeroDteStructureManagementPanel({
   adaptiveDecisions,
   candidates,
   evaluateCandidate,
+  shadowTrades,
+  spxRows,
+  spot,
 }: Props) {
   const ironFlyPositions = positions.filter((position) => position.strategy === "iron-fly");
   const putPositions = positions.filter((position) => position.strategy === "put-credit-spread");
   const callPositions = positions.filter((position) => position.strategy === "call-credit-spread");
-  const condorPositions = putPositions.length && callPositions.length
-    ? [...putPositions, ...callPositions]
-    : [];
+  const condorPositions = [...putPositions, ...callPositions];
+  const ironFlyActualQty = ironFlyPositions.reduce((sum, position) => sum + Math.max(1, position.quantity), 0);
+  const actualPutQty = putPositions.reduce((sum, position) => sum + Math.max(1, position.quantity), 0);
+  const actualCallQty = callPositions.reduce((sum, position) => sum + Math.max(1, position.quantity), 0);
+  const actualCondorCapacity = Math.min(actualPutQty, actualCallQty);
 
   const ironFlyCandidate = candidates["iron-fly"] ?? null;
   const putCandidate = candidates["put-credit-spread"] ?? null;
   const callCandidate = candidates["call-credit-spread"] ?? null;
+
+  // Shadow Lab is the authoritative paper portfolio. Every admitted SELL_READY
+  // row is one independently managed lot, so structure quantity is the count
+  // of currently-open admitted lots sharing the same live geometry.
+  const managedShadowTrades = shadowTrades.filter(isManagedShadowOpen);
+  const shadowFlyTrades = managedShadowTrades.filter((trade) => trade.strategy === "iron-fly");
+  const shadowPutTrades = managedShadowTrades.filter((trade) => trade.strategy === "put-credit-spread");
+  const shadowCallTrades = managedShadowTrades.filter((trade) => trade.strategy === "call-credit-spread");
+  const shadowCondorTrades = [...shadowPutTrades, ...shadowCallTrades];
+  const shadowFlyRows = buildShadowManagedRows(shadowFlyTrades, spxRows, spot);
+  const shadowCondorRows = buildShadowManagedRows(shadowCondorTrades, spxRows, spot);
+  const shadowFlyProfiles = buildSideProfilesFromManagedRows(shadowFlyRows);
+  const shadowCondorProfiles = buildSideProfilesFromManagedRows(shadowCondorRows);
 
   const ironFlyCandidateRead = ironFlyCandidate && evaluateCandidate
     ? evaluateCandidate(ironFlyCandidate)
@@ -62,6 +86,14 @@ export function ZeroDteStructureManagementPanel({
     : null;
 
   const ironFlyScopes: StructureScope[] = [
+    {
+      key: "if-shadow",
+      label: "SHADOW LAB BOOK",
+      subtitle: summarizeShadowFlyBook(shadowFlyTrades),
+      rows: shadowFlyRows,
+      sideProfiles: shadowFlyProfiles,
+      decisions: [],
+    },
     {
       key: "if-candidate",
       label: "LIVE CANDIDATE",
@@ -76,8 +108,8 @@ export function ZeroDteStructureManagementPanel({
       key: "if-actual",
       label: "ACTUAL BOOK",
       subtitle: ironFlyPositions.length
-        ? `${ironFlyPositions.length} open fly${ironFlyPositions.length === 1 ? "" : "ies"}; put and call center shorts are tracked independently.`
-        : "No actual iron-fly position is open. Live candidate analytics remain available above.",
+        ? `${ironFlyActualQty} actual fly contract${ironFlyActualQty === 1 ? "" : "s"} across ${ironFlyPositions.length} recorded build${ironFlyPositions.length === 1 ? "" : "s"}; put and call center shorts are tracked independently.`
+        : "No actual iron-fly position is open. Shadow and live-candidate analytics remain available above.",
       rows: buildManagedRows(ironFlyPositions, positionReads),
       sideProfiles: aggregateSideProfiles(ironFlyPositions, positionReads),
       decisions: ironFlyPositions.map((position) => adaptiveDecisions[position.id]).filter(Boolean),
@@ -86,6 +118,14 @@ export function ZeroDteStructureManagementPanel({
 
   const condorCandidateReady = Boolean(putCandidate && callCandidate);
   const condorScopes: StructureScope[] = [
+    {
+      key: "ic-shadow",
+      label: "SHADOW LAB BOOK",
+      subtitle: summarizeShadowCondorBook(shadowPutTrades, shadowCallTrades),
+      rows: shadowCondorRows,
+      sideProfiles: shadowCondorProfiles,
+      decisions: [],
+    },
     {
       key: "ic-candidate",
       label: "LIVE CANDIDATE",
@@ -110,10 +150,8 @@ export function ZeroDteStructureManagementPanel({
       key: "ic-actual",
       label: "ACTUAL BOOK",
       subtitle: condorPositions.length
-        ? "Paired actual put-credit and call-credit positions shown as one two-sided book while each spread remains independently managed."
-        : putPositions.length || callPositions.length
-          ? "One actual credit-spread side is open. The actual condor book forms when the opposite side is added."
-          : "No actual paired put/call spreads are open. Live candidate analytics remain available above.",
+        ? `Actual side inventory: PUT ${actualPutQty} · CALL ${actualCallQty} · condor capacity ${actualCondorCapacity}. Each recorded spread keeps its own contract quantity and remains independently managed.`
+        : "No actual put/call credit-spread inventory is open. Shadow and live-candidate analytics remain available above.",
       rows: buildManagedRows(condorPositions, positionReads),
       sideProfiles: aggregateSideProfiles(condorPositions, positionReads),
       decisions: condorPositions.map((position) => adaptiveDecisions[position.id]).filter(Boolean),
@@ -127,7 +165,7 @@ export function ZeroDteStructureManagementPanel({
           <div style={styles.eyebrow}>0DTE Structure Manager</div>
           <strong style={styles.title}>Iron Fly + Iron Condor Leg Intelligence</strong>
           <div style={styles.headerNote}>
-            Live candidates and actual books · every leg · Greeks · side pressure · adaptive state
+            Shadow Lab book + live candidates + actual books · true lot quantity · every leg · Greeks · adaptive state
           </div>
         </div>
         <span style={styles.livePill}>LIVE CHAIN</span>
@@ -254,7 +292,7 @@ function ScopeTable({ scope }: { scope: StructureScope }) {
             </table>
           </div>
           <div style={styles.footnote}>
-            * Entry is populated for recorded actual shorts. Candidate legs are live hypothetical structures and do not have an entry multiple yet.
+            * Qty is source-aware: live candidate = 1 hypothetical lot; Shadow Lab = current admitted lot count by exact build; actual = recorded contract quantity. Entry on shadow shorts is the average recorded sell price for that exact build; Short × shows the worst live multiple across those lots.
           </div>
           <div style={styles.sideGrid}>
             {scope.sideProfiles.map((profile) => (
@@ -325,6 +363,264 @@ function buildManagedRows(
       rowLabel: position.label,
     }));
   });
+}
+
+function isManagedShadowOpen(trade: ZeroDteShadowTrade) {
+  if (trade.portfolioDecision && trade.portfolioDecision !== "TAKE") return false;
+  if (trade.adaptiveState === "open") return true;
+  return trade.adaptiveState === null && trade.state === "open";
+}
+
+function shadowActiveLegs(trade: ZeroDteShadowTrade): ExecutionLeg[] {
+  return trade.adaptiveState === "open" && trade.adaptiveActiveLegs.length
+    ? trade.adaptiveActiveLegs
+    : trade.legs;
+}
+
+function buildShadowManagedRows(
+  trades: ZeroDteShadowTrade[],
+  rows: ZeroDteChainRow[],
+  spot: number | null,
+): ManagedLegRow[] {
+  const groups = new Map<string, ZeroDteShadowTrade[]>();
+  for (const trade of trades) {
+    const key = shadowGeometryKey(trade);
+    const current = groups.get(key) ?? [];
+    current.push(trade);
+    groups.set(key, current);
+  }
+
+  return [...groups.entries()].flatMap(([groupKey, group]) => {
+    const representative = group[0];
+    const legs = shadowActiveLegs(representative);
+    const quantity = group.length;
+    const buildLabel = `${shadowBuildLabel(representative)} ×${quantity}`;
+
+    return legs.map((leg, legIndex) => {
+      const row = rows.find(
+        (item) => item.optionType === leg.optionType && Math.abs(item.strike - leg.strike) < 0.01,
+      );
+      const bid = finite(row?.bid);
+      const ask = finite(row?.ask);
+      const mid = finite(row?.mid) ?? (bid !== null && ask !== null ? (bid + ask) / 2 : null);
+      const delta = finite(row?.delta);
+      const gamma = finite(row?.gamma);
+      const theta = finite(row?.theta);
+      const vega = finite(row?.vega);
+      const sign = leg.action === "buy" ? 1 : -1;
+      const entryPrices = leg.action === "sell"
+        ? group.map((trade) => shadowShortEntryPrice(trade, leg)).filter((value): value is number => value !== null)
+        : [];
+      const shortEntryPrice = entryPrices.length
+        ? entryPrices.reduce((sum, value) => sum + value, 0) / entryPrices.length
+        : null;
+      const shortMultiples = leg.action === "sell" && ask !== null
+        ? entryPrices.filter((value) => value > 0).map((value) => ask / value)
+        : [];
+
+      return {
+        optionType: leg.optionType,
+        action: leg.action,
+        strike: leg.strike,
+        role: executionRoleForShadow(representative.strategy, leg, legs),
+        quantity,
+        bid,
+        ask,
+        mid,
+        last: finite(row?.last),
+        iv: finite(row?.iv),
+        delta,
+        gamma,
+        theta,
+        vega,
+        closePrice: leg.action === "sell" ? ask : bid,
+        shortEntryPrice,
+        shortPremiumMultiple: shortMultiples.length ? Math.max(...shortMultiples) : null,
+        distanceFromSpot:
+          spot === null
+            ? 0
+            : leg.optionType === "put"
+              ? spot - leg.strike
+              : leg.strike - spot,
+        exposureDelta: roundGreek((delta ?? 0) * sign * quantity * 100),
+        exposureGamma: roundGreek((gamma ?? 0) * sign * quantity * 100),
+        exposureTheta: roundGreek((theta ?? 0) * sign * quantity * 100),
+        exposureVega: roundGreek((vega ?? 0) * sign * quantity * 100),
+        rowId: `shadow:${groupKey}:${legIndex}`,
+        rowLabel: buildLabel,
+      };
+    });
+  });
+}
+
+function buildSideProfilesFromManagedRows(rows: ManagedLegRow[]): ExecutionSideProfileRead[] {
+  return (["put", "call"] as const).flatMap((side) => {
+    const legs = rows.filter((leg) => leg.optionType === side);
+    if (!legs.length) return [];
+    const shorts = legs.filter((leg) => leg.action === "sell");
+    const longs = legs.filter((leg) => leg.action === "buy");
+    const short = shorts
+      .slice()
+      .sort((a, b) => (b.shortPremiumMultiple ?? -1) - (a.shortPremiumMultiple ?? -1))[0] ?? null;
+    const wing = short
+      ? longs.slice().sort((a, b) => Math.abs(a.strike - short.strike) - Math.abs(b.strike - short.strike))[0] ?? null
+      : longs[0] ?? null;
+    const closeReady = legs.every((leg) => leg.closePrice !== null);
+    const closeValuePoints = closeReady
+      ? roundGreek(legs.reduce(
+          (sum, leg) => sum + (leg.action === "sell" ? 1 : -1) * Number(leg.closePrice) * leg.quantity,
+          0,
+        ))
+      : null;
+    const shortCount = shorts.reduce((sum, leg) => sum + leg.quantity, 0);
+    const longCount = longs.reduce((sum, leg) => sum + leg.quantity, 0);
+
+    return [{
+      side,
+      legCount: shortCount + longCount,
+      shortCount,
+      longCount,
+      shortStrike: short?.strike ?? null,
+      wingStrike: wing?.strike ?? null,
+      widthPoints: short && wing ? Math.abs(short.strike - wing.strike) : null,
+      shortPremiumMultiple: short?.shortPremiumMultiple ?? null,
+      shortDistancePoints: short?.distanceFromSpot ?? null,
+      closeValuePoints,
+      netDelta: roundGreek(legs.reduce((sum, leg) => sum + leg.exposureDelta, 0)),
+      netGamma: roundGreek(legs.reduce((sum, leg) => sum + leg.exposureGamma, 0)),
+      netTheta: roundGreek(legs.reduce((sum, leg) => sum + leg.exposureTheta, 0)),
+      netVega: roundGreek(legs.reduce((sum, leg) => sum + leg.exposureVega, 0)),
+      state: sideProfileState(short?.shortPremiumMultiple ?? null, shortCount, longCount),
+    }];
+  });
+}
+
+function summarizeShadowFlyBook(trades: ZeroDteShadowTrade[]) {
+  if (!trades.length) {
+    return "No admitted open Shadow Lab iron-fly lots. This section will populate from Shadow Lab automatically.";
+  }
+  const grouped = groupShadowBuilds(trades);
+  return `Shadow Lab currently carries ${trades.length} fly lot${trades.length === 1 ? "" : "s"}: ${grouped.join(" · ")}.`;
+}
+
+function summarizeShadowCondorBook(
+  putTrades: ZeroDteShadowTrade[],
+  callTrades: ZeroDteShadowTrade[],
+) {
+  if (!putTrades.length && !callTrades.length) {
+    return "No admitted open Shadow Lab put/call credit-spread lots. Condor inventory will build here as Shadow Lab admits each side.";
+  }
+  const activePutVerticals = putTrades.filter(hasActiveVertical).length;
+  const activeCallVerticals = callTrades.filter(hasActiveVertical).length;
+  const pairedCapacity = Math.min(activePutVerticals, activeCallVerticals);
+  const putRemainder = Math.max(0, activePutVerticals - pairedCapacity);
+  const callRemainder = Math.max(0, activeCallVerticals - pairedCapacity);
+  const runners = [...putTrades, ...callTrades].filter((trade) => {
+    const legs = shadowActiveLegs(trade);
+    return legs.length > 0 && legs.every((leg) => leg.action === "buy");
+  }).length;
+  const builds = groupShadowBuilds([...putTrades, ...callTrades]);
+  return `Shadow Lab side inventory: PUT ${activePutVerticals} · CALL ${activeCallVerticals} · condor capacity ${pairedCapacity}${putRemainder ? ` · +${putRemainder} put-only` : ""}${callRemainder ? ` · +${callRemainder} call-only` : ""}${runners ? ` · ${runners} runner${runners === 1 ? "" : "s"}` : ""}. Builds: ${builds.join(" · ")}.`;
+}
+
+function groupShadowBuilds(trades: ZeroDteShadowTrade[]) {
+  const grouped = new Map<string, { trade: ZeroDteShadowTrade; quantity: number }>();
+  for (const trade of trades) {
+    const key = shadowGeometryKey(trade);
+    const existing = grouped.get(key);
+    if (existing) existing.quantity += 1;
+    else grouped.set(key, { trade, quantity: 1 });
+  }
+  return [...grouped.values()]
+    .sort((a, b) => b.quantity - a.quantity || shadowBuildLabel(a.trade).localeCompare(shadowBuildLabel(b.trade)))
+    .map(({ trade, quantity }) => `${shadowBuildLabel(trade)} ×${quantity}`);
+}
+
+function hasActiveVertical(trade: ZeroDteShadowTrade) {
+  const legs = shadowActiveLegs(trade);
+  return legs.some((leg) => leg.action === "sell") && legs.some((leg) => leg.action === "buy");
+}
+
+function shadowGeometryKey(trade: ZeroDteShadowTrade) {
+  const legs = shadowActiveLegs(trade)
+    .slice()
+    .sort((a, b) => a.optionType.localeCompare(b.optionType) || a.action.localeCompare(b.action) || a.strike - b.strike)
+    .map((leg) => `${leg.optionType}:${leg.action}:${leg.strike.toFixed(2)}`)
+    .join("|");
+  return `${trade.strategy}|${legs}`;
+}
+
+function shadowBuildLabel(trade: ZeroDteShadowTrade) {
+  const legs = shadowActiveLegs(trade);
+  const sold = legs.filter((leg) => leg.action === "sell");
+  const bought = legs.filter((leg) => leg.action === "buy");
+  if (trade.strategy === "iron-fly") {
+    const shortPut = sold.find((leg) => leg.optionType === "put");
+    const shortCall = sold.find((leg) => leg.optionType === "call");
+    const putWing = bought.find((leg) => leg.optionType === "put");
+    const callWing = bought.find((leg) => leg.optionType === "call");
+    if (shortPut && shortCall && putWing && callWing) {
+      return `IF ${putWing.strike.toFixed(0)}/${shortPut.strike.toFixed(0)}/${callWing.strike.toFixed(0)}`;
+    }
+  }
+  if (legs.length === 1 && legs[0].action === "buy") {
+    return `${legs[0].optionType.toUpperCase()} RUNNER ${legs[0].strike.toFixed(0)}`;
+  }
+  const short = sold[0] ?? null;
+  const wing = bought[0] ?? null;
+  if (short && wing) {
+    return `${short.optionType.toUpperCase()} ${short.strike.toFixed(0)}/${wing.strike.toFixed(0)}`;
+  }
+  return legs.map((leg) => `${leg.action === "sell" ? "-" : "+"}${leg.strike.toFixed(0)}${leg.optionType === "call" ? "C" : "P"}`).join(" ");
+}
+
+function shadowShortEntryPrice(trade: ZeroDteShadowTrade, leg: ExecutionLeg) {
+  const original = trade.entryShortLegs.find(
+    (item) => item.optionType === leg.optionType && Math.abs(item.strike - leg.strike) < 0.01,
+  );
+  if (original?.sellPrice && original.sellPrice > 0) return original.sellPrice;
+  const repaired = trade.adaptiveStructureHistory
+    .slice()
+    .reverse()
+    .find(
+      (item) => item.action === "REINSTATE_SHORT" && item.strike !== null && Math.abs(item.strike - leg.strike) < 0.01,
+    );
+  return repaired?.price && repaired.price > 0 ? repaired.price : null;
+}
+
+function executionRoleForShadow(
+  strategy: ExecutionStrategy,
+  leg: ExecutionLeg,
+  legs: ExecutionLeg[],
+): ExecutionLegProfileRead["role"] {
+  if (legs.length > 0 && legs.every((item) => item.action === "buy")) return "LONG_RUNNER";
+  if (strategy === "iron-fly") {
+    if (leg.action === "buy" && leg.optionType === "put") return "LOWER_WING";
+    if (leg.action === "sell" && leg.optionType === "put") return "PUT_SHORT";
+    if (leg.action === "sell" && leg.optionType === "call") return "CALL_SHORT";
+    return "UPPER_WING";
+  }
+  return leg.action === "sell" ? "SHORT" : "WING";
+}
+
+function sideProfileState(
+  shortMultiple: number | null,
+  shortCount: number,
+  longCount: number,
+): ExecutionSideProfileRead["state"] {
+  if (shortCount === 0 && longCount > 0) return "LONG_RUNNER";
+  if (shortMultiple !== null && shortMultiple >= 3) return "RELEASE";
+  if (shortMultiple !== null && shortMultiple >= 2) return "PRESSURED";
+  if (shortMultiple !== null && shortMultiple >= 1.5) return "WATCH";
+  return "HEALTHY";
+}
+
+function finite(value: number | null | undefined) {
+  return Number.isFinite(value) ? Number(value) : null;
+}
+
+function roundGreek(value: number) {
+  return Math.round(value * 10_000) / 10_000;
 }
 
 function aggregateSideProfiles(

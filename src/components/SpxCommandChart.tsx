@@ -2907,6 +2907,9 @@ export default function SpxCommandChart() {
         adaptiveDecisions={manualChainResearch ? {} : positionAdaptiveDecisions}
         candidates={executionCandidates}
         evaluateCandidate={evaluateStructureCandidate}
+        shadowTrades={manualChainResearch ? [] : shadowTrades}
+        spxRows={spxRows}
+        spot={recommendation?.spxPrice ?? null}
       />
 
       <ZeroDteShadowTradePanel trades={shadowTrades} error={shadowError} portfolio={portfolioRead} />
