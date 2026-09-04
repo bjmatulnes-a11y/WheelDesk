@@ -79,6 +79,7 @@ import {
   type ZeroDteRiskPolicy,
 } from "../lib/zeroDteRiskPolicy";
 import { ZeroDteRiskPolicyPanel } from "./ZeroDteRiskPolicyPanel";
+import { ZeroDteStructureManagementPanel } from "./ZeroDteStructureManagementPanel";
 import { ZeroDteShadowTradePanel } from "./ZeroDteShadowTradePanel";
 import {
   closeZeroDteShadowTrade,
@@ -1578,6 +1579,73 @@ export default function SpxCommandChart() {
     strikeFlow,
   ]);
 
+  const evaluateStructureCandidate = useCallback((candidate: ExecutionCandidate) => {
+    if (
+      !harvest?.tradeDate ||
+      !harvest.generatedAt ||
+      !recommendation ||
+      !mapManager.state ||
+      !executionReadMemory
+    ) {
+      return null;
+    }
+
+    const evaluatedCandidates = {
+      ...executionCandidates,
+      [candidate.strategy]: candidate,
+    };
+    const evaluatedPortfolio = buildZeroDtePortfolioRead({
+      memory: executionReadMemory,
+      rows: spxRows,
+      recommendation,
+      mapState: mapManager.state,
+      candidates: evaluatedCandidates,
+      mood: harvest.mood ?? null,
+      riskBudgetDollars: riskPolicy.grossRiskBudgetDollars,
+    });
+
+    return buildZeroDteExecutionRead({
+      tradeDate: harvest.tradeDate,
+      generatedAt: harvest.generatedAt,
+      recommendation,
+      spxRows,
+      strikeFlow,
+      tradeSelection: null,
+      mapState: mapManager.state,
+      memory: executionReadMemory,
+      candidateOverride: candidate,
+      positionOverride: null,
+      tracking: null,
+      portfolio: evaluatedPortfolio,
+      priceAction,
+      premiumTape: premiumTape.points,
+      riskPolicy,
+      volContext,
+      dailyLossBlocked,
+      entryBlockers: entryDataHealthBlockers,
+      leaderCandidate,
+      leastResistancePath: decisionLeastResistancePath,
+    });
+  }, [
+    dailyLossBlocked,
+    decisionLeastResistancePath,
+    entryDataHealthBlockers,
+    executionCandidates,
+    executionReadMemory,
+    harvest?.generatedAt,
+    harvest?.mood,
+    harvest?.tradeDate,
+    leaderCandidate,
+    mapManager.state,
+    premiumTape.points,
+    priceAction,
+    recommendation,
+    riskPolicy,
+    spxRows,
+    strikeFlow,
+    volContext,
+  ]);
+
   const positionAdaptiveDecisions = useMemo(() => {
     if (
       manualChainResearch ||
@@ -2519,52 +2587,7 @@ export default function SpxCommandChart() {
             entryLockedReason={entryDataHealthBlockers[0] ?? null}
             busy={executionBusy}
             error={manualChainResearch ? null : executionDbError}
-            evaluateCandidate={(candidate) => {
-              if (
-                !harvest?.tradeDate ||
-                !harvest.generatedAt ||
-                !recommendation ||
-                !mapManager.state ||
-                !executionReadMemory
-              ) {
-                return null;
-              }
-              const evaluatedCandidates = {
-                ...executionCandidates,
-                [candidate.strategy]: candidate,
-              };
-              const evaluatedPortfolio = buildZeroDtePortfolioRead({
-                memory: executionReadMemory,
-                rows: spxRows,
-                recommendation,
-                mapState: mapManager.state,
-                candidates: evaluatedCandidates,
-                mood: harvest.mood ?? null,
-                riskBudgetDollars: riskPolicy.grossRiskBudgetDollars,
-              });
-              return buildZeroDteExecutionRead({
-                tradeDate: harvest.tradeDate,
-                generatedAt: harvest.generatedAt,
-                recommendation,
-                spxRows,
-                strikeFlow,
-                tradeSelection: null,
-                mapState: mapManager.state,
-                memory: executionReadMemory,
-                candidateOverride: candidate,
-                positionOverride: null,
-                tracking: null,
-                portfolio: evaluatedPortfolio,
-                priceAction,
-                premiumTape: premiumTape.points,
-                riskPolicy,
-                volContext,
-                dailyLossBlocked,
-                entryBlockers: entryDataHealthBlockers,
-                leaderCandidate,
-                leastResistancePath: decisionLeastResistancePath,
-              });
-            }}
+            evaluateCandidate={evaluateStructureCandidate}
             onOpen={async ({
               candidate,
               entryCredit,
@@ -2876,6 +2899,14 @@ export default function SpxCommandChart() {
         realizedPnlDollars={realizedPnlDollars}
         dailyLossBlocked={dailyLossBlocked}
         volContext={volContext}
+      />
+
+      <ZeroDteStructureManagementPanel
+        positions={manualChainResearch ? [] : executionMemory?.positions ?? []}
+        positionReads={manualChainResearch ? {} : positionExecutionReads}
+        adaptiveDecisions={manualChainResearch ? {} : positionAdaptiveDecisions}
+        candidates={executionCandidates}
+        evaluateCandidate={evaluateStructureCandidate}
       />
 
       <ZeroDteShadowTradePanel trades={shadowTrades} error={shadowError} portfolio={portfolioRead} />

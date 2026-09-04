@@ -6,10 +6,8 @@ import {
   makeExecutionSetupKey,
   type ExecutionCandidate,
   type ExecutionLeg,
-  type ExecutionLegProfileRead,
   type ExecutionPositionMemory,
   type ExecutionShortLegEntry,
-  type ExecutionSideProfileRead,
   type ExecutionStrategy,
   type ZeroDteExecutionRead,
 } from "../../lib/zeroDteExecutionIntelligence";
@@ -350,14 +348,6 @@ export function ExecutionTradeDock({
           ) : null}
 
           {portfolio ? <PortfolioSummary portfolio={portfolio} /> : null}
-
-      {positions.length ? (
-        <PositionManagementWorkbench
-          positions={positions}
-          positionReads={positionReads}
-          adaptiveDecisions={positionAdaptiveDecisions}
-        />
-      ) : null}
 
       {positions.length ? (
         <div style={styles.positionStack}>
@@ -750,332 +740,6 @@ function PortfolioSummary({ portfolio }: { portfolio: ZeroDtePortfolioRead }) {
       ) : null}
     </div>
   );
-}
-
-type ManagedLegRow = ExecutionLegProfileRead & {
-  positionId: string;
-  positionLabel: string;
-  strategy: ExecutionStrategy;
-};
-
-function PositionManagementWorkbench({
-  positions,
-  positionReads,
-  adaptiveDecisions,
-}: {
-  positions: ExecutionPositionMemory[];
-  positionReads: Record<string, ZeroDteExecutionRead>;
-  adaptiveDecisions: Record<string, AdaptiveManagementDecision>;
-}) {
-  const ironFlyPositions = positions.filter((position) => position.strategy === "iron-fly");
-  const putPositions = positions.filter((position) => position.strategy === "put-credit-spread");
-  const callPositions = positions.filter((position) => position.strategy === "call-credit-spread");
-  const condorPositions = putPositions.length && callPositions.length
-    ? [...putPositions, ...callPositions]
-    : [];
-
-  const ironFlyRows = buildManagedRows(ironFlyPositions, positionReads);
-  const condorRows = buildManagedRows(condorPositions, positionReads);
-  const ironFlySides = aggregateSideProfiles(ironFlyPositions, positionReads);
-  const condorSides = aggregateSideProfiles(condorPositions, positionReads);
-
-  return (
-    <div style={styles.workbench}>
-      <div style={styles.workbenchHeader}>
-        <div>
-          <div style={styles.smallCaps}>Actual Position Management Workbench</div>
-          <strong>Every live leg · Greeks · side profiles · adaptive state</strong>
-        </div>
-        <span>Same ledger feeds background management</span>
-      </div>
-
-      <StructureLegTable
-        title="Iron Fly 0DTE"
-        subtitle={
-          ironFlyPositions.length
-            ? `${ironFlyPositions.length} open fly${ironFlyPositions.length === 1 ? "" : "ies"}; put and call center shorts remain independently visible.`
-            : "No actual iron-fly position is open."
-        }
-        rows={ironFlyRows}
-        sideProfiles={ironFlySides}
-        decisions={ironFlyPositions.map((position) => adaptiveDecisions[position.id]).filter(Boolean)}
-      />
-
-      <StructureLegTable
-        title="Iron Condor 0DTE"
-        subtitle={
-          condorPositions.length
-            ? "Paired actual put-credit and call-credit positions are shown as one two-sided risk book; each source position remains independently managed."
-            : putPositions.length || callPositions.length
-              ? "Only one credit-spread side is open; WheelDesk will form this table when the opposite side is added."
-              : "No paired actual put/call credit positions are open."
-        }
-        rows={condorRows}
-        sideProfiles={condorSides}
-        decisions={condorPositions.map((position) => adaptiveDecisions[position.id]).filter(Boolean)}
-      />
-    </div>
-  );
-}
-
-function StructureLegTable({
-  title,
-  subtitle,
-  rows,
-  sideProfiles,
-  decisions,
-}: {
-  title: string;
-  subtitle: string;
-  rows: ManagedLegRow[];
-  sideProfiles: ExecutionSideProfileRead[];
-  decisions: AdaptiveManagementDecision[];
-}) {
-  const totals = rows.reduce(
-    (acc, row) => ({
-      delta: acc.delta + row.exposureDelta,
-      gamma: acc.gamma + row.exposureGamma,
-      theta: acc.theta + row.exposureTheta,
-      vega: acc.vega + row.exposureVega,
-    }),
-    { delta: 0, gamma: 0, theta: 0, vega: 0 },
-  );
-  const actionable = decisions.find((decision) =>
-    decision.action === "RELEASE_SHORT" ||
-    decision.action === "REINSTATE_SHORT" ||
-    decision.action === "CLOSE_RUNNER",
-  ) ?? null;
-
-  return (
-    <section style={styles.structureTableCard}>
-      <div style={styles.structureTableHeader}>
-        <div>
-          <strong>{title}</strong>
-          <span>{subtitle}</span>
-        </div>
-        {rows.length ? (
-          <div style={styles.greekStrip}>
-            <MiniGreek label="Net Δ" value={totals.delta} />
-            <MiniGreek label="Net Γ" value={totals.gamma} />
-            <MiniGreek label="Net Θ" value={totals.theta} />
-            <MiniGreek label="Net Vega" value={totals.vega} />
-          </div>
-        ) : null}
-      </div>
-
-      {actionable ? (
-        <div style={styles.workbenchActionAlert}>
-          <strong>{actionable.action.replaceAll("_", " ")}</strong>
-          <span>{actionable.structureTransition?.detail ?? actionable.reasons[0]}</span>
-        </div>
-      ) : null}
-
-      {rows.length ? (
-        <>
-          <div style={styles.legTableScroll}>
-            <table style={styles.legTable}>
-              <thead>
-                <tr>
-                  <th style={{ ...styles.tableCell, ...styles.tableHeaderCell }}>Position</th>
-                  <th style={{ ...styles.tableCell, ...styles.tableHeaderCell }}>Role</th>
-                  <th style={{ ...styles.tableCell, ...styles.tableHeaderCell }}>Side</th>
-                  <th style={{ ...styles.tableCell, ...styles.tableHeaderCell }}>Qty</th>
-                  <th style={{ ...styles.tableCell, ...styles.tableHeaderCell }}>Strike</th>
-                  <th style={{ ...styles.tableCell, ...styles.tableHeaderCell }}>Entry*</th>
-                  <th style={{ ...styles.tableCell, ...styles.tableHeaderCell }}>Bid</th>
-                  <th style={{ ...styles.tableCell, ...styles.tableHeaderCell }}>Ask</th>
-                  <th style={{ ...styles.tableCell, ...styles.tableHeaderCell }}>Mid</th>
-                  <th style={{ ...styles.tableCell, ...styles.tableHeaderCell }}>IV</th>
-                  <th style={{ ...styles.tableCell, ...styles.tableHeaderCell }}>Δ</th>
-                  <th style={{ ...styles.tableCell, ...styles.tableHeaderCell }}>Γ</th>
-                  <th style={{ ...styles.tableCell, ...styles.tableHeaderCell }}>Θ</th>
-                  <th style={{ ...styles.tableCell, ...styles.tableHeaderCell }}>Vega</th>
-                  <th style={{ ...styles.tableCell, ...styles.tableHeaderCell }}>Close</th>
-                  <th style={{ ...styles.tableCell, ...styles.tableHeaderCell }}>Short ×</th>
-                  <th style={{ ...styles.tableCell, ...styles.tableHeaderCell }}>Dist</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows
-                  .slice()
-                  .sort((a, b) => a.strike - b.strike || a.optionType.localeCompare(b.optionType))
-                  .map((row, index) => (
-                    <tr key={`${row.positionId}-${row.optionType}-${row.strike}-${row.action}-${index}`}>
-                      <td title={row.positionLabel} style={styles.tableCell}>{shortPositionLabel(row.positionLabel)}</td>
-                      <td style={styles.tableCell}><span style={rolePillStyle(row.role)}>{row.role.replaceAll("_", " ")}</span></td>
-                      <td style={styles.tableCell}>{row.optionType.toUpperCase()} {row.action === "sell" ? "SHORT" : "LONG"}</td>
-                      <td style={styles.tableCell}>{row.quantity}</td>
-                      <td style={styles.tableCell}><strong>{row.strike.toFixed(0)}</strong></td>
-                      <td style={styles.tableCell}>{money(row.shortEntryPrice)}</td>
-                      <td style={styles.tableCell}>{money(row.bid)}</td>
-                      <td style={styles.tableCell}>{money(row.ask)}</td>
-                      <td style={styles.tableCell}>{money(row.mid)}</td>
-                      <td style={styles.tableCell}>{formatIv(row.iv)}</td>
-                      <td style={styles.tableCell}>{greek(row.delta)}</td>
-                      <td style={styles.tableCell}>{greek(row.gamma, 4)}</td>
-                      <td style={styles.tableCell}>{greek(row.theta)}</td>
-                      <td style={styles.tableCell}>{greek(row.vega)}</td>
-                      <td style={styles.tableCell}>{money(row.closePrice)}</td>
-                      <td style={{ ...styles.tableCell, ...shortMultipleStyle(row.shortPremiumMultiple) }}>{multiple(row.shortPremiumMultiple)}</td>
-                      <td style={styles.tableCell}>{signedPoints(row.distanceFromSpot)}</td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          </div>
-          <div style={styles.tableFootnote}>* Entry is the recorded short-leg sale price when available; package entry credit remains authoritative for total-position P/L.</div>
-          <div style={styles.sideProfileGrid}>
-            {sideProfiles.map((side) => <SideProfileCard key={side.side} profile={side} />)}
-          </div>
-        </>
-      ) : (
-        <div style={styles.structureEmpty}>Waiting for an actual structure to populate this ledger.</div>
-      )}
-    </section>
-  );
-}
-
-function SideProfileCard({ profile }: { profile: ExecutionSideProfileRead }) {
-  return (
-    <div style={{ ...styles.sideProfileCard, borderColor: sideStateColor(profile.state) }}>
-      <div style={styles.sideProfileHeader}>
-        <strong>{profile.side.toUpperCase()} SIDE</strong>
-        <span style={{ color: sideStateColor(profile.state) }}>{profile.state.replaceAll("_", " ")}</span>
-      </div>
-      <div style={styles.sideProfileMetrics}>
-        <DockMetric label="Short / Wing" value={`${profile.shortStrike?.toFixed(0) ?? "—"} / ${profile.wingStrike?.toFixed(0) ?? "—"}`} />
-        <DockMetric label="Width" value={profile.widthPoints == null ? "—" : `${profile.widthPoints.toFixed(0)} pt`} />
-        <DockMetric label="Short ×" value={multiple(profile.shortPremiumMultiple)} />
-        <DockMetric label="Short Dist" value={profile.shortDistancePoints == null ? "—" : signedPoints(profile.shortDistancePoints)} />
-        <DockMetric label="Close Value" value={money(profile.closeValuePoints)} />
-        <DockMetric label="Net Δ" value={signedGreek(profile.netDelta)} />
-        <DockMetric label="Net Γ" value={signedGreek(profile.netGamma, 4)} />
-        <DockMetric label="Net Θ" value={signedGreek(profile.netTheta)} />
-        <DockMetric label="Net Vega" value={signedGreek(profile.netVega)} />
-      </div>
-    </div>
-  );
-}
-
-function MiniGreek({ label, value }: { label: string; value: number }) {
-  return <span><small>{label}</small><strong>{signedGreek(value, label === "Net Γ" ? 4 : 2)}</strong></span>;
-}
-
-function buildManagedRows(
-  positions: ExecutionPositionMemory[],
-  positionReads: Record<string, ZeroDteExecutionRead>,
-): ManagedLegRow[] {
-  return positions.flatMap((position) => {
-    const read = positionReads[position.id];
-    return (read?.legProfiles ?? []).map((row) => ({
-      ...row,
-      positionId: position.id,
-      positionLabel: position.label,
-      strategy: position.strategy,
-    }));
-  });
-}
-
-function aggregateSideProfiles(
-  positions: ExecutionPositionMemory[],
-  positionReads: Record<string, ZeroDteExecutionRead>,
-): ExecutionSideProfileRead[] {
-  return (["put", "call"] as const).flatMap((side) => {
-    const profiles = positions.flatMap((position) =>
-      (positionReads[position.id]?.sideProfiles ?? []).filter((profile) => profile.side === side),
-    );
-    if (!profiles.length) return [];
-    const shortProfiles = profiles.filter((profile) => profile.shortCount > 0);
-    const worst = shortProfiles
-      .slice()
-      .sort((a, b) => (b.shortPremiumMultiple ?? -1) - (a.shortPremiumMultiple ?? -1))[0] ?? null;
-    const state = profiles
-      .map((profile) => profile.state)
-      .sort((a, b) => sideStateRank(b) - sideStateRank(a))[0] ?? "HEALTHY";
-    const finiteClose = profiles.every((profile) => profile.closeValuePoints !== null);
-    const representative = worst ?? profiles[0];
-    return [{
-      side,
-      legCount: profiles.reduce((sum, profile) => sum + profile.legCount, 0),
-      shortCount: profiles.reduce((sum, profile) => sum + profile.shortCount, 0),
-      longCount: profiles.reduce((sum, profile) => sum + profile.longCount, 0),
-      shortStrike: representative.shortStrike,
-      wingStrike: representative.wingStrike,
-      widthPoints: representative.widthPoints,
-      shortPremiumMultiple: worst?.shortPremiumMultiple ?? null,
-      shortDistancePoints: worst?.shortDistancePoints ?? null,
-      closeValuePoints: finiteClose ? profiles.reduce((sum, profile) => sum + Number(profile.closeValuePoints), 0) : null,
-      netDelta: profiles.reduce((sum, profile) => sum + profile.netDelta, 0),
-      netGamma: profiles.reduce((sum, profile) => sum + profile.netGamma, 0),
-      netTheta: profiles.reduce((sum, profile) => sum + profile.netTheta, 0),
-      netVega: profiles.reduce((sum, profile) => sum + profile.netVega, 0),
-      state,
-    }];
-  });
-}
-
-function sideStateRank(state: ExecutionSideProfileRead["state"]) {
-  if (state === "RELEASE") return 5;
-  if (state === "PRESSURED") return 4;
-  if (state === "WATCH") return 3;
-  if (state === "LONG_RUNNER") return 2;
-  return 1;
-}
-
-function sideStateColor(state: ExecutionSideProfileRead["state"]) {
-  if (state === "RELEASE") return "rgba(251,113,133,.78)";
-  if (state === "PRESSURED") return "rgba(251,146,60,.72)";
-  if (state === "WATCH") return "rgba(245,197,66,.68)";
-  if (state === "LONG_RUNNER") return "rgba(96,165,250,.66)";
-  return "rgba(113,224,180,.52)";
-}
-
-function rolePillStyle(role: ExecutionLegProfileRead["role"]): React.CSSProperties {
-  const threatened = role === "PUT_SHORT" || role === "CALL_SHORT" || role === "SHORT";
-  return {
-    display: "inline-block",
-    padding: "2px 6px",
-    borderRadius: 999,
-    border: `1px solid ${threatened ? "rgba(245,197,66,.42)" : "rgba(96,165,250,.30)"}`,
-    color: threatened ? "#f5c542" : "#9ecbff",
-    whiteSpace: "nowrap",
-  };
-}
-
-function shortMultipleStyle(value: number | null): React.CSSProperties {
-  if (value == null) return {};
-  if (value >= 3) return { color: "#fb7185", fontWeight: 800 };
-  if (value >= 2) return { color: "#fb923c", fontWeight: 800 };
-  if (value >= 1.5) return { color: "#f5c542", fontWeight: 700 };
-  return { color: "#71e0b4" };
-}
-
-function shortPositionLabel(label: string) {
-  return label.length <= 22 ? label : `${label.slice(0, 19)}…`;
-}
-
-function multiple(value: number | null | undefined) {
-  return value == null || !Number.isFinite(value) ? "—" : `${value.toFixed(2)}×`;
-}
-
-function formatIv(value: number | null | undefined) {
-  if (value == null || !Number.isFinite(value)) return "—";
-  const pct = Math.abs(value) <= 3 ? value * 100 : value;
-  return `${pct.toFixed(1)}%`;
-}
-
-function greek(value: number | null | undefined, digits = 3) {
-  return value == null || !Number.isFinite(value) ? "—" : value.toFixed(digits);
-}
-
-function signedGreek(value: number, digits = 2) {
-  if (!Number.isFinite(value)) return "—";
-  return `${value > 0 ? "+" : ""}${value.toFixed(digits)}`;
-}
-
-function signedPoints(value: number) {
-  if (!Number.isFinite(value)) return "—";
-  return `${value > 0 ? "+" : ""}${value.toFixed(1)}`;
 }
 
 function PortfolioPositionCard({
@@ -1476,6 +1140,19 @@ function signed(value: number) {
 }
 
 const styles: Record<string, React.CSSProperties> = {
+  workbenchScope: {
+    display: "grid",
+    gap: 10,
+    padding: "12px 0",
+    borderTop: "1px solid rgba(148,163,184,.14)",
+  },
+  workbenchScopeHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    alignItems: "flex-start",
+    flexWrap: "wrap",
+  },
   workbench: {
     display: "grid",
     gap: 10,
