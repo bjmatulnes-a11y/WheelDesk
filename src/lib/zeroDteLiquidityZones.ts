@@ -33,6 +33,9 @@ export type ProjectedLiquidityZone = {
   totalObservedVolume: number;
   firstAt: string;
   lastAt: string;
+  memoryStatus: "LIVE" | "RETAINED";
+  peakStrength: number;
+  peakConfidencePct: number;
 };
 
 export type LiquidityZoneRead = {
@@ -43,6 +46,8 @@ export type LiquidityZoneRead = {
   sampleCount: number;
   supply: ProjectedLiquidityZone[];
   demand: ProjectedLiquidityZone[];
+  registry: ProjectedLiquidityZone[];
+  retainedCount: number;
   warnings: string[];
 };
 
@@ -101,6 +106,8 @@ export function buildEsLiquidityZones(args: {
       sampleCount: 0,
       supply: [],
       demand: [],
+      registry: [],
+      retainedCount: 0,
       warnings: ["Liquidity zones are warming up."],
     };
   }
@@ -168,6 +175,8 @@ export function buildEsLiquidityZones(args: {
     sampleCount: samples.length,
     supply,
     demand,
+    registry: zones,
+    retainedCount: 0,
     warnings,
   };
 }
@@ -340,6 +349,9 @@ function scoreBucket(args: {
     totalObservedVolume: round(bucket.totalObservedVolume),
     firstAt: bucket.firstAt,
     lastAt: bucket.lastAt,
+    memoryStatus: "LIVE",
+    peakStrength: round(strength),
+    peakConfidencePct: round(confidencePct),
   };
 }
 

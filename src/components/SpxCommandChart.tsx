@@ -250,6 +250,7 @@ type LiquidityZoneRect = {
   label: string;
   state: string;
   strength: number;
+  memoryStatus: "LIVE" | "RETAINED";
 };
 
 export default function SpxCommandChart() {
@@ -1370,6 +1371,7 @@ export default function SpxCommandChart() {
           label: `${zone.side} ${zone.lowSpx.toFixed(1)}–${zone.highSpx.toFixed(1)}`,
           state: zone.state,
           strength: zone.strength,
+          memoryStatus: zone.memoryStatus,
         }];
       });
       setLiquidityZoneRects(next);
@@ -2592,7 +2594,7 @@ export default function SpxCommandChart() {
                         color: zone.side === "SUPPLY" ? "#ff9096" : "#71dce3",
                       }}
                     >
-                      {zone.label} · {zone.state} · {zone.strength.toFixed(0)}
+                      {zone.label} · {zone.state} · {zone.strength.toFixed(0)}{zone.memoryStatus === "RETAINED" ? " · MEMORY" : ""}
                     </span>
                   </div>
                 ))}

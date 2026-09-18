@@ -11,8 +11,15 @@ import {
 import type { AdaptiveAuctionContext } from "../lib/zeroDteAdaptiveManagement";
 import {
   buildEsLiquidityZones,
+  type LiquidityZoneRead,
   type ProjectedLiquidityZone,
 } from "../lib/zeroDteLiquidityZones";
+import {
+  liquidityZoneSessionKey,
+  loadLiquidityZoneMemory,
+  mergeLiquidityZoneMemory,
+  saveLiquidityZoneMemory,
+} from "../lib/zeroDteLiquidityZoneMemory";
 import { authenticatedApiHeaders } from "../lib/auth/authenticated-api";
 
 type OrderFlowApiResponse = {
@@ -74,6 +81,10 @@ export function ZeroDteEsOrderFlowPanel({
     pocEs: number;
     projectedPocSpx: number | null;
   }>>([]);
+  const liquidityZoneMemoryRef = useRef<ProjectedLiquidityZone[]>([]);
+  const liquidityZoneSessionRef = useRef<string | null>(null);
+  const liquidityZoneLastPersistRef = useRef(0);
+  const [liquidityZones, setLiquidityZones] = useState<LiquidityZoneRead | null>(null);
 
   useEffect(() => {
     if (!enabled) return;
@@ -160,6 +171,19 @@ export function ZeroDteEsOrderFlowPanel({
   }, []);
 
   useEffect(() => {
+    const flushZoneMemory = () => {
+      const sessionKey = liquidityZoneSessionRef.current;
+      if (!sessionKey || !liquidityZoneMemoryRef.current.length) return;
+      saveLiquidityZoneMemory(sessionKey, liquidityZoneMemoryRef.current);
+    };
+    window.addEventListener("pagehide", flushZoneMemory);
+    return () => {
+      flushZoneMemory();
+      window.removeEventListener("pagehide", flushZoneMemory);
+    };
+  }, []);
+
+  useEffect(() => {
     const latestSample = read.latest;
     if (!latestSample || latestSample.timestamp === processedFootprintTimestampRef.current) return;
     processedFootprintTimestampRef.current = latestSample.timestamp;
@@ -190,10 +214,39 @@ export function ZeroDteEsOrderFlowPanel({
   }, [read.latest]);
 
   const latest = read.latest;
-  const liquidityZones = useMemo(
+  const liveLiquidityZones = useMemo(
     () => buildEsLiquidityZones({ samples: read.samples, spxPrice }),
     [read.samples, spxPrice],
   );
+
+  useEffect(() => {
+    const timestamp = latest?.timestamp ?? new Date().toISOString();
+    const sessionKey = liquidityZoneSessionKey(timestamp);
+    if (liquidityZoneSessionRef.current !== sessionKey) {
+      liquidityZoneSessionRef.current = sessionKey;
+      liquidityZoneMemoryRef.current = loadLiquidityZoneMemory(sessionKey);
+      liquidityZoneLastPersistRef.current = 0;
+    }
+
+    const merged = mergeLiquidityZoneMemory({
+      live: liveLiquidityZones,
+      retained: liquidityZoneMemoryRef.current,
+      now: timestamp,
+    });
+    liquidityZoneMemoryRef.current = merged.registry;
+    setLiquidityZones(merged);
+
+    // Persist only the compact zone registry, not 1-second ES samples. Four
+    // browser-local writes per minute is enough to survive refresh/navigation
+    // without adding any Supabase/database traffic.
+    const wallClock = Date.now();
+    if (wallClock - liquidityZoneLastPersistRef.current >= 15_000) {
+      saveLiquidityZoneMemory(sessionKey, merged.registry);
+      liquidityZoneLastPersistRef.current = wallClock;
+    }
+  }, [latest?.timestamp, liveLiquidityZones]);
+
+  const effectiveLiquidityZones = liquidityZones ?? liveLiquidityZones;
   const staleSeconds = lastSuccessAt == null ? null : Math.max(0, (now - lastSuccessAt) / 1000);
   const stale = staleSeconds != null && staleSeconds > 4;
   const stateTone = toneForState(read.state);
@@ -276,15 +329,15 @@ export function ZeroDteEsOrderFlowPanel({
       pocMigration5mSpx,
       observedVolume: managementProfile.observedVolume,
       classificationPct: managementProfile.classificationPct,
-      supplyZones: liquidityZones.supply,
-      demandZones: liquidityZones.demand,
-      nearestSupplySpx: liquidityZones.supply.find((zone) => zone.centerSpx != null)?.centerSpx ?? null,
-      nearestDemandSpx: liquidityZones.demand.find((zone) => zone.centerSpx != null)?.centerSpx ?? null,
+      supplyZones: effectiveLiquidityZones.supply,
+      demandZones: effectiveLiquidityZones.demand,
+      nearestSupplySpx: effectiveLiquidityZones.supply.find((zone) => zone.centerSpx != null)?.centerSpx ?? null,
+      nearestDemandSpx: effectiveLiquidityZones.demand.find((zone) => zone.centerSpx != null)?.centerSpx ?? null,
     });
   }, [
     enabled,
     latest,
-    liquidityZones,
+    effectiveLiquidityZones,
     managementProfile,
     onManagementRead,
     read.state,
@@ -363,7 +416,7 @@ export function ZeroDteEsOrderFlowPanel({
         </div>
       </div>
 
-      <LiquidityZonesCard read={liquidityZones} />
+      <LiquidityZonesCard read={effectiveLiquidityZones} />
 
       {sandboxOpen ? (
         <FootprintSandbox
@@ -393,7 +446,7 @@ export function ZeroDteEsOrderFlowPanel({
 function LiquidityZonesCard({
   read,
 }: {
-  read: ReturnType<typeof buildEsLiquidityZones>;
+  read: LiquidityZoneRead;
 }) {
   const zones = [...read.supply, ...read.demand]
     .sort((a, b) => b.strength - a.strength)
@@ -417,7 +470,7 @@ function LiquidityZonesCard({
         <div style={styles.zoneEmpty}>Collecting enough ES observations to form zones…</div>
       )}
       <div style={styles.zoneFooter}>
-        Built from a rolling ~15-minute browser-memory window of the existing 1-second ES observer. No Supabase writes, snapshots, or additional market-data requests are created by this overlay.
+        Live scoring uses the rolling ~15-minute ES observer, while material zones are retained for the current market session in browser localStorage ({read.retainedCount} retained). Only the compact zone ledger is stored; 1-second samples are not persisted. No Supabase writes, snapshots, or additional market-data requests are created by this overlay.
       </div>
     </div>
   );
@@ -433,6 +486,7 @@ function LiquidityZoneRow({ zone }: { zone: ProjectedLiquidityZone }) {
       <div style={styles.zoneRowTop}>
         <strong style={{ color: supply ? "#ff8a8a" : "#65d9df" }}>{zone.side}</strong>
         <span style={styles.zoneRange}>{range}</span>
+        {zone.memoryStatus === "RETAINED" ? <span style={styles.memoryPill}>MEMORY</span> : null}
         <span style={styles.zoneState}>{zone.state}</span>
       </div>
       <div style={styles.zoneMetrics}>
@@ -814,6 +868,7 @@ const styles: Record<string, React.CSSProperties> = {
   zoneRow: { border: "1px solid", borderRadius: 8, background: "#0b1725", padding: "7px 8px" },
   zoneRowTop: { display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap", fontSize: 9 },
   zoneRange: { color: "#eef5fb", fontWeight: 900 },
+  memoryPill: { color: "#d6b56c", border: "1px solid #68552d", background: "#241e10", borderRadius: 999, padding: "1px 5px", fontSize: 7, fontWeight: 900, letterSpacing: .35 },
   zoneState: { marginLeft: "auto", color: "#9aabc1", fontSize: 8, fontWeight: 900, letterSpacing: .4 },
   zoneMetrics: { display: "flex", gap: 9, flexWrap: "wrap", marginTop: 5, color: "#73869e", fontSize: 8 },
   zoneEmpty: { padding: 12, color: "#667991", fontSize: 10 },
