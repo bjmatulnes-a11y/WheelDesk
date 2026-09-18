@@ -3,15 +3,19 @@ import type {
   ProjectedLiquidityZone,
 } from "./zeroDteLiquidityZones";
 
-const STORAGE_PREFIX = "wheeldesk:zero-dte:liquidity-zone-memory:v2:";
+const STORAGE_PREFIX = "wheeldesk:zero-dte:liquidity-zone-memory:v3:";
 const MAX_MEMORY_ZONES = 40;
 const MAX_SESSION_AGE_MS = 10 * 60 * 60_000;
-const RETAINED_STRENGTH_FLOOR = 28;
+const RETAINED_STRENGTH_FLOOR = 18;
+const RENDER_STRENGTH_THRESHOLD = 28;
+const DECAY_HOURS = 1.5;
+const BREAK_BUFFER_POINTS = 1.25;
+const REVISIT_RESET_MS = 8 * 60_000;
 
 export function liquidityZoneSessionKey(timestamp?: string | null) {
   const date = timestamp ? new Date(timestamp) : new Date();
   const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
+    timeZone: "America/Chicago",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -53,7 +57,7 @@ export function saveLiquidityZoneMemory(
     window.localStorage.setItem(
       `${STORAGE_PREFIX}${sessionKey}`,
       JSON.stringify({
-        version: 2,
+        version: 3,
         sessionKey,
         savedAt: new Date().toISOString(),
         zones: compact,
@@ -92,17 +96,36 @@ export function mergeLiquidityZoneMemory(args: {
 
   for (const liveZone of args.live.registry) {
     const oldZone = registry.get(liveZone.id);
+
+    // A broken polarity does not silently resurrect just because the old side
+    // appears again in top-of-book samples. It must first flip back through a
+    // decisive break of the opposite-side zone.
+    if (oldZone?.state === "BROKEN" && !liveZone.flippedFrom) continue;
+
+    const revisitGap = oldZone
+      ? Date.parse(liveZone.firstAt) - Date.parse(oldZone.lastAt)
+      : 0;
+    const resetPeak = oldZone != null && revisitGap > REVISIT_RESET_MS;
+
     registry.set(liveZone.id, {
       ...liveZone,
       firstAt: olderTimestamp(oldZone?.firstAt, liveZone.firstAt),
-      peakStrength: Math.max(liveZone.strength, oldZone?.peakStrength ?? oldZone?.strength ?? 0),
-      peakConfidencePct: Math.max(
-        liveZone.confidencePct,
-        oldZone?.peakConfidencePct ?? oldZone?.confidencePct ?? 0,
-      ),
+      peakStrength: resetPeak
+        ? liveZone.strength
+        : Math.max(liveZone.strength, oldZone?.peakStrength ?? oldZone?.strength ?? 0),
+      peakConfidencePct: resetPeak
+        ? liveZone.confidencePct
+        : Math.max(
+            liveZone.confidencePct,
+            oldZone?.peakConfidencePct ?? oldZone?.confidencePct ?? 0,
+          ),
+      flippedFrom: oldZone?.flippedFrom ?? liveZone.flippedFrom ?? null,
+      brokenAt: null,
       memoryStatus: "LIVE",
     });
   }
+
+  applyBreaksAndPolarityFlips(registry, args.live.currentEs, nowIso, basis);
 
   const retainedRegistry = [...registry.values()]
     .sort(memoryRank)
@@ -116,14 +139,80 @@ export function mergeLiquidityZoneMemory(args: {
     retainedRegistry.filter((zone) => zone.side === "DEMAND"),
     args.live.currentEs,
   );
+  const relevantBalanced = relevantRemembered(
+    retainedRegistry.filter((zone) => zone.side === "BALANCED"),
+    args.live.currentEs,
+  );
 
   return {
     ...args.live,
     supply: relevantSupply.slice(0, 8),
     demand: relevantDemand.slice(0, 8),
+    balanced: relevantBalanced.slice(0, 4),
     registry: retainedRegistry,
     retainedCount: retainedRegistry.filter((zone) => zone.memoryStatus === "RETAINED").length,
   };
+}
+
+function applyBreaksAndPolarityFlips(
+  registry: Map<string, ProjectedLiquidityZone>,
+  currentEs: number | null,
+  nowIso: string,
+  basis: number | null,
+) {
+  if (currentEs == null) return;
+
+  for (const [id, zone] of [...registry.entries()]) {
+    if (zone.side === "BALANCED" || zone.state === "BROKEN") continue;
+    const broken = zone.side === "SUPPLY"
+      ? currentEs > zone.highEs + BREAK_BUFFER_POINTS
+      : currentEs < zone.lowEs - BREAK_BUFFER_POINTS;
+    if (!broken) continue;
+
+    const brokenZone: ProjectedLiquidityZone = {
+      ...zone,
+      state: "BROKEN",
+      brokenAt: nowIso,
+      memoryStatus: zone.memoryStatus,
+    };
+    registry.set(id, brokenZone);
+
+    const nextSide = zone.side === "SUPPLY" ? "DEMAND" : "SUPPLY";
+    const bucketCenter = Math.round(zone.centerEs / 2) * 2;
+    const flipId = `${nextSide}:${bucketCenter.toFixed(2)}`;
+    const existing = registry.get(flipId);
+
+    if (existing && existing.state !== "BROKEN") {
+      registry.set(flipId, {
+        ...existing,
+        flippedFrom: existing.flippedFrom ?? zone.side,
+        brokenAt: existing.brokenAt ?? nowIso,
+      });
+      continue;
+    }
+
+    const flipStrength = round(Math.max(24, zone.strength * 0.58));
+    const flipConfidence = round(Math.max(20, zone.confidencePct * 0.62));
+    registry.set(flipId, {
+      ...zone,
+      id: flipId,
+      side: nextSide,
+      state: "FORMING",
+      lowSpx: basis == null ? zone.lowSpx : zone.lowEs - basis,
+      highSpx: basis == null ? zone.highSpx : zone.highEs - basis,
+      centerSpx: basis == null ? zone.centerSpx : zone.centerEs - basis,
+      basisEsMinusSpx: basis ?? zone.basisEsMinusSpx,
+      strength: flipStrength,
+      confidencePct: flipConfidence,
+      memoryStatus: "RETAINED",
+      firstAt: nowIso,
+      lastAt: nowIso,
+      peakStrength: flipStrength,
+      peakConfidencePct: flipConfidence,
+      flippedFrom: zone.side,
+      brokenAt: null,
+    });
+  }
 }
 
 function reprojectRetained(
@@ -136,21 +225,27 @@ function reprojectRetained(
   const ageHours = ageMs / 3_600_000;
   const decayedStrength = Math.max(
     RETAINED_STRENGTH_FLOOR,
-    peakStrength * Math.exp(-ageHours / 7),
+    peakStrength * Math.exp(-ageHours / DECAY_HOURS),
   );
-  const decayedConfidence = Math.max(20, peakConfidencePct * Math.exp(-ageHours / 8));
+  const decayedConfidence = Math.max(16, peakConfidencePct * Math.exp(-ageHours / 2.25));
   const basisChanged = basis != null;
+
+  const retainedState = zone.state === "BROKEN"
+    ? "BROKEN"
+    : zone.flippedFrom && ageHours < 0.5
+      ? zone.state
+      : "WEAKENING";
 
   return {
     ...zone,
-    state: zone.state === "BROKEN" ? "BROKEN" : "WEAKENING",
+    state: retainedState,
     lowSpx: basisChanged ? zone.lowEs - basis : zone.lowSpx,
     highSpx: basisChanged ? zone.highEs - basis : zone.highSpx,
     centerSpx: basisChanged ? zone.centerEs - basis : zone.centerSpx,
     basisEsMinusSpx: basisChanged ? basis : zone.basisEsMinusSpx,
     strength: round(decayedStrength),
     confidencePct: round(decayedConfidence),
-    recencyPct: round(Math.max(8, 100 * Math.exp(-ageMs / (75 * 60_000)))),
+    recencyPct: round(Math.max(5, 100 * Math.exp(-ageMs / (45 * 60_000)))),
     memoryStatus: "RETAINED",
     peakStrength: round(peakStrength),
     peakConfidencePct: round(peakConfidencePct),
@@ -164,8 +259,11 @@ function relevantRemembered(
   return zones
     .filter((zone) => {
       if (zone.state === "BROKEN") return false;
-      if (zone.strength < RETAINED_STRENGTH_FLOOR) return false;
+      if (zone.strength < RENDER_STRENGTH_THRESHOLD) return false;
       if (currentEs == null) return true;
+      if (zone.side === "BALANCED") {
+        return distanceToZone(currentEs, zone.lowEs, zone.highEs) <= 60;
+      }
       return zone.side === "SUPPLY"
         ? zone.highEs >= currentEs - 1.5
         : zone.lowEs <= currentEs + 1.5;
@@ -193,7 +291,7 @@ function validStoredZone(zone: ProjectedLiquidityZone) {
   return Boolean(
     zone &&
       typeof zone.id === "string" &&
-      (zone.side === "SUPPLY" || zone.side === "DEMAND") &&
+      (zone.side === "SUPPLY" || zone.side === "DEMAND" || zone.side === "BALANCED") &&
       Number.isFinite(zone.lowEs) &&
       Number.isFinite(zone.highEs) &&
       Number.isFinite(zone.centerEs) &&

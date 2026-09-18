@@ -50,6 +50,7 @@ export type AdaptiveAuctionContext = {
   classificationPct: number | null;
   supplyZones: ProjectedLiquidityZone[];
   demandZones: ProjectedLiquidityZone[];
+  balancedZones: ProjectedLiquidityZone[];
   nearestSupplySpx: number | null;
   nearestDemandSpx: number | null;
 };

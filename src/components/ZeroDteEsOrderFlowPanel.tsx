@@ -331,6 +331,7 @@ export function ZeroDteEsOrderFlowPanel({
       classificationPct: managementProfile.classificationPct,
       supplyZones: effectiveLiquidityZones.supply,
       demandZones: effectiveLiquidityZones.demand,
+      balancedZones: effectiveLiquidityZones.balanced,
       nearestSupplySpx: effectiveLiquidityZones.supply.find((zone) => zone.centerSpx != null)?.centerSpx ?? null,
       nearestDemandSpx: effectiveLiquidityZones.demand.find((zone) => zone.centerSpx != null)?.centerSpx ?? null,
     });
@@ -448,7 +449,7 @@ function LiquidityZonesCard({
 }: {
   read: LiquidityZoneRead;
 }) {
-  const zones = [...read.supply, ...read.demand]
+  const zones = [...read.supply, ...read.demand, ...read.balanced]
     .sort((a, b) => b.strength - a.strength)
     .slice(0, 6);
   return (
@@ -456,7 +457,7 @@ function LiquidityZonesCard({
       <div style={styles.zoneHeader}>
         <div>
           <div style={styles.eyebrow}>Live ES → SPX projection</div>
-          <strong style={styles.zoneTitle}>Supply / Demand Proxy Zones</strong>
+          <strong style={styles.zoneTitle}>Supply / Demand + Acceptance Proxy Zones</strong>
         </div>
         <span style={styles.zoneBasis}>
           Basis {read.basisEsMinusSpx == null ? "warming" : `${read.basisEsMinusSpx.toFixed(2)} ES-SPX`}
@@ -470,7 +471,7 @@ function LiquidityZonesCard({
         <div style={styles.zoneEmpty}>Collecting enough ES observations to form zones…</div>
       )}
       <div style={styles.zoneFooter}>
-        Live scoring uses the rolling ~15-minute ES observer, while material zones are retained for the current market session in browser localStorage ({read.retainedCount} retained). Only the compact zone ledger is stored; 1-second samples are not persisted. No Supabase writes, snapshots, or additional market-data requests are created by this overlay.
+        Live scoring uses the rolling ~15-minute ES observer. BALANCED marks prior acceptance where directional evidence is tied; material zones are retained for the current market session in browser localStorage ({read.retainedCount} retained). Only the compact zone ledger is stored; 1-second samples are not persisted. No Supabase writes, snapshots, or additional market-data requests are created by this overlay.
       </div>
     </div>
   );
@@ -478,24 +479,29 @@ function LiquidityZonesCard({
 
 function LiquidityZoneRow({ zone }: { zone: ProjectedLiquidityZone }) {
   const supply = zone.side === "SUPPLY";
+  const demand = zone.side === "DEMAND";
+  const borderColor = supply ? "#6f3038" : demand ? "#245f66" : "#596273";
+  const sideColor = supply ? "#ff8a8a" : demand ? "#65d9df" : "#cbd5e1";
   const range = zone.lowSpx != null && zone.highSpx != null
     ? `${zone.lowSpx.toFixed(1)}–${zone.highSpx.toFixed(1)}`
     : `${zone.lowEs.toFixed(1)}–${zone.highEs.toFixed(1)} ES`;
   return (
-    <div style={{ ...styles.zoneRow, borderColor: supply ? "#6f3038" : "#245f66" }}>
+    <div style={{ ...styles.zoneRow, borderColor }}>
       <div style={styles.zoneRowTop}>
-        <strong style={{ color: supply ? "#ff8a8a" : "#65d9df" }}>{zone.side}</strong>
+        <strong style={{ color: sideColor }}>{zone.side}</strong>
         <span style={styles.zoneRange}>{range}</span>
+        {zone.flippedFrom ? <span style={styles.memoryPill}>FLIP {zone.flippedFrom}</span> : null}
         {zone.memoryStatus === "RETAINED" ? <span style={styles.memoryPill}>MEMORY</span> : null}
         <span style={styles.zoneState}>{zone.state}</span>
       </div>
       <div style={styles.zoneMetrics}>
         <span>Strength <b>{zone.strength.toFixed(0)}</b></span>
         <span>Confidence <b>{zone.confidencePct.toFixed(0)}%</b></span>
-        <span>Persistence <b>{zone.persistencePct.toFixed(0)}%</b></span>
+        <span>Dwell <b>{zone.persistencePct.toFixed(0)}%</b></span>
         <span>Recency <b>{zone.recencyPct.toFixed(0)}%</b></span>
         <span>Absorption <b>{zone.absorptionPct.toFixed(0)}%</b></span>
-        <span>Touches <b>{zone.touches}</b></span>
+        <span>Consumed <b>{zone.consumedPct.toFixed(0)}%</b></span>
+        <span>Tests <b>{zone.touches}</b></span>
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 import type { EsOrderFlowSample, EsOrderFlowState } from "./zeroDteEsOrderFlow";
 
-export type LiquidityZoneSide = "SUPPLY" | "DEMAND";
+export type LiquidityZoneSide = "SUPPLY" | "DEMAND" | "BALANCED";
 export type LiquidityZoneState =
   | "FORMING"
   | "ACTIVE"
@@ -26,6 +26,7 @@ export type ProjectedLiquidityZone = {
   recencyPct: number;
   absorptionPct: number;
   executionPct: number;
+  consumedPct: number;
   stackingPct: number;
   displayedSizePct: number;
   touches: number;
@@ -36,6 +37,8 @@ export type ProjectedLiquidityZone = {
   memoryStatus: "LIVE" | "RETAINED";
   peakStrength: number;
   peakConfidencePct: number;
+  flippedFrom?: "SUPPLY" | "DEMAND" | null;
+  brokenAt?: string | null;
 };
 
 export type LiquidityZoneRead = {
@@ -46,6 +49,7 @@ export type LiquidityZoneRead = {
   sampleCount: number;
   supply: ProjectedLiquidityZone[];
   demand: ProjectedLiquidityZone[];
+  balanced: ProjectedLiquidityZone[];
   registry: ProjectedLiquidityZone[];
   retainedCount: number;
   warnings: string[];
@@ -62,9 +66,13 @@ type Bucket = {
   positiveStacking: number;
   pulledLiquidity: number;
   executionVolume: number;
+  consumedVolume: number;
   absorptionVolume: number;
   touches: number;
   totalObservedVolume: number;
+  weightedPriceTotal: number;
+  weightedPriceWeight: number;
+  lastTouchAtMs: number | null;
 };
 
 const ES_TICK = 0.25;
@@ -80,8 +88,10 @@ const MAX_ZONES_PER_SIDE = 4;
  *
  * The current Schwab feed is top-of-book plus aggregate volume between REST
  * snapshots, so these are explicitly proxy zones rather than full DOM heatmap
- * levels. The scoring favors persistence + size + actual executed volume and
- * discounts liquidity that is repeatedly pulled.
+ * levels. `persistencePct` is intentionally only a low-weight dwell/acceptance
+ * measure; directional supply/demand strength is driven primarily by absorbed
+ * execution, stacking and displayed size, while efficient consumption and
+ * pulled liquidity are penalties.
  */
 export function buildEsLiquidityZones(args: {
   samples: EsOrderFlowSample[];
@@ -106,6 +116,7 @@ export function buildEsLiquidityZones(args: {
       sampleCount: 0,
       supply: [],
       demand: [],
+      balanced: [],
       registry: [],
       retainedCount: 0,
       warnings: ["Liquidity zones are warming up."],
@@ -123,12 +134,13 @@ export function buildEsLiquidityZones(args: {
     (bucket) => bucket.observations >= MIN_OBSERVATIONS,
   );
   const maxima = {
-    observations: Math.max(1, ...raw.map((item) => item.observations)),
-    avgSize: Math.max(1, ...raw.map((item) => averageSize(item))),
-    stacking: Math.max(1, ...raw.map((item) => item.positiveStacking)),
-    execution: Math.max(1, ...raw.map((item) => item.executionVolume)),
-    absorption: Math.max(1, ...raw.map((item) => item.absorptionVolume)),
-    touches: Math.max(1, ...raw.map((item) => item.touches)),
+    observations: raw.reduce((max, item) => Math.max(max, item.observations), 1),
+    avgSize: raw.reduce((max, item) => Math.max(max, averageSize(item)), 1),
+    stacking: raw.reduce((max, item) => Math.max(max, item.positiveStacking), 1),
+    execution: raw.reduce((max, item) => Math.max(max, item.executionVolume), 1),
+    consumed: raw.reduce((max, item) => Math.max(max, item.consumedVolume), 1),
+    absorption: raw.reduce((max, item) => Math.max(max, item.absorptionVolume), 1),
+    touches: raw.reduce((max, item) => Math.max(max, item.touches), 1),
   };
 
   const scoredZones = raw
@@ -158,6 +170,11 @@ export function buildEsLiquidityZones(args: {
     currentEs,
     maxPerSide,
   );
+  const balanced = nearestRelevant(
+    zones.filter((zone) => zone.side === "BALANCED"),
+    currentEs,
+    Math.min(4, maxPerSide),
+  );
 
   const warnings: string[] = [];
   if (basisEsMinusSpx == null) {
@@ -175,6 +192,7 @@ export function buildEsLiquidityZones(args: {
     sampleCount: samples.length,
     supply,
     demand,
+    balanced,
     registry: zones,
     retainedCount: 0,
     warnings,
@@ -186,16 +204,22 @@ function addBookObservation(
   sample: EsOrderFlowSample,
   side: LiquidityZoneSide,
 ) {
+  if (side === "BALANCED") return;
   const price = side === "DEMAND" ? sample.bid : sample.ask;
   if (!finite(price)) return;
-  const bucket = ensureBucket(buckets, side, Number(price), sample.timestamp);
+  const numericPrice = Number(price);
+  const bucket = ensureBucket(buckets, side, numericPrice, sample.timestamp);
   bucket.observations += 1;
   bucket.lastAt = sample.timestamp;
 
   const size = side === "DEMAND" ? sample.bidSize : sample.askSize;
   if (finite(size) && Number(size) >= 0) {
-    bucket.sizeTotal += Number(size);
+    const numericSize = Number(size);
+    bucket.sizeTotal += numericSize;
     bucket.sizeCount += 1;
+    addWeightedPrice(bucket, numericPrice, Math.max(1, numericSize));
+  } else {
+    addWeightedPrice(bucket, numericPrice, 1);
   }
 
   const stacking = side === "DEMAND" ? sample.bidStacking : sample.askStacking;
@@ -204,9 +228,15 @@ function addBookObservation(
     if (Number(stacking) < 0) bucket.pulledLiquidity += Math.abs(Number(stacking));
   }
 
+  // Count distinct tests rather than every 1-second sample at the same price.
+  // This prevents `touches` from being a second copy of dwell time.
   const tradePrice = sample.last ?? sample.mid;
-  if (tradePrice != null && Math.abs(tradePrice - bucket.center) <= BUCKET_WIDTH * 0.75) {
-    bucket.touches += 1;
+  if (tradePrice != null && Math.abs(tradePrice - weightedCenter(bucket)) <= BUCKET_WIDTH * 0.75) {
+    const touchMs = Date.parse(sample.timestamp);
+    if (!Number.isFinite(touchMs) || bucket.lastTouchAtMs == null || touchMs - bucket.lastTouchAtMs >= 20_000) {
+      bucket.touches += 1;
+      bucket.lastTouchAtMs = Number.isFinite(touchMs) ? touchMs : bucket.lastTouchAtMs;
+    }
   }
 }
 
@@ -217,25 +247,44 @@ function addExecutionObservation(
   const price = sample.last ?? sample.mid;
   if (!finite(price) || sample.volumeDelta <= 0) return;
 
-  // Aggressive buying into offers is evidence for supply only when price does
-  // not efficiently advance. Aggressive selling into bids is the mirror image.
-  const supply = ensureBucket(buckets, "SUPPLY", Number(price), sample.timestamp);
-  const demand = ensureBucket(buckets, "DEMAND", Number(price), sample.timestamp);
+  const numericPrice = Number(price);
+  const supply = ensureBucket(buckets, "SUPPLY", numericPrice, sample.timestamp);
+  const demand = ensureBucket(buckets, "DEMAND", numericPrice, sample.timestamp);
 
   supply.totalObservedVolume += sample.volumeDelta;
   demand.totalObservedVolume += sample.volumeDelta;
-  supply.executionVolume += sample.aggressiveBuyVolume;
-  demand.executionVolume += sample.aggressiveSellVolume;
 
-  const lowEfficiency = sample.efficiencyPct == null || sample.efficiencyPct < 50;
+  const efficiency = sample.efficiencyPct;
+  const lowEfficiency = efficiency == null || efficiency < 50;
+  const strongAbsorptionEfficiency = efficiency != null && efficiency < 35;
   const supplyAbsorptionState = isSupplyAbsorption(sample.state);
   const demandAbsorptionState = isDemandAbsorption(sample.state);
 
-  if (sample.aggressiveBuyVolume > 0 && (lowEfficiency || supplyAbsorptionState)) {
-    supply.absorptionVolume += sample.aggressiveBuyVolume;
+  if (sample.aggressiveBuyVolume > 0) {
+    addWeightedPrice(supply, numericPrice, sample.aggressiveBuyVolume);
+    if (lowEfficiency || supplyAbsorptionState) {
+      supply.executionVolume += sample.aggressiveBuyVolume;
+      if (strongAbsorptionEfficiency || supplyAbsorptionState) {
+        supply.absorptionVolume += sample.aggressiveBuyVolume;
+      }
+    } else {
+      // Efficient buying that advances through the level means supply was
+      // consumed, not defended. Treat it as negative evidence.
+      supply.consumedVolume += sample.aggressiveBuyVolume;
+    }
   }
-  if (sample.aggressiveSellVolume > 0 && (lowEfficiency || demandAbsorptionState)) {
-    demand.absorptionVolume += sample.aggressiveSellVolume;
+
+  if (sample.aggressiveSellVolume > 0) {
+    addWeightedPrice(demand, numericPrice, sample.aggressiveSellVolume);
+    if (lowEfficiency || demandAbsorptionState) {
+      demand.executionVolume += sample.aggressiveSellVolume;
+      if (strongAbsorptionEfficiency || demandAbsorptionState) {
+        demand.absorptionVolume += sample.aggressiveSellVolume;
+      }
+    } else {
+      // Efficient selling through the bid means demand was consumed.
+      demand.consumedVolume += sample.aggressiveSellVolume;
+    }
   }
 }
 
@@ -253,6 +302,7 @@ function scoreBucket(args: {
     avgSize: number;
     stacking: number;
     execution: number;
+    consumed: number;
     absorption: number;
     touches: number;
   };
@@ -271,46 +321,54 @@ function scoreBucket(args: {
     : 0;
   const stackingPct = pct((bucket.positiveStacking / maxima.stacking) * stackingQuality);
   const executionPct = pct(bucket.executionVolume / maxima.execution);
+  const consumedPct = pct(bucket.consumedVolume / maxima.consumed);
   const absorptionPct = pct(bucket.absorptionVolume / maxima.absorption);
   const touchPct = pct(bucket.touches / maxima.touches);
   const pullPenalty = stackingGross > 0
-    ? clamp((bucket.pulledLiquidity / stackingGross) * 18, 0, 18)
+    ? clamp((bucket.pulledLiquidity / stackingGross) * 20, 0, 20)
     : 0;
+  const consumedPenalty = consumedPct * 0.20;
 
+  // Dwell/acceptance is deliberately low weight because top-of-book samples
+  // cannot observe resting liquidity away from price. Absorption is the
+  // strongest directional evidence available in this feed.
   const strength = clamp(
-    persistencePct * 0.24 +
+    persistencePct * 0.08 +
       recencyPct * 0.10 +
-      displayedSizePct * 0.16 +
-      stackingPct * 0.14 +
-      executionPct * 0.15 +
-      absorptionPct * 0.16 +
-      touchPct * 0.05 -
+      displayedSizePct * 0.10 +
+      stackingPct * 0.12 +
+      executionPct * 0.16 +
+      absorptionPct * 0.32 +
+      touchPct * 0.04 -
+      consumedPenalty -
       pullPenalty,
     0,
     100,
   );
 
-  const classificationVolume = bucket.executionVolume;
+  const classificationVolume = bucket.executionVolume + bucket.consumedVolume;
   const volumeConfidence = bucket.totalObservedVolume > 0
     ? clamp((classificationVolume / bucket.totalObservedVolume) * 100, 0, 100)
     : 0;
   const warmupConfidence = clamp((args.sampleCount / 60) * 100, 0, 100);
   const confidencePct = clamp(
-    warmupConfidence * 0.32 +
-      persistencePct * 0.23 +
-      recencyPct * 0.12 +
-      volumeConfidence * 0.18 +
-      displayedSizePct * 0.15,
+    warmupConfidence * 0.25 +
+      persistencePct * 0.10 +
+      recencyPct * 0.15 +
+      volumeConfidence * 0.20 +
+      absorptionPct * 0.20 +
+      displayedSizePct * 0.10,
     0,
     100,
   );
 
+  const centerEs = weightedCenter(bucket);
   const half = BUCKET_WIDTH / 2;
-  const lowEs = bucket.center - half;
-  const highEs = bucket.center + half;
+  const lowEs = centerEs - half;
+  const highEs = centerEs + half;
   const lowSpx = projectToSpx(lowEs, args.basisEsMinusSpx);
   const highSpx = projectToSpx(highEs, args.basisEsMinusSpx);
-  const centerSpx = projectToSpx(bucket.center, args.basisEsMinusSpx);
+  const centerSpx = projectToSpx(centerEs, args.basisEsMinusSpx);
 
   return {
     id: `${bucket.side}:${bucket.center.toFixed(2)}`,
@@ -331,7 +389,7 @@ function scoreBucket(args: {
     }),
     lowEs,
     highEs,
-    centerEs: bucket.center,
+    centerEs,
     lowSpx,
     highSpx,
     centerSpx,
@@ -342,6 +400,7 @@ function scoreBucket(args: {
     recencyPct: round(recencyPct),
     absorptionPct: round(absorptionPct),
     executionPct: round(executionPct),
+    consumedPct: round(consumedPct),
     stackingPct: round(stackingPct),
     displayedSizePct: round(displayedSizePct),
     touches: bucket.touches,
@@ -352,6 +411,8 @@ function scoreBucket(args: {
     memoryStatus: "LIVE",
     peakStrength: round(strength),
     peakConfidencePct: round(confidencePct),
+    flippedFrom: null,
+    brokenAt: null,
   };
 }
 
@@ -372,20 +433,25 @@ function classifyZoneState(args: {
   const near = args.currentEs != null &&
     args.currentEs >= args.lowEs - 0.75 &&
     args.currentEs <= args.highEs + 0.75;
-  const broken = args.currentEs != null && (
-    args.side === "SUPPLY"
-      ? args.currentEs > args.highEs + 1 && args.pressure > 18 && args.efficiency >= 42
-      : args.currentEs < args.lowEs - 1 && args.pressure < -18 && args.efficiency >= 42
-  );
-  if (broken) return "BROKEN";
+
+  if (args.side !== "BALANCED") {
+    const broken = args.currentEs != null && (
+      args.side === "SUPPLY"
+        ? args.currentEs > args.highEs + 1 && args.pressure > 18 && args.efficiency >= 42
+        : args.currentEs < args.lowEs - 1 && args.pressure < -18 && args.efficiency >= 42
+    );
+    if (broken) return "BROKEN";
+  }
 
   const absorptionState = args.side === "SUPPLY"
     ? isSupplyAbsorption(args.latestState)
-    : isDemandAbsorption(args.latestState);
+    : args.side === "DEMAND"
+      ? isDemandAbsorption(args.latestState)
+      : false;
   if (near && (args.absorptionPct >= 45 || absorptionState)) return "ABSORBING";
   if (near) return "TESTING";
   if (args.ageMs >= 5 * 60_000) return "WEAKENING";
-  if (args.pullRatio >= 0.58 || (args.touches >= 8 && args.strength < 55)) return "WEAKENING";
+  if (args.pullRatio >= 0.58 || (args.touches >= 4 && args.strength < 55)) return "WEAKENING";
   if (args.strength >= 48) return "ACTIVE";
   return "FORMING";
 }
@@ -393,34 +459,104 @@ function classifyZoneState(args: {
 function deconflictOppositeZones(zones: ProjectedLiquidityZone[]) {
   const byCenter = new Map<string, ProjectedLiquidityZone[]>();
   for (const zone of zones) {
-    const key = zone.centerEs.toFixed(2);
+    const snapped = Math.round(zone.centerEs / BUCKET_WIDTH) * BUCKET_WIDTH;
+    const key = snapped.toFixed(2);
     const list = byCenter.get(key) ?? [];
     list.push(zone);
     byCenter.set(key, list);
   }
 
-  const keep = new Set<string>();
-  for (const list of byCenter.values()) {
+  const result: ProjectedLiquidityZone[] = [];
+  for (const [key, list] of byCenter.entries()) {
     if (list.length === 1) {
-      keep.add(list[0].id);
+      result.push(list[0]);
       continue;
     }
     const supply = list.find((zone) => zone.side === "SUPPLY");
     const demand = list.find((zone) => zone.side === "DEMAND");
     if (!supply || !demand) {
-      list.forEach((zone) => keep.add(zone.id));
+      result.push(...list);
       continue;
     }
 
-    // A top-of-book snapshot naturally observes both bid and ask around the
-    // same price. When directional evidence is nearly tied, treating that
-    // bucket as both supply and demand paints a false red/cyan overlap. Keep
-    // only a materially dominant side; otherwise call it balanced and omit it.
-    const spread = Math.abs(supply.strength - demand.strength);
-    if (spread < 7) continue;
-    keep.add(supply.strength > demand.strength ? supply.id : demand.id);
+    const strengthDiff = supply.strength - demand.strength;
+    const executionEdge =
+      (supply.executionPct - demand.executionPct) * 0.65 +
+      (supply.absorptionPct - demand.absorptionPct) * 0.35;
+
+    // Do not delete balanced high-information levels. When the directional
+    // edge is genuinely tied, emit a neutral acceptance band instead of
+    // painting simultaneous supply and demand or silently dropping both.
+    if (Math.abs(strengthDiff) < 3 && Math.abs(executionEdge) < 10) {
+      result.push(makeBalancedZone(key, supply, demand));
+      continue;
+    }
+
+    if (Math.abs(executionEdge) >= 6) {
+      result.push(executionEdge > 0 ? supply : demand);
+    } else {
+      result.push(strengthDiff >= 0 ? supply : demand);
+    }
   }
-  return zones.filter((zone) => keep.has(zone.id));
+  return result.sort((a, b) => b.strength - a.strength);
+}
+
+function makeBalancedZone(
+  key: string,
+  supply: ProjectedLiquidityZone,
+  demand: ProjectedLiquidityZone,
+): ProjectedLiquidityZone {
+  const strength = round((supply.strength + demand.strength) / 2);
+  const confidencePct = round((supply.confidencePct + demand.confidencePct) / 2);
+  const centerEs = round((supply.centerEs + demand.centerEs) / 2);
+  const basis = supply.basisEsMinusSpx ?? demand.basisEsMinusSpx;
+  const lowEs = Math.min(supply.lowEs, demand.lowEs);
+  const highEs = Math.max(supply.highEs, demand.highEs);
+  const state = balancedState(supply.state, demand.state, strength);
+  return {
+    id: `BALANCED:${key}`,
+    side: "BALANCED",
+    state,
+    lowEs,
+    highEs,
+    centerEs,
+    lowSpx: projectToSpx(lowEs, basis),
+    highSpx: projectToSpx(highEs, basis),
+    centerSpx: projectToSpx(centerEs, basis),
+    basisEsMinusSpx: basis,
+    strength,
+    confidencePct,
+    persistencePct: round((supply.persistencePct + demand.persistencePct) / 2),
+    recencyPct: Math.max(supply.recencyPct, demand.recencyPct),
+    absorptionPct: round((supply.absorptionPct + demand.absorptionPct) / 2),
+    executionPct: round((supply.executionPct + demand.executionPct) / 2),
+    consumedPct: round((supply.consumedPct + demand.consumedPct) / 2),
+    stackingPct: round((supply.stackingPct + demand.stackingPct) / 2),
+    displayedSizePct: round((supply.displayedSizePct + demand.displayedSizePct) / 2),
+    touches: Math.max(supply.touches, demand.touches),
+    observations: Math.max(supply.observations, demand.observations),
+    totalObservedVolume: Math.max(supply.totalObservedVolume, demand.totalObservedVolume),
+    firstAt: olderTimestamp(supply.firstAt, demand.firstAt),
+    lastAt: newerTimestamp(supply.lastAt, demand.lastAt),
+    memoryStatus: "LIVE",
+    peakStrength: strength,
+    peakConfidencePct: confidencePct,
+    flippedFrom: null,
+    brokenAt: null,
+  };
+}
+
+function balancedState(
+  supply: LiquidityZoneState,
+  demand: LiquidityZoneState,
+  strength: number,
+): LiquidityZoneState {
+  const states = new Set([supply, demand]);
+  if (states.has("ABSORBING")) return "ABSORBING";
+  if (states.has("TESTING")) return "TESTING";
+  if (states.has("ACTIVE") || strength >= 48) return "ACTIVE";
+  if (states.has("WEAKENING")) return "WEAKENING";
+  return "FORMING";
 }
 
 function nearestRelevant(
@@ -434,6 +570,9 @@ function nearestRelevant(
     // Keep supply primarily overhead and demand primarily underneath. Allow a
     // small overlap while a level is actively being tested so the zone does
     // not blink off at the exact moment it matters most.
+    if (zone.side === "BALANCED") {
+      return distanceToZone(currentEs, zone.lowEs, zone.highEs) <= 60;
+    }
     return zone.side === "SUPPLY"
       ? zone.highEs >= currentEs - 1.5
       : zone.lowEs <= currentEs + 1.5;
@@ -481,13 +620,37 @@ function ensureBucket(
       positiveStacking: 0,
       pulledLiquidity: 0,
       executionVolume: 0,
+      consumedVolume: 0,
       absorptionVolume: 0,
       touches: 0,
       totalObservedVolume: 0,
+      weightedPriceTotal: 0,
+      weightedPriceWeight: 0,
+      lastTouchAtMs: null,
     };
     buckets.set(key, bucket);
   }
   return bucket;
+}
+
+
+function addWeightedPrice(bucket: Bucket, price: number, weight: number) {
+  if (!Number.isFinite(price) || !Number.isFinite(weight) || weight <= 0) return;
+  bucket.weightedPriceTotal += price * weight;
+  bucket.weightedPriceWeight += weight;
+}
+
+function weightedCenter(bucket: Bucket) {
+  if (bucket.weightedPriceWeight <= 0) return bucket.center;
+  return bucket.weightedPriceTotal / bucket.weightedPriceWeight;
+}
+
+function olderTimestamp(a: string, b: string) {
+  return Date.parse(a) <= Date.parse(b) ? a : b;
+}
+
+function newerTimestamp(a: string, b: string) {
+  return Date.parse(a) >= Date.parse(b) ? a : b;
 }
 
 function isSupplyAbsorption(state: EsOrderFlowState) {

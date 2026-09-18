@@ -246,8 +246,9 @@ type LiquidityZoneRect = {
   id: string;
   top: number;
   height: number;
-  side: "SUPPLY" | "DEMAND";
+  side: "SUPPLY" | "DEMAND" | "BALANCED";
   label: string;
+  labelTop: number;
   state: string;
   strength: number;
   memoryStatus: "LIVE" | "RETAINED";
@@ -1343,6 +1344,7 @@ export default function SpxCommandChart() {
     const zones = [
       ...(liveAuctionManagement?.supplyZones ?? []),
       ...(liveAuctionManagement?.demandZones ?? []),
+      ...(liveAuctionManagement?.balancedZones ?? []),
     ]
       .filter((zone) =>
         zone.state !== "BROKEN" &&
@@ -1355,7 +1357,7 @@ export default function SpxCommandChart() {
       .slice(0, 8);
 
     const updateRects = () => {
-      const next = zones.flatMap<LiquidityZoneRect>((zone) => {
+      const rawRects = zones.flatMap<LiquidityZoneRect>((zone) => {
         if (zone.lowSpx == null || zone.highSpx == null) return [];
         const high = candleSeries.priceToCoordinate(zone.highSpx);
         const low = candleSeries.priceToCoordinate(zone.lowSpx);
@@ -1369,10 +1371,24 @@ export default function SpxCommandChart() {
           height: Math.max(3, bottom - top),
           side: zone.side,
           label: `${zone.side} ${zone.lowSpx.toFixed(1)}–${zone.highSpx.toFixed(1)}`,
+          labelTop: -14,
           state: zone.state,
           strength: zone.strength,
           memoryStatus: zone.memoryStatus,
         }];
+      });
+
+      // Keep labels readable when nearby zones map to nearly identical Y
+      // coordinates. The band remains at the true price; only its label shifts.
+      const sorted = [...rawRects].sort((a, b) => a.top - b.top);
+      let lastAbsoluteLabelTop = -Infinity;
+      const next = sorted.map((rect) => {
+        let absoluteLabelTop = rect.top - 14;
+        if (absoluteLabelTop < lastAbsoluteLabelTop + 14) {
+          absoluteLabelTop = lastAbsoluteLabelTop + 14;
+        }
+        lastAbsoluteLabelTop = absoluteLabelTop;
+        return { ...rect, labelTop: absoluteLabelTop - rect.top };
       });
       setLiquidityZoneRects(next);
     };
@@ -1384,10 +1400,19 @@ export default function SpxCommandChart() {
     observer?.observe(chartHost);
     window.addEventListener("resize", updateRects);
 
+    const timeScale = chartRef.current?.timeScale();
+    timeScale?.subscribeVisibleLogicalRangeChange(updateRects);
+    // lightweight-charts does not expose a dedicated vertical price-scale drag
+    // callback, so this cheap UI-only refresh keeps bands aligned during Y-axis
+    // zoom/pan. It performs no Schwab or Supabase work.
+    const scaleTimer = window.setInterval(updateRects, 250);
+
     return () => {
       window.cancelAnimationFrame(frame);
       observer?.disconnect();
       window.removeEventListener("resize", updateRects);
+      timeScale?.unsubscribeVisibleLogicalRangeChange(updateRects);
+      window.clearInterval(scaleTimer);
     };
   }, [
     currentPrice,
@@ -2582,16 +2607,25 @@ export default function SpxCommandChart() {
                       height: zone.height,
                       background: zone.side === "SUPPLY"
                         ? "rgba(234,57,67,.105)"
-                        : "rgba(76,201,240,.09)",
+                        : zone.side === "DEMAND"
+                          ? "rgba(76,201,240,.09)"
+                          : "rgba(148,163,184,.08)",
                       borderColor: zone.side === "SUPPLY"
                         ? "rgba(255,116,124,.52)"
-                        : "rgba(83,213,224,.48)",
+                        : zone.side === "DEMAND"
+                          ? "rgba(83,213,224,.48)"
+                          : "rgba(203,213,225,.42)",
                     }}
                   >
                     <span
                       style={{
                         ...styles.liquidityZoneLabel,
-                        color: zone.side === "SUPPLY" ? "#ff9096" : "#71dce3",
+                        top: zone.labelTop,
+                        color: zone.side === "SUPPLY"
+                          ? "#ff9096"
+                          : zone.side === "DEMAND"
+                            ? "#71dce3"
+                            : "#cbd5e1",
                       }}
                     >
                       {zone.label} · {zone.state} · {zone.strength.toFixed(0)}{zone.memoryStatus === "RETAINED" ? " · MEMORY" : ""}
@@ -2616,6 +2650,7 @@ export default function SpxCommandChart() {
             <LegendItem color="#c084fc" text="Least-resistance path / envelope" />
             <LegendItem color="#71dce3" text="ES demand zone" />
             <LegendItem color="#ff9096" text="ES supply zone" />
+            <LegendItem color="#cbd5e1" text="ES balanced acceptance" />
           </div>
         </div>
 
