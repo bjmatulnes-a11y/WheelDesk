@@ -74,7 +74,9 @@ export type EsOrderFlowRead = {
 };
 
 const ES_TICK = 0.25;
-const MAX_SAMPLES = 240;
+// Fifteen minutes of 1-second samples plus a small buffer for delayed polls.
+// This is browser memory only; it is never persisted to Supabase.
+const MAX_SAMPLES = 960;
 const ROLLING_WINDOW_MS = 20_000;
 const EFFICIENCY_WINDOW_MS = 20_000;
 const RECENT_STATE_MS = 45_000;

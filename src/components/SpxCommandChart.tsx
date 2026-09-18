@@ -207,6 +207,7 @@ type OverlayKey =
   | "forecast"
   | "leastResistance"
   | "structure"
+  | "liquidityZones"
   | "heatmap";
 
 const DEFAULT_OVERLAYS: Record<OverlayKey, boolean> = {
@@ -221,6 +222,7 @@ const DEFAULT_OVERLAYS: Record<OverlayKey, boolean> = {
   forecast: false,
   leastResistance: true,
   structure: true,
+  liquidityZones: true,
   heatmap: true,
 };
 
@@ -236,8 +238,19 @@ const OVERLAY_LABELS: Array<[OverlayKey, string]> = [
   ["forecast", "Legacy Forecast Band"],
   ["leastResistance", "Least Resistance Path"],
   ["structure", "Structure Levels"],
+  ["liquidityZones", "ES Supply / Demand"],
   ["heatmap", "OI Heatmap"],
 ];
+
+type LiquidityZoneRect = {
+  id: string;
+  top: number;
+  height: number;
+  side: "SUPPLY" | "DEMAND";
+  label: string;
+  state: string;
+  strength: number;
+};
 
 export default function SpxCommandChart() {
   const chartHostRef = useRef<HTMLDivElement | null>(null);
@@ -309,6 +322,7 @@ export default function SpxCommandChart() {
   const executionAdaptiveObservationRef = useRef<Map<string, string>>(new Map());
   const liveAuctionManagementRef = useRef<AdaptiveAuctionContext | null>(null);
   const [liveAuctionManagement, setLiveAuctionManagement] = useState<AdaptiveAuctionContext | null>(null);
+  const [liquidityZoneRects, setLiquidityZoneRects] = useState<LiquidityZoneRect[]>([]);
   const [premiumBaselineReadySetupKeys, setPremiumBaselineReadySetupKeys] =
     useState<string[]>([]);
   const [schwabConnection, setSchwabConnection] =
@@ -1316,6 +1330,69 @@ export default function SpxCommandChart() {
       hasInitialFitRef.current = true;
     }
   }, [analytics, controllingMap, displaySessionCandles, leastResistancePath, mapManager.state, overlays, recommendation]);
+
+  useEffect(() => {
+    const chartHost = chartHostRef.current;
+    const candleSeries = candleSeriesRef.current;
+    if (!chartHost || !candleSeries || !overlays.liquidityZones) {
+      setLiquidityZoneRects([]);
+      return;
+    }
+
+    const zones = [
+      ...(liveAuctionManagement?.supplyZones ?? []),
+      ...(liveAuctionManagement?.demandZones ?? []),
+    ]
+      .filter((zone) =>
+        zone.state !== "BROKEN" &&
+        zone.lowSpx != null &&
+        zone.highSpx != null &&
+        zone.strength >= 28 &&
+        (currentPrice <= 0 || Math.abs((zone.centerSpx ?? currentPrice) - currentPrice) <= 90),
+      )
+      .sort((a, b) => b.strength - a.strength)
+      .slice(0, 8);
+
+    const updateRects = () => {
+      const next = zones.flatMap<LiquidityZoneRect>((zone) => {
+        if (zone.lowSpx == null || zone.highSpx == null) return [];
+        const high = candleSeries.priceToCoordinate(zone.highSpx);
+        const low = candleSeries.priceToCoordinate(zone.lowSpx);
+        if (high == null || low == null) return [];
+        const top = Math.min(Number(high), Number(low));
+        const bottom = Math.max(Number(high), Number(low));
+        if (!Number.isFinite(top) || !Number.isFinite(bottom)) return [];
+        return [{
+          id: zone.id,
+          top,
+          height: Math.max(3, bottom - top),
+          side: zone.side,
+          label: `${zone.side} ${zone.lowSpx.toFixed(1)}–${zone.highSpx.toFixed(1)}`,
+          state: zone.state,
+          strength: zone.strength,
+        }];
+      });
+      setLiquidityZoneRects(next);
+    };
+
+    const frame = window.requestAnimationFrame(updateRects);
+    const observer = typeof ResizeObserver !== "undefined"
+      ? new ResizeObserver(() => updateRects())
+      : null;
+    observer?.observe(chartHost);
+    window.addEventListener("resize", updateRects);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer?.disconnect();
+      window.removeEventListener("resize", updateRects);
+    };
+  }, [
+    currentPrice,
+    displaySessionCandles,
+    liveAuctionManagement,
+    overlays.liquidityZones,
+  ]);
 
   function toggleOverlay(key: OverlayKey) {
     setOverlays((current) => ({ ...current, [key]: !current[key] }));
@@ -2490,7 +2567,38 @@ export default function SpxCommandChart() {
 
       <div style={styles.commandGrid}>
         <div style={styles.chartPanel}>
-          <div ref={chartHostRef} style={styles.chartHost} />
+          <div style={styles.chartStage}>
+            <div ref={chartHostRef} style={styles.chartHost} />
+            {overlays.liquidityZones ? (
+              <div style={styles.liquidityOverlay} aria-hidden="true">
+                {liquidityZoneRects.map((zone) => (
+                  <div
+                    key={zone.id}
+                    style={{
+                      ...styles.liquidityZoneBand,
+                      top: zone.top,
+                      height: zone.height,
+                      background: zone.side === "SUPPLY"
+                        ? "rgba(234,57,67,.105)"
+                        : "rgba(76,201,240,.09)",
+                      borderColor: zone.side === "SUPPLY"
+                        ? "rgba(255,116,124,.52)"
+                        : "rgba(83,213,224,.48)",
+                    }}
+                  >
+                    <span
+                      style={{
+                        ...styles.liquidityZoneLabel,
+                        color: zone.side === "SUPPLY" ? "#ff9096" : "#71dce3",
+                      }}
+                    >
+                      {zone.label} · {zone.state} · {zone.strength.toFixed(0)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
 
           <ZeroDteEsOrderFlowPanel
             enabled={!manualChainResearch}
@@ -2504,6 +2612,8 @@ export default function SpxCommandChart() {
             <LegendItem color="#f4f7fb" text="Pin" />
             <LegendItem color="#ffd400" text="IF Center" />
             <LegendItem color="#c084fc" text="Least-resistance path / envelope" />
+            <LegendItem color="#71dce3" text="ES demand zone" />
+            <LegendItem color="#ff9096" text="ES supply zone" />
           </div>
         </div>
 
@@ -3535,9 +3645,37 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 13,
     overflow: "hidden",
   },
+  chartStage: { position: "relative", width: "100%", height: 610 },
   chartHost: {
     width: "100%",
     height: 610,
+  },
+  liquidityOverlay: {
+    position: "absolute",
+    inset: 0,
+    pointerEvents: "none",
+    overflow: "hidden",
+    zIndex: 3,
+  },
+  liquidityZoneBand: {
+    position: "absolute",
+    left: 0,
+    right: 72,
+    borderTop: "1px solid",
+    borderBottom: "1px solid",
+    boxSizing: "border-box",
+  },
+  liquidityZoneLabel: {
+    position: "absolute",
+    right: 6,
+    top: -14,
+    background: "rgba(4,10,15,.84)",
+    borderRadius: 4,
+    padding: "1px 4px",
+    fontSize: 8,
+    fontWeight: 900,
+    letterSpacing: .2,
+    whiteSpace: "nowrap",
   },
   legend: {
     position: "absolute",

@@ -1,4 +1,5 @@
 import type { EsOrderFlowState } from "./zeroDteEsOrderFlow";
+import type { ProjectedLiquidityZone } from "./zeroDteLiquidityZones";
 import type { ZeroDteExecutionRead } from "./zeroDteExecutionIntelligence";
 import { leastResistanceThreatensShort } from "./zeroDteLeastResistancePath";
 import type { ExecutionLeg } from "./zeroDteExecutionIntelligence";
@@ -47,6 +48,10 @@ export type AdaptiveAuctionContext = {
   pocMigration5mSpx: number | null;
   observedVolume: number;
   classificationPct: number | null;
+  supplyZones: ProjectedLiquidityZone[];
+  demandZones: ProjectedLiquidityZone[];
+  nearestSupplySpx: number | null;
+  nearestDemandSpx: number | null;
 };
 
 export type AdaptiveStructureTransition = {
@@ -246,6 +251,22 @@ function evaluateVertical(args: {
       : false;
   const pocMigratingFavorable = pocMigration !== null && (isPut ? pocMigration > 0.5 : pocMigration < -0.5);
   const pocMigratingAdverse = pocMigration !== null && (isPut ? pocMigration < -0.5 : pocMigration > 0.5);
+  const defendingZone = shortStrike === null
+    ? null
+    : (isPut ? auction?.demandZones ?? [] : auction?.supplyZones ?? []).find((zone) =>
+        zone.lowSpx != null &&
+        zone.highSpx != null &&
+        shortStrike >= zone.lowSpx - 4 &&
+        shortStrike <= zone.highSpx + 4 &&
+        zone.state !== "BROKEN",
+      ) ?? null;
+  const zoneDefenseActive = Boolean(
+    defendingZone &&
+      defendingZone.strength >= 52 &&
+      (defendingZone.state === "ACTIVE" ||
+        defendingZone.state === "TESTING" ||
+        defendingZone.state === "ABSORBING"),
+  );
 
   const structureDecision = evaluateVerticalStructureTransition({
     trade,
@@ -284,6 +305,9 @@ function evaluateVertical(args: {
   if (pressureAligned && efficiency >= 45) favorableScore += 12;
   if (pocFavorable) favorableScore += 18;
   if (pocMigratingFavorable) favorableScore += 10;
+  if (zoneDefenseActive && defendingZone) {
+    favorableScore += clamp(6 + defendingZone.strength * 0.12, 6, 18);
+  }
   if (shortDistance !== null && shortDistance >= 20) favorableScore += 8;
   if (read.premiumVelocityPerMinute !== null && read.premiumVelocityPerMinute < -0.03) favorableScore += 8;
   favorableScore = clamp(favorableScore, 0, 100);
@@ -354,6 +378,7 @@ function evaluateVertical(args: {
 
   const reasons: string[] = [];
   if (favorableRelease) reasons.push(`Live ES state ${auction?.state} is moving away from the threatened short.`);
+  if (zoneDefenseActive && defendingZone) reasons.push(`${defendingZone.side} proxy zone ${defendingZone.lowSpx?.toFixed(1)}–${defendingZone.highSpx?.toFixed(1)} is defending the short area (strength ${defendingZone.strength.toFixed(0)}, ${defendingZone.state}).`);
   if (pocFavorable && projectedPoc !== null && shortStrike !== null) {
     reasons.push(`Observed ES value projects to SPX ${projectedPoc.toFixed(1)}, favorably away from the ${shortStrike.toFixed(0)} short.`);
   }

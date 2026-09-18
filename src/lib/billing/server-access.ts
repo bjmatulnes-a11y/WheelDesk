@@ -24,7 +24,10 @@ export type RequestPlanAccessResult =
   | { ok: true; access: RequestPlanAccess }
   | { ok: false; response: NextResponse };
 
-const ACCESS_LOOKUP_CACHE_MS = 30_000;
+// Plan/role data changes infrequently. Two minutes keeps live 1-second panels
+// from re-querying Supabase every 30 seconds while still limiting entitlement
+// staleness after an administrative or billing change.
+const ACCESS_LOOKUP_CACHE_MS = 2 * 60_000;
 
 type TimedValue<T> = { value: T; expiresAt: number };
 

@@ -9,6 +9,10 @@ import {
   type EsOrderFlowState,
 } from "../lib/zeroDteEsOrderFlow";
 import type { AdaptiveAuctionContext } from "../lib/zeroDteAdaptiveManagement";
+import {
+  buildEsLiquidityZones,
+  type ProjectedLiquidityZone,
+} from "../lib/zeroDteLiquidityZones";
 import { authenticatedApiHeaders } from "../lib/auth/authenticated-api";
 
 type OrderFlowApiResponse = {
@@ -186,6 +190,10 @@ export function ZeroDteEsOrderFlowPanel({
   }, [read.latest]);
 
   const latest = read.latest;
+  const liquidityZones = useMemo(
+    () => buildEsLiquidityZones({ samples: read.samples, spxPrice }),
+    [read.samples, spxPrice],
+  );
   const staleSeconds = lastSuccessAt == null ? null : Math.max(0, (now - lastSuccessAt) / 1000);
   const stale = staleSeconds != null && staleSeconds > 4;
   const stateTone = toneForState(read.state);
@@ -268,10 +276,15 @@ export function ZeroDteEsOrderFlowPanel({
       pocMigration5mSpx,
       observedVolume: managementProfile.observedVolume,
       classificationPct: managementProfile.classificationPct,
+      supplyZones: liquidityZones.supply,
+      demandZones: liquidityZones.demand,
+      nearestSupplySpx: liquidityZones.supply.find((zone) => zone.centerSpx != null)?.centerSpx ?? null,
+      nearestDemandSpx: liquidityZones.demand.find((zone) => zone.centerSpx != null)?.centerSpx ?? null,
     });
   }, [
     enabled,
     latest,
+    liquidityZones,
     managementProfile,
     onManagementRead,
     read.state,
@@ -350,6 +363,8 @@ export function ZeroDteEsOrderFlowPanel({
         </div>
       </div>
 
+      <LiquidityZonesCard read={liquidityZones} />
+
       {sandboxOpen ? (
         <FootprintSandbox
           buckets={footprintBuckets}
@@ -371,6 +386,63 @@ export function ZeroDteEsOrderFlowPanel({
           {fieldNames.length ? ` Quote fields detected: ${fieldNames.join(", ")}.` : ""}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function LiquidityZonesCard({
+  read,
+}: {
+  read: ReturnType<typeof buildEsLiquidityZones>;
+}) {
+  const zones = [...read.supply, ...read.demand]
+    .sort((a, b) => b.strength - a.strength)
+    .slice(0, 6);
+  return (
+    <div style={styles.zoneShell}>
+      <div style={styles.zoneHeader}>
+        <div>
+          <div style={styles.eyebrow}>Live ES → SPX projection</div>
+          <strong style={styles.zoneTitle}>Supply / Demand Proxy Zones</strong>
+        </div>
+        <span style={styles.zoneBasis}>
+          Basis {read.basisEsMinusSpx == null ? "warming" : `${read.basisEsMinusSpx.toFixed(2)} ES-SPX`}
+        </span>
+      </div>
+      {zones.length ? (
+        <div style={styles.zoneGrid}>
+          {zones.map((zone) => <LiquidityZoneRow key={zone.id} zone={zone} />)}
+        </div>
+      ) : (
+        <div style={styles.zoneEmpty}>Collecting enough ES observations to form zones…</div>
+      )}
+      <div style={styles.zoneFooter}>
+        Built from a rolling ~15-minute browser-memory window of the existing 1-second ES observer. No Supabase writes, snapshots, or additional market-data requests are created by this overlay.
+      </div>
+    </div>
+  );
+}
+
+function LiquidityZoneRow({ zone }: { zone: ProjectedLiquidityZone }) {
+  const supply = zone.side === "SUPPLY";
+  const range = zone.lowSpx != null && zone.highSpx != null
+    ? `${zone.lowSpx.toFixed(1)}–${zone.highSpx.toFixed(1)}`
+    : `${zone.lowEs.toFixed(1)}–${zone.highEs.toFixed(1)} ES`;
+  return (
+    <div style={{ ...styles.zoneRow, borderColor: supply ? "#6f3038" : "#245f66" }}>
+      <div style={styles.zoneRowTop}>
+        <strong style={{ color: supply ? "#ff8a8a" : "#65d9df" }}>{zone.side}</strong>
+        <span style={styles.zoneRange}>{range}</span>
+        <span style={styles.zoneState}>{zone.state}</span>
+      </div>
+      <div style={styles.zoneMetrics}>
+        <span>Strength <b>{zone.strength.toFixed(0)}</b></span>
+        <span>Confidence <b>{zone.confidencePct.toFixed(0)}%</b></span>
+        <span>Persistence <b>{zone.persistencePct.toFixed(0)}%</b></span>
+        <span>Recency <b>{zone.recencyPct.toFixed(0)}%</b></span>
+        <span>Absorption <b>{zone.absorptionPct.toFixed(0)}%</b></span>
+        <span>Touches <b>{zone.touches}</b></span>
+      </div>
     </div>
   );
 }
@@ -734,6 +806,18 @@ const styles: Record<string, React.CSSProperties> = {
   lastTradeRow: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", alignItems: "center", textAlign: "center", color: "#7f91a8", fontSize: 9, borderTop: "1px solid #17263a", paddingTop: 7 },
   bookStats: { display: "grid", gridTemplateColumns: "1fr 1fr", borderTop: "1px solid #17263a" },
   bookStat: { display: "flex", flexDirection: "column", gap: 2, padding: 8, borderRight: "1px solid #17263a", borderBottom: "1px solid #17263a", fontSize: 9, color: "#74869e" },
+  zoneShell: { marginTop: 10, border: "1px solid #23364c", background: "#09131f", borderRadius: 10, overflow: "hidden" },
+  zoneHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "9px 10px", borderBottom: "1px solid #18283b" },
+  zoneTitle: { color: "#eef5fb", fontSize: 13 },
+  zoneBasis: { color: "#7f94ad", fontSize: 9, fontWeight: 800 },
+  zoneGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 7, padding: 9 },
+  zoneRow: { border: "1px solid", borderRadius: 8, background: "#0b1725", padding: "7px 8px" },
+  zoneRowTop: { display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap", fontSize: 9 },
+  zoneRange: { color: "#eef5fb", fontWeight: 900 },
+  zoneState: { marginLeft: "auto", color: "#9aabc1", fontSize: 8, fontWeight: 900, letterSpacing: .4 },
+  zoneMetrics: { display: "flex", gap: 9, flexWrap: "wrap", marginTop: 5, color: "#73869e", fontSize: 8 },
+  zoneEmpty: { padding: 12, color: "#667991", fontSize: 10 },
+  zoneFooter: { padding: "7px 10px", borderTop: "1px solid #18283b", color: "#60748d", fontSize: 8, lineHeight: 1.4 },
   sandboxShell: { marginTop: 12, border: "1px solid #493d6d", background: "#0b1020", borderRadius: 12, overflow: "hidden" },
   sandboxHeader: { display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap", padding: 12, borderBottom: "1px solid #27223d" },
   sandboxTitle: { display: "block", color: "#e9ddff", fontSize: 15, marginTop: 2 },
