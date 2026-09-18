@@ -252,6 +252,7 @@ type LiquidityZoneRect = {
   state: string;
   strength: number;
   memoryStatus: "LIVE" | "RETAINED";
+  showLabel: boolean;
 };
 
 export default function SpxCommandChart() {
@@ -1356,7 +1357,9 @@ export default function SpxCommandChart() {
       .sort((a, b) => b.strength - a.strength)
       .slice(0, 8);
 
-    const updateRects = () => {
+    let pendingFrame: number | null = null;
+
+    const computeRects = () => {
       const rawRects = zones.flatMap<LiquidityZoneRect>((zone) => {
         if (zone.lowSpx == null || zone.highSpx == null) return [];
         const high = candleSeries.priceToCoordinate(zone.highSpx);
@@ -1375,40 +1378,83 @@ export default function SpxCommandChart() {
           state: zone.state,
           strength: zone.strength,
           memoryStatus: zone.memoryStatus,
+          showLabel: true,
         }];
       });
 
-      // Keep labels readable when nearby zones map to nearly identical Y
-      // coordinates. The band remains at the true price; only its label shifts.
-      const sorted = [...rawRects].sort((a, b) => a.top - b.top);
-      let lastAbsoluteLabelTop = -Infinity;
-      const next = sorted.map((rect) => {
-        let absoluteLabelTop = rect.top - 14;
-        if (absoluteLabelTop < lastAbsoluteLabelTop + 14) {
-          absoluteLabelTop = lastAbsoluteLabelTop + 14;
+      // If labels land within 16px, keep only the strongest label in that
+      // cluster. The bands themselves always remain at their exact prices.
+      const byY = [...rawRects].sort((a, b) => a.top - b.top);
+      const suppressed = new Set<string>();
+      let cluster: LiquidityZoneRect[] = [];
+      const flushCluster = () => {
+        if (cluster.length <= 1) {
+          cluster = [];
+          return;
         }
-        lastAbsoluteLabelTop = absoluteLabelTop;
-        return { ...rect, labelTop: absoluteLabelTop - rect.top };
-      });
-      setLiquidityZoneRects(next);
+        const strongest = cluster.reduce((best, item) => item.strength > best.strength ? item : best);
+        for (const item of cluster) {
+          if (item.id !== strongest.id) suppressed.add(item.id);
+        }
+        cluster = [];
+      };
+      for (const rect of byY) {
+        const previous = cluster.at(-1);
+        if (!previous || rect.top - previous.top < 16) {
+          cluster.push(rect);
+        } else {
+          flushCluster();
+          cluster.push(rect);
+        }
+      }
+      flushCluster();
+
+      return rawRects.map((rect) => ({
+        ...rect,
+        showLabel: !suppressed.has(rect.id),
+      }));
     };
 
-    const frame = window.requestAnimationFrame(updateRects);
+    const rectsEqual = (a: LiquidityZoneRect[], b: LiquidityZoneRect[]) =>
+      a.length === b.length && a.every((left, index) => {
+        const right = b[index];
+        return Boolean(
+          right &&
+          left.id === right.id &&
+          Math.abs(left.top - right.top) < 0.25 &&
+          Math.abs(left.height - right.height) < 0.25 &&
+          left.showLabel === right.showLabel &&
+          left.state === right.state &&
+          left.strength === right.strength &&
+          left.memoryStatus === right.memoryStatus
+        );
+      });
+
+    const updateRects = () => {
+      if (pendingFrame != null) return;
+      pendingFrame = window.requestAnimationFrame(() => {
+        pendingFrame = null;
+        const next = computeRects();
+        setLiquidityZoneRects((current) => rectsEqual(current, next) ? current : next);
+      });
+    };
+
+    updateRects();
     const observer = typeof ResizeObserver !== "undefined"
-      ? new ResizeObserver(() => updateRects())
+      ? new ResizeObserver(updateRects)
       : null;
     observer?.observe(chartHost);
     window.addEventListener("resize", updateRects);
 
     const timeScale = chartRef.current?.timeScale();
     timeScale?.subscribeVisibleLogicalRangeChange(updateRects);
-    // lightweight-charts does not expose a dedicated vertical price-scale drag
-    // callback, so this cheap UI-only refresh keeps bands aligned during Y-axis
-    // zoom/pan. It performs no Schwab or Supabase work.
+    // lightweight-charts exposes no price-scale drag event. This is a UI-only
+    // coordinate refresh; requestAnimationFrame coalescing plus rect equality
+    // prevents needless React state updates and performs no network work.
     const scaleTimer = window.setInterval(updateRects, 250);
 
     return () => {
-      window.cancelAnimationFrame(frame);
+      if (pendingFrame != null) window.cancelAnimationFrame(pendingFrame);
       observer?.disconnect();
       window.removeEventListener("resize", updateRects);
       timeScale?.unsubscribeVisibleLogicalRangeChange(updateRects);
@@ -2615,9 +2661,10 @@ export default function SpxCommandChart() {
                         : zone.side === "DEMAND"
                           ? "rgba(83,213,224,.48)"
                           : "rgba(203,213,225,.42)",
+                      opacity: zone.state === "DORMANT" ? 0.48 : 1,
                     }}
                   >
-                    <span
+                    {zone.showLabel ? <span
                       style={{
                         ...styles.liquidityZoneLabel,
                         top: zone.labelTop,
@@ -2629,7 +2676,7 @@ export default function SpxCommandChart() {
                       }}
                     >
                       {zone.label} · {zone.state} · {zone.strength.toFixed(0)}{zone.memoryStatus === "RETAINED" ? " · MEMORY" : ""}
-                    </span>
+                    </span> : null}
                   </div>
                 ))}
               </div>

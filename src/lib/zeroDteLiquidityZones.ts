@@ -7,6 +7,7 @@ export type LiquidityZoneState =
   | "TESTING"
   | "ABSORBING"
   | "WEAKENING"
+  | "DORMANT"
   | "BROKEN";
 
 export type ProjectedLiquidityZone = {
@@ -37,6 +38,7 @@ export type ProjectedLiquidityZone = {
   memoryStatus: "LIVE" | "RETAINED";
   peakStrength: number;
   peakConfidencePct: number;
+  peakState?: LiquidityZoneState;
   flippedFrom?: "SUPPLY" | "DEMAND" | null;
   brokenAt?: string | null;
 };
@@ -65,8 +67,8 @@ type Bucket = {
   sizeCount: number;
   positiveStacking: number;
   pulledLiquidity: number;
-  executionVolume: number;
-  consumedVolume: number;
+  executionAbsorbed: number;
+  executionConsumed: number;
   absorptionVolume: number;
   touches: number;
   totalObservedVolume: number;
@@ -137,8 +139,8 @@ export function buildEsLiquidityZones(args: {
     observations: raw.reduce((max, item) => Math.max(max, item.observations), 1),
     avgSize: raw.reduce((max, item) => Math.max(max, averageSize(item)), 1),
     stacking: raw.reduce((max, item) => Math.max(max, item.positiveStacking), 1),
-    execution: raw.reduce((max, item) => Math.max(max, item.executionVolume), 1),
-    consumed: raw.reduce((max, item) => Math.max(max, item.consumedVolume), 1),
+    executionAbsorbed: raw.reduce((max, item) => Math.max(max, item.executionAbsorbed), 1),
+    executionConsumed: raw.reduce((max, item) => Math.max(max, item.executionConsumed), 1),
     absorption: raw.reduce((max, item) => Math.max(max, item.absorptionVolume), 1),
     touches: raw.reduce((max, item) => Math.max(max, item.touches), 1),
   };
@@ -263,27 +265,27 @@ function addExecutionObservation(
   if (sample.aggressiveBuyVolume > 0) {
     addWeightedPrice(supply, numericPrice, sample.aggressiveBuyVolume);
     if (lowEfficiency || supplyAbsorptionState) {
-      supply.executionVolume += sample.aggressiveBuyVolume;
+      supply.executionAbsorbed += sample.aggressiveBuyVolume;
       if (strongAbsorptionEfficiency || supplyAbsorptionState) {
         supply.absorptionVolume += sample.aggressiveBuyVolume;
       }
     } else {
       // Efficient buying that advances through the level means supply was
       // consumed, not defended. Treat it as negative evidence.
-      supply.consumedVolume += sample.aggressiveBuyVolume;
+      supply.executionConsumed += sample.aggressiveBuyVolume;
     }
   }
 
   if (sample.aggressiveSellVolume > 0) {
     addWeightedPrice(demand, numericPrice, sample.aggressiveSellVolume);
     if (lowEfficiency || demandAbsorptionState) {
-      demand.executionVolume += sample.aggressiveSellVolume;
+      demand.executionAbsorbed += sample.aggressiveSellVolume;
       if (strongAbsorptionEfficiency || demandAbsorptionState) {
         demand.absorptionVolume += sample.aggressiveSellVolume;
       }
     } else {
       // Efficient selling through the bid means demand was consumed.
-      demand.consumedVolume += sample.aggressiveSellVolume;
+      demand.executionConsumed += sample.aggressiveSellVolume;
     }
   }
 }
@@ -301,8 +303,8 @@ function scoreBucket(args: {
     observations: number;
     avgSize: number;
     stacking: number;
-    execution: number;
-    consumed: number;
+    executionAbsorbed: number;
+    executionConsumed: number;
     absorption: number;
     touches: number;
   };
@@ -320,8 +322,8 @@ function scoreBucket(args: {
     ? bucket.positiveStacking / stackingGross
     : 0;
   const stackingPct = pct((bucket.positiveStacking / maxima.stacking) * stackingQuality);
-  const executionPct = pct(bucket.executionVolume / maxima.execution);
-  const consumedPct = pct(bucket.consumedVolume / maxima.consumed);
+  const executionPct = pct(bucket.executionAbsorbed / maxima.executionAbsorbed);
+  const consumedPct = pct(bucket.executionConsumed / maxima.executionConsumed);
   const absorptionPct = pct(bucket.absorptionVolume / maxima.absorption);
   const touchPct = pct(bucket.touches / maxima.touches);
   const pullPenalty = stackingGross > 0
@@ -346,7 +348,7 @@ function scoreBucket(args: {
     100,
   );
 
-  const classificationVolume = bucket.executionVolume + bucket.consumedVolume;
+  const classificationVolume = bucket.executionAbsorbed + bucket.executionConsumed;
   const volumeConfidence = bucket.totalObservedVolume > 0
     ? clamp((classificationVolume / bucket.totalObservedVolume) * 100, 0, 100)
     : 0;
@@ -369,24 +371,26 @@ function scoreBucket(args: {
   const lowSpx = projectToSpx(lowEs, args.basisEsMinusSpx);
   const highSpx = projectToSpx(highEs, args.basisEsMinusSpx);
   const centerSpx = projectToSpx(centerEs, args.basisEsMinusSpx);
+  assertProjectedWidth(lowSpx, highSpx, `${bucket.side}:${bucket.center.toFixed(2)}`);
+  const state = classifyZoneState({
+    side: bucket.side,
+    strength,
+    absorptionPct,
+    touches: bucket.touches,
+    currentEs: args.currentEs,
+    lowEs,
+    highEs,
+    pressure: args.latestPressure,
+    efficiency: args.latestEfficiency,
+    latestState: args.latestState,
+    ageMs,
+    pullRatio: stackingGross > 0 ? bucket.pulledLiquidity / stackingGross : 0,
+  });
 
   return {
     id: `${bucket.side}:${bucket.center.toFixed(2)}`,
     side: bucket.side,
-    state: classifyZoneState({
-      side: bucket.side,
-      strength,
-      absorptionPct,
-      touches: bucket.touches,
-      currentEs: args.currentEs,
-      lowEs,
-      highEs,
-      pressure: args.latestPressure,
-      efficiency: args.latestEfficiency,
-      latestState: args.latestState,
-      ageMs,
-      pullRatio: stackingGross > 0 ? bucket.pulledLiquidity / stackingGross : 0,
-    }),
+    state,
     lowEs,
     highEs,
     centerEs,
@@ -411,6 +415,7 @@ function scoreBucket(args: {
     memoryStatus: "LIVE",
     peakStrength: round(strength),
     peakConfidencePct: round(confidencePct),
+    peakState: state,
     flippedFrom: null,
     brokenAt: null,
   };
@@ -508,10 +513,18 @@ function makeBalancedZone(
 ): ProjectedLiquidityZone {
   const strength = round((supply.strength + demand.strength) / 2);
   const confidencePct = round((supply.confidencePct + demand.confidencePct) / 2);
-  const centerEs = round((supply.centerEs + demand.centerEs) / 2);
+  // A BALANCED zone replaces the directional pair at one canonical ES bucket.
+  // Never union already-projected SPX values (or slightly different weighted
+  // centers), because that inflates a 2-point bucket when basis moves.
+  const centerEs = Number(key);
+  const half = BUCKET_WIDTH / 2;
+  const lowEs = centerEs - half;
+  const highEs = centerEs + half;
   const basis = supply.basisEsMinusSpx ?? demand.basisEsMinusSpx;
-  const lowEs = Math.min(supply.lowEs, demand.lowEs);
-  const highEs = Math.max(supply.highEs, demand.highEs);
+  const lowSpx = projectToSpx(lowEs, basis);
+  const highSpx = projectToSpx(highEs, basis);
+  const centerSpx = projectToSpx(centerEs, basis);
+  assertProjectedWidth(lowSpx, highSpx, `BALANCED:${key}`);
   const state = balancedState(supply.state, demand.state, strength);
   return {
     id: `BALANCED:${key}`,
@@ -520,9 +533,9 @@ function makeBalancedZone(
     lowEs,
     highEs,
     centerEs,
-    lowSpx: projectToSpx(lowEs, basis),
-    highSpx: projectToSpx(highEs, basis),
-    centerSpx: projectToSpx(centerEs, basis),
+    lowSpx,
+    highSpx,
+    centerSpx,
     basisEsMinusSpx: basis,
     strength,
     confidencePct,
@@ -541,6 +554,7 @@ function makeBalancedZone(
     memoryStatus: "LIVE",
     peakStrength: strength,
     peakConfidencePct: confidencePct,
+    peakState: state,
     flippedFrom: null,
     brokenAt: null,
   };
@@ -619,8 +633,8 @@ function ensureBucket(
       sizeCount: 0,
       positiveStacking: 0,
       pulledLiquidity: 0,
-      executionVolume: 0,
-      consumedVolume: 0,
+      executionAbsorbed: 0,
+      executionConsumed: 0,
       absorptionVolume: 0,
       touches: 0,
       totalObservedVolume: 0,
@@ -667,6 +681,14 @@ function averageSize(bucket: Bucket) {
 
 function projectToSpx(esPrice: number, basisEsMinusSpx: number | null) {
   return basisEsMinusSpx == null ? null : esPrice - basisEsMinusSpx;
+}
+
+function assertProjectedWidth(lowSpx: number | null, highSpx: number | null, id: string) {
+  if (lowSpx == null || highSpx == null) return;
+  const width = highSpx - lowSpx;
+  if (Math.abs(width - BUCKET_WIDTH) > 0.001) {
+    console.warn(`[WheelDesk] Liquidity-zone projection width invariant failed for ${id}: ${width.toFixed(4)} vs ${BUCKET_WIDTH.toFixed(2)}`);
+  }
 }
 
 function distanceToZone(price: number, low: number, high: number) {

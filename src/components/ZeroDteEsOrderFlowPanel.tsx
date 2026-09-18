@@ -471,7 +471,7 @@ function LiquidityZonesCard({
         <div style={styles.zoneEmpty}>Collecting enough ES observations to form zones…</div>
       )}
       <div style={styles.zoneFooter}>
-        Live scoring uses the rolling ~15-minute ES observer. BALANCED marks prior acceptance where directional evidence is tied; material zones are retained for the current market session in browser localStorage ({read.retainedCount} retained). Only the compact zone ledger is stored; 1-second samples are not persisted. No Supabase writes, snapshots, or additional market-data requests are created by this overlay.
+        Live scoring uses the rolling ~15-minute ES observer. BALANCED replaces tied directional evidence with one neutral acceptance band. Retained zones decay on a 1.5-hour curve, become DORMANT after 30 minutes away, and expire from memory after 4 hours ({read.retainedCount} retained). Only the compact browser-local zone ledger is stored; 1-second samples are not persisted. No Supabase writes, snapshots, or additional market-data requests are created by this overlay.
       </div>
     </div>
   );
@@ -486,7 +486,7 @@ function LiquidityZoneRow({ zone }: { zone: ProjectedLiquidityZone }) {
     ? `${zone.lowSpx.toFixed(1)}–${zone.highSpx.toFixed(1)}`
     : `${zone.lowEs.toFixed(1)}–${zone.highEs.toFixed(1)} ES`;
   return (
-    <div style={{ ...styles.zoneRow, borderColor }}>
+    <div style={{ ...styles.zoneRow, borderColor, opacity: zone.state === "DORMANT" ? 0.55 : 1 }}>
       <div style={styles.zoneRowTop}>
         <strong style={{ color: sideColor }}>{zone.side}</strong>
         <span style={styles.zoneRange}>{range}</span>

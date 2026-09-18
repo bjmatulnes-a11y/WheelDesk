@@ -1,12 +1,14 @@
 import type {
   LiquidityZoneRead,
+  LiquidityZoneState,
   ProjectedLiquidityZone,
 } from "./zeroDteLiquidityZones";
 
-const STORAGE_PREFIX = "wheeldesk:zero-dte:liquidity-zone-memory:v3:";
+const STORAGE_PREFIX = "wheeldesk:zero-dte:liquidity-zone-memory:v4:";
+const LEGACY_STORAGE_PREFIX = "wheeldesk:zero-dte:liquidity-zone-memory:v3:";
 const MAX_MEMORY_ZONES = 40;
-const MAX_SESSION_AGE_MS = 10 * 60 * 60_000;
-const RETAINED_STRENGTH_FLOOR = 18;
+const MAX_SESSION_AGE_MS = 4 * 60 * 60_000;
+const RETAINED_STRENGTH_FLOOR = 15;
 const RENDER_STRENGTH_THRESHOLD = 28;
 const DECAY_HOURS = 1.5;
 const BREAK_BUFFER_POINTS = 1.25;
@@ -57,7 +59,7 @@ export function saveLiquidityZoneMemory(
     window.localStorage.setItem(
       `${STORAGE_PREFIX}${sessionKey}`,
       JSON.stringify({
-        version: 3,
+        version: 4,
         sessionKey,
         savedAt: new Date().toISOString(),
         zones: compact,
@@ -68,7 +70,10 @@ export function saveLiquidityZoneMemory(
     // housekeeping only and never touches Supabase.
     for (let i = window.localStorage.length - 1; i >= 0; i -= 1) {
       const key = window.localStorage.key(i);
-      if (key?.startsWith(STORAGE_PREFIX) && key !== `${STORAGE_PREFIX}${sessionKey}`) {
+      if (
+        key?.startsWith(LEGACY_STORAGE_PREFIX) ||
+        (key?.startsWith(STORAGE_PREFIX) && key !== `${STORAGE_PREFIX}${sessionKey}`)
+      ) {
         window.localStorage.removeItem(key);
       }
     }
@@ -91,10 +96,14 @@ export function mergeLiquidityZoneMemory(args: {
   for (const oldZone of args.retained) {
     const ageMs = safeAge(nowMs, Date.parse(oldZone.lastAt));
     if (ageMs > MAX_SESSION_AGE_MS) continue;
-    registry.set(oldZone.id, reprojectRetained(oldZone, basis, ageMs));
+    registry.set(oldZone.id, reprojectRetained(oldZone, basis, ageMs, args.live.currentEs));
   }
 
   for (const liveZone of args.live.registry) {
+    // The live builder has already deconflicted this ES bucket. Remove stale
+    // retained identities at the same bucket so BALANCED truly replaces the
+    // old SUPPLY/DEMAND pair (and a later directional zone replaces BALANCED).
+    purgeCompetingBucketEntries(registry, liveZone);
     const oldZone = registry.get(liveZone.id);
 
     // A broken polarity does not silently resurrect just because the old side
@@ -107,18 +116,23 @@ export function mergeLiquidityZoneMemory(args: {
       : 0;
     const resetPeak = oldZone != null && revisitGap > REVISIT_RESET_MS;
 
+    const oldPeakStrength = oldZone?.peakStrength ?? oldZone?.strength ?? 0;
+    const liveSetsPeak = resetPeak || liveZone.strength >= oldPeakStrength;
     registry.set(liveZone.id, {
       ...liveZone,
       firstAt: olderTimestamp(oldZone?.firstAt, liveZone.firstAt),
-      peakStrength: resetPeak
+      peakStrength: liveSetsPeak
         ? liveZone.strength
-        : Math.max(liveZone.strength, oldZone?.peakStrength ?? oldZone?.strength ?? 0),
+        : oldPeakStrength,
       peakConfidencePct: resetPeak
         ? liveZone.confidencePct
         : Math.max(
             liveZone.confidencePct,
             oldZone?.peakConfidencePct ?? oldZone?.confidencePct ?? 0,
           ),
+      peakState: liveSetsPeak
+        ? liveZone.state
+        : oldZone?.peakState ?? oldZone?.state ?? liveZone.state,
       flippedFrom: oldZone?.flippedFrom ?? liveZone.flippedFrom ?? null,
       brokenAt: null,
       memoryStatus: "LIVE",
@@ -172,6 +186,7 @@ function applyBreaksAndPolarityFlips(
     const brokenZone: ProjectedLiquidityZone = {
       ...zone,
       state: "BROKEN",
+      peakState: zone.peakState ?? zone.state,
       brokenAt: nowIso,
       memoryStatus: zone.memoryStatus,
     };
@@ -209,6 +224,7 @@ function applyBreaksAndPolarityFlips(
       lastAt: nowIso,
       peakStrength: flipStrength,
       peakConfidencePct: flipConfidence,
+      peakState: "FORMING",
       flippedFrom: zone.side,
       brokenAt: null,
     });
@@ -219,37 +235,90 @@ function reprojectRetained(
   zone: ProjectedLiquidityZone,
   basis: number | null,
   ageMs: number,
+  currentEs: number | null,
 ): ProjectedLiquidityZone {
   const peakStrength = zone.peakStrength ?? zone.strength;
   const peakConfidencePct = zone.peakConfidencePct ?? zone.confidencePct;
+  const peakState = normalizePeakState(zone.peakState ?? zone.state);
   const ageHours = ageMs / 3_600_000;
   const decayedStrength = Math.max(
     RETAINED_STRENGTH_FLOOR,
     peakStrength * Math.exp(-ageHours / DECAY_HOURS),
   );
   const decayedConfidence = Math.max(16, peakConfidencePct * Math.exp(-ageHours / 2.25));
-  const basisChanged = basis != null;
+  const testing = currentEs != null && currentEs >= zone.lowEs && currentEs <= zone.highEs;
 
-  const retainedState = zone.state === "BROKEN"
-    ? "BROKEN"
-    : zone.flippedFrom && ageHours < 0.5
-      ? zone.state
-      : "WEAKENING";
+  let retainedState: LiquidityZoneState;
+  if (zone.state === "BROKEN") {
+    retainedState = "BROKEN";
+  } else if (testing) {
+    retainedState = "TESTING";
+  } else if (ageMs < 10 * 60_000) {
+    retainedState = peakState;
+  } else if (ageMs <= 30 * 60_000) {
+    retainedState = "WEAKENING";
+  } else {
+    retainedState = "DORMANT";
+  }
+
+  // Retained projections are always re-derived from ES geometry + the current
+  // basis. If basis is unavailable, return null SPX geometry rather than stale
+  // coordinates from an earlier basis snapshot.
+  const lowSpx = basis == null ? null : zone.lowEs - basis;
+  const highSpx = basis == null ? null : zone.highEs - basis;
+  const centerSpx = basis == null ? null : zone.centerEs - basis;
+  assertRetainedProjectionWidth(zone, lowSpx, highSpx);
 
   return {
     ...zone,
     state: retainedState,
-    lowSpx: basisChanged ? zone.lowEs - basis : zone.lowSpx,
-    highSpx: basisChanged ? zone.highEs - basis : zone.highSpx,
-    centerSpx: basisChanged ? zone.centerEs - basis : zone.centerSpx,
-    basisEsMinusSpx: basisChanged ? basis : zone.basisEsMinusSpx,
+    lowSpx,
+    highSpx,
+    centerSpx,
+    basisEsMinusSpx: basis,
     strength: round(decayedStrength),
     confidencePct: round(decayedConfidence),
     recencyPct: round(Math.max(5, 100 * Math.exp(-ageMs / (45 * 60_000)))),
     memoryStatus: "RETAINED",
     peakStrength: round(peakStrength),
     peakConfidencePct: round(peakConfidencePct),
+    peakState,
   };
+}
+
+function normalizePeakState(state: LiquidityZoneState): LiquidityZoneState {
+  if (state === "DORMANT" || state === "WEAKENING") return "ACTIVE";
+  if (state === "BROKEN") return "ACTIVE";
+  return state;
+}
+
+function assertRetainedProjectionWidth(
+  zone: ProjectedLiquidityZone,
+  lowSpx: number | null,
+  highSpx: number | null,
+) {
+  if (lowSpx == null || highSpx == null) return;
+  const esWidth = zone.highEs - zone.lowEs;
+  const spxWidth = highSpx - lowSpx;
+  if (Math.abs(spxWidth - esWidth) > 0.001) {
+    console.warn(`[WheelDesk] Retained liquidity-zone projection width invariant failed for ${zone.id}: ${spxWidth.toFixed(4)} vs ES ${esWidth.toFixed(4)}`);
+  }
+}
+
+function purgeCompetingBucketEntries(
+  registry: Map<string, ProjectedLiquidityZone>,
+  liveZone: ProjectedLiquidityZone,
+) {
+  const liveBucket = canonicalBucketCenter(liveZone.centerEs);
+  for (const [id, zone] of registry.entries()) {
+    if (id === liveZone.id) continue;
+    if (Math.abs(canonicalBucketCenter(zone.centerEs) - liveBucket) > 0.001) continue;
+    registry.delete(id);
+  }
+}
+
+function canonicalBucketCenter(centerEs: number) {
+  return Math.round(centerEs / 2) * 2;
 }
 
 function relevantRemembered(

@@ -259,7 +259,21 @@ function evaluateVertical(args: {
         zone.highSpx != null &&
         shortStrike >= zone.lowSpx - 4 &&
         shortStrike <= zone.highSpx + 4 &&
-        zone.state !== "BROKEN",
+        zone.state !== "BROKEN" &&
+        zone.state !== "DORMANT",
+      ) ?? null;
+  // BALANCED is intentionally neutral: it can explain acceptance around the
+  // short strike, but it must never be scored as directional defense for a
+  // put or call spread.
+  const balancedAtShort = shortStrike === null
+    ? null
+    : (auction?.balancedZones ?? []).find((zone) =>
+        zone.lowSpx != null &&
+        zone.highSpx != null &&
+        shortStrike >= zone.lowSpx - 4 &&
+        shortStrike <= zone.highSpx + 4 &&
+        zone.state !== "BROKEN" &&
+        zone.state !== "DORMANT",
       ) ?? null;
   const zoneDefenseActive = Boolean(
     defendingZone &&
@@ -380,6 +394,7 @@ function evaluateVertical(args: {
   const reasons: string[] = [];
   if (favorableRelease) reasons.push(`Live ES state ${auction?.state} is moving away from the threatened short.`);
   if (zoneDefenseActive && defendingZone) reasons.push(`${defendingZone.side} proxy zone ${defendingZone.lowSpx?.toFixed(1)}–${defendingZone.highSpx?.toFixed(1)} is defending the short area (strength ${defendingZone.strength.toFixed(0)}, ${defendingZone.state}).`);
+  if (balancedAtShort) reasons.push(`BALANCED acceptance ${balancedAtShort.lowSpx?.toFixed(1)}–${balancedAtShort.highSpx?.toFixed(1)} overlaps the short area; it is neutral context and receives no directional defense credit.`);
   if (pocFavorable && projectedPoc !== null && shortStrike !== null) {
     reasons.push(`Observed ES value projects to SPX ${projectedPoc.toFixed(1)}, favorably away from the ${shortStrike.toFixed(0)} short.`);
   }
