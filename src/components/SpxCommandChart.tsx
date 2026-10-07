@@ -105,6 +105,17 @@ import {
   buildShadowLegSnapshots,
   evaluateAdaptivePortfolioOpportunity,
 } from "../lib/zeroDteAdaptivePortfolio";
+import {
+  buildZeroDteStructureMap,
+  type StructureAnchor,
+  type StructureCandle,
+} from "../lib/zeroDteStructureMap";
+import {
+  CLEAN_STRUCTURE_OVERLAY,
+  ZeroDteOverlayControls,
+  type ZeroDteOverlaySettings,
+} from "./zero-dte/ZeroDteOverlayControls";
+import { ZeroDteStructureOverlay } from "./zero-dte/ZeroDteStructureOverlay";
 
 type Candle = {
   time: number;
@@ -284,6 +295,8 @@ export default function SpxCommandChart() {
   >([]);
   const [expirationError, setExpirationError] = useState<string | null>(null);
   const [overlays, setOverlays] = useState(DEFAULT_OVERLAYS);
+  const [structureOverlaySettings, setStructureOverlaySettings] =
+    useState<ZeroDteOverlaySettings>(CLEAN_STRUCTURE_OVERLAY);
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
@@ -474,6 +487,38 @@ export default function SpxCommandChart() {
     );
     return scoped;
   }, [harvest?.generatedAt, harvest?.tradeDate, signalCandles]);
+
+  const structureDisplayCandles = useMemo(() => {
+    if (!harvest?.generatedAt) return [] as Candle[];
+    const generatedMs = Date.parse(harvest.generatedAt);
+    if (!Number.isFinite(generatedMs)) return [] as Candle[];
+    const closeDelayMs = frequency * 60_000;
+    return displaySessionCandles.filter(
+      (candle) => candle.time * 1000 + closeDelayMs <= generatedMs,
+    );
+  }, [displaySessionCandles, frequency, harvest?.generatedAt]);
+
+  const structureSnapshot = useMemo(() => {
+    const rows: StructureCandle[] = structureDisplayCandles.map((candle) => ({
+      time: candle.time,
+      open: candle.open,
+      high: candle.high,
+      low: candle.low,
+      close: candle.close,
+      // SPX is an index, not a traded instrument. Do not treat its reported
+      // volume field as order-flow volume. Reaction Zones stay dormant until
+      // an aligned ES/SPY proxy-volume source is wired in.
+      volume: null,
+    }));
+
+    return buildZeroDteStructureMap(rows, {
+      internalRadius: frequency === 1 ? 3 : 2,
+      externalRadius: frequency === 1 ? 8 : 5,
+      mitigationMode: "CLOSE",
+      fvgThresholdPct: 0,
+      reactionMinRelativeVolume: 1.35,
+    });
+  }, [frequency, structureDisplayCandles]);
 
   const mapManager = useSessionMapManager({
     tradeDate: harvest?.tradeDate,
@@ -721,6 +766,62 @@ export default function SpxCommandChart() {
     scannerExecutionCandidates,
     spxRows,
     stableCandidateTracker.candidates,
+  ]);
+
+  const structureAnchors = useMemo<StructureAnchor[]>(() => {
+    const items: StructureAnchor[] = [];
+    const add = (
+      id: string,
+      label: string,
+      price: number | null | undefined,
+      tone: NonNullable<StructureAnchor["tone"]>,
+    ) => {
+      if (!Number.isFinite(price)) return;
+      items.push({ id, label, price: Number(price), tone });
+    };
+
+    add(
+      "call-wall",
+      "CALL WALL",
+      controllingMap?.callWall ?? recommendation?.spx.callWall,
+      "BEAR",
+    );
+    add(
+      "put-wall",
+      "PUT WALL",
+      controllingMap?.putWall ?? recommendation?.spx.putWall,
+      "BULL",
+    );
+    add(
+      "pin",
+      "PIN",
+      controllingMap?.pin ?? recommendation?.spx.strongestPin,
+      "NEUTRAL",
+    );
+    add(
+      "if-center",
+      "IF CENTER",
+      controllingMap?.center ?? recommendation?.suggestedCenter,
+      "NEUTRAL",
+    );
+
+    const selectedCandidate = executionCandidates[selectedExecutionStrategy] ?? null;
+    for (const leg of selectedCandidate?.legs ?? []) {
+      if (leg.action !== "sell") continue;
+      add(
+        `short-${leg.optionType}-${leg.strike}`,
+        `${leg.optionType === "call" ? "CALL" : "PUT"} SHORT`,
+        leg.strike,
+        leg.optionType === "call" ? "BEAR" : "BULL",
+      );
+    }
+
+    return items;
+  }, [
+    controllingMap,
+    executionCandidates,
+    recommendation,
+    selectedExecutionStrategy,
   ]);
 
   const premiumTape = useExecutionPremiumTape({
@@ -2536,6 +2637,11 @@ export default function SpxCommandChart() {
         ))}
       </div>
 
+      <ZeroDteOverlayControls
+        value={structureOverlaySettings}
+        onChange={setStructureOverlaySettings}
+      />
+
       <div style={styles.signalPaintBar}>
         <div style={styles.signalPaintTitle}>
           <strong>Execution Paint</strong>
@@ -2642,6 +2748,15 @@ export default function SpxCommandChart() {
         <div style={styles.chartPanel}>
           <div style={styles.chartStage}>
             <div ref={chartHostRef} style={styles.chartHost} />
+            <ZeroDteStructureOverlay
+              container={chartHostRef.current}
+              chart={chartRef.current}
+              series={candleSeriesRef.current}
+              snapshot={structureSnapshot}
+              settings={structureOverlaySettings}
+              anchors={structureAnchors}
+              confluenceTolerancePoints={1.5}
+            />
             {overlays.liquidityZones ? (
               <div style={styles.liquidityOverlay} aria-hidden="true">
                 {liquidityZoneRects.map((zone) => (
@@ -2693,6 +2808,12 @@ export default function SpxCommandChart() {
             <LegendItem color="#ff8a34" text="Call Wall" />
             <LegendItem color="#2f80ed" text="Put Wall" />
             <LegendItem color="#f4f7fb" text="Pin" />
+            {structureOverlaySettings.enabled ? (
+              <>
+                <LegendItem color="#14D990" text="Bull Structure / FVG" />
+                <LegendItem color="#F24968" text="Bear Structure / FVG" />
+              </>
+            ) : null}
             <LegendItem color="#ffd400" text="IF Center" />
             <LegendItem color="#c084fc" text="Least-resistance path / envelope" />
             <LegendItem color="#71dce3" text="ES demand zone" />
