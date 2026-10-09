@@ -4,6 +4,7 @@ import React from "react";
 
 export interface ZeroDteOverlaySettings {
   enabled: boolean;
+  decisionArrow: boolean;
   externalStructure: boolean;
   internalStructure: boolean;
   swingLabels: boolean;
@@ -14,8 +15,23 @@ export interface ZeroDteOverlaySettings {
   confluenceBadges: boolean;
 }
 
+/** Default trading view: the engine does the interpretation and the chart stays quiet. */
+export const SIGNAL_STRUCTURE_OVERLAY: ZeroDteOverlaySettings = {
+  enabled: true,
+  decisionArrow: true,
+  externalStructure: false,
+  internalStructure: false,
+  swingLabels: false,
+  fvgs: false,
+  reactionZones: false,
+  reversals: false,
+  fibs: false,
+  confluenceBadges: false,
+};
+
 export const CLEAN_STRUCTURE_OVERLAY: ZeroDteOverlaySettings = {
   enabled: true,
+  decisionArrow: true,
   externalStructure: true,
   internalStructure: false,
   swingLabels: true,
@@ -28,6 +44,7 @@ export const CLEAN_STRUCTURE_OVERLAY: ZeroDteOverlaySettings = {
 
 export const FULL_STRUCTURE_OVERLAY: ZeroDteOverlaySettings = {
   enabled: true,
+  decisionArrow: true,
   externalStructure: true,
   internalStructure: true,
   swingLabels: true,
@@ -59,6 +76,7 @@ export function ZeroDteOverlayControls(props: {
   };
 
   const items: Array<[keyof ZeroDteOverlaySettings, string]> = [
+    ["decisionArrow", "Arrow"],
     ["externalStructure", "Structure"],
     ["internalStructure", "Internal"],
     ["swingLabels", "Swings"],
@@ -87,6 +105,9 @@ export function ZeroDteOverlayControls(props: {
       >
         STRUCTURE {value.enabled ? "ON" : "OFF"}
       </button>
+      <button type="button" style={buttonStyle} onClick={() => onChange(SIGNAL_STRUCTURE_OVERLAY)}>
+        Signal
+      </button>
       <button type="button" style={buttonStyle} onClick={() => onChange(CLEAN_STRUCTURE_OVERLAY)}>
         Clean
       </button>
@@ -102,7 +123,9 @@ export function ZeroDteOverlayControls(props: {
           title={
             key === "reactionZones"
               ? "Reaction Zones require aligned ES/SPY proxy volume. SPX volume is intentionally ignored."
-              : undefined
+              : key === "decisionArrow"
+                ? "Show only confirmed WheelDesk BUY/SELL directional decisions; WAIT intentionally draws no arrow."
+                : undefined
           }
           onClick={() => toggle(key)}
         >

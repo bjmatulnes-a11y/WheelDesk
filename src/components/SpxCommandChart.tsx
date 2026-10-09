@@ -111,11 +111,15 @@ import {
   type StructureCandle,
 } from "../lib/zeroDteStructureMap";
 import {
-  CLEAN_STRUCTURE_OVERLAY,
+  SIGNAL_STRUCTURE_OVERLAY,
   ZeroDteOverlayControls,
   type ZeroDteOverlaySettings,
 } from "./zero-dte/ZeroDteOverlayControls";
 import { ZeroDteStructureOverlay } from "./zero-dte/ZeroDteStructureOverlay";
+import {
+  aggregateStructureCandles,
+  buildZeroDteDirectionalSignal,
+} from "../lib/zeroDteDirectionalSignal";
 
 type Candle = {
   time: number;
@@ -268,6 +272,11 @@ type LiquidityZoneRect = {
 
 export default function SpxCommandChart() {
   const chartHostRef = useRef<HTMLDivElement | null>(null);
+  const [chartHostElement, setChartHostElement] = useState<HTMLDivElement | null>(null);
+  const setChartHost = useCallback((node: HTMLDivElement | null) => {
+    chartHostRef.current = node;
+    setChartHostElement(node);
+  }, []);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const lineSeriesRef = useRef<Array<ISeriesApi<"Line">>>([]);
@@ -296,7 +305,7 @@ export default function SpxCommandChart() {
   const [expirationError, setExpirationError] = useState<string | null>(null);
   const [overlays, setOverlays] = useState(DEFAULT_OVERLAYS);
   const [structureOverlaySettings, setStructureOverlaySettings] =
-    useState<ZeroDteOverlaySettings>(CLEAN_STRUCTURE_OVERLAY);
+    useState<ZeroDteOverlaySettings>(SIGNAL_STRUCTURE_OVERLAY);
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
@@ -519,6 +528,45 @@ export default function SpxCommandChart() {
       reactionMinRelativeVolume: 1.35,
     });
   }, [frequency, structureDisplayCandles]);
+
+  // Directional decisions always use the completed 1-minute cash-session feed,
+  // independent of the user's display timeframe. This prevents switching the
+  // chart to 5m from silently changing the BUY/SELL decision engine.
+  const decisionStructureCandles = useMemo<StructureCandle[]>(() =>
+    officialSignalCandles.map((candle) => ({
+      time: candle.time,
+      open: candle.open,
+      high: candle.high,
+      low: candle.low,
+      close: candle.close,
+      volume: null,
+    })),
+  [officialSignalCandles]);
+
+  const decisionStructureSnapshot = useMemo(() =>
+    buildZeroDteStructureMap(decisionStructureCandles, {
+      internalRadius: 3,
+      externalRadius: 8,
+      mitigationMode: "CLOSE",
+      fvgThresholdPct: 0,
+      reactionMinRelativeVolume: 1.35,
+    }),
+  [decisionStructureCandles]);
+
+  const decisionFiveMinuteCandles = useMemo(
+    () => aggregateStructureCandles(decisionStructureCandles, 5),
+    [decisionStructureCandles],
+  );
+
+  const decisionFiveMinuteSnapshot = useMemo(() =>
+    buildZeroDteStructureMap(decisionFiveMinuteCandles, {
+      internalRadius: 2,
+      externalRadius: 3,
+      mitigationMode: "CLOSE",
+      fvgThresholdPct: 0,
+      reactionMinRelativeVolume: 1.35,
+    }),
+  [decisionFiveMinuteCandles]);
 
   const mapManager = useSessionMapManager({
     tradeDate: harvest?.tradeDate,
@@ -2090,6 +2138,32 @@ export default function SpxCommandChart() {
     strikeFlow,
   ]);
 
+  const directionalSignal = useMemo(() =>
+    buildZeroDteDirectionalSignal({
+      candles: decisionStructureCandles,
+      structure: decisionStructureSnapshot,
+      higherTimeframeStructure: decisionFiveMinuteSnapshot,
+      recommendation,
+      mood: harvest?.mood ?? null,
+      leastResistancePath: decisionLeastResistancePath,
+      executionReads: executionReadsForPaint,
+      pin: controllingMap?.pin ?? recommendation?.spx.strongestPin ?? null,
+      callWall: controllingMap?.callWall ?? recommendation?.spx.callWall ?? null,
+      putWall: controllingMap?.putWall ?? recommendation?.spx.putWall ?? null,
+    }),
+  [
+    controllingMap?.callWall,
+    controllingMap?.pin,
+    controllingMap?.putWall,
+    decisionFiveMinuteSnapshot,
+    decisionLeastResistancePath,
+    decisionStructureCandles,
+    decisionStructureSnapshot,
+    executionReadsForPaint,
+    harvest?.mood,
+    recommendation,
+  ]);
+
   const signalPaint = useExecutionSignalPaint({
     tradeDate: harvest?.tradeDate,
     frequencyMinutes: 1,
@@ -2747,15 +2821,16 @@ export default function SpxCommandChart() {
       <div style={styles.commandGrid}>
         <div style={styles.chartPanel}>
           <div style={styles.chartStage}>
-            <div ref={chartHostRef} style={styles.chartHost} />
+            <div ref={setChartHost} style={styles.chartHost} />
             <ZeroDteStructureOverlay
-              container={chartHostRef.current}
+              container={chartHostElement}
               chart={chartRef.current}
               series={candleSeriesRef.current}
               snapshot={structureSnapshot}
               settings={structureOverlaySettings}
               anchors={structureAnchors}
               confluenceTolerancePoints={1.5}
+              decision={directionalSignal}
             />
             {overlays.liquidityZones ? (
               <div style={styles.liquidityOverlay} aria-hidden="true">

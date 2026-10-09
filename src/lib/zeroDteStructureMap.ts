@@ -37,6 +37,17 @@ export interface StructureBreak {
   breakIndex: number;
 }
 
+export interface LiquiditySweep {
+  id: string;
+  /** BULL means a downside sweep reclaimed the level; BEAR means an upside sweep rejected. */
+  direction: StructureDirection;
+  scale: StructureScale;
+  level: number;
+  swingTime: number;
+  sweepTime: number;
+  sweepIndex: number;
+}
+
 export interface FairValueGap {
   id: string;
   direction: StructureDirection;
@@ -87,6 +98,7 @@ export interface ZeroDteStructureSnapshot {
   trendExternal: StructureDirection | null;
   swings: StructureSwing[];
   breaks: StructureBreak[];
+  sweeps: LiquiditySweep[];
   fvgs: FairValueGap[];
   reactionZones: ReactionZone[];
   reversals: ThreeBarReversal[];
@@ -294,6 +306,60 @@ function buildBreaks(
   }
 
   return { breaks, trend };
+}
+
+
+function buildLiquiditySweeps(
+  candles: readonly StructureCandle[],
+  swings: readonly StructureSwing[],
+): LiquiditySweep[] {
+  const out: LiquiditySweep[] = [];
+
+  for (const swing of swings) {
+    // A confirmed swing can attract stop liquidity for a while, but very old
+    // levels should not manufacture fresh 0DTE sweep signals hours later.
+    const endIndex = Math.min(candles.length - 1, swing.confirmIndex + 30);
+    for (let index = swing.confirmIndex + 1; index <= endIndex; index += 1) {
+      const candle = candles[index];
+      if (!candle) continue;
+
+      if (
+        swing.kind === "HIGH" &&
+        candle.high > swing.price &&
+        candle.close < swing.price
+      ) {
+        out.push({
+          id: `SWEEP:BEAR:${swing.scale}:${swing.time}:${candle.time}`,
+          direction: "BEAR",
+          scale: swing.scale,
+          level: swing.price,
+          swingTime: swing.time,
+          sweepTime: candle.time,
+          sweepIndex: index,
+        });
+        break;
+      }
+
+      if (
+        swing.kind === "LOW" &&
+        candle.low < swing.price &&
+        candle.close > swing.price
+      ) {
+        out.push({
+          id: `SWEEP:BULL:${swing.scale}:${swing.time}:${candle.time}`,
+          direction: "BULL",
+          scale: swing.scale,
+          level: swing.price,
+          swingTime: swing.time,
+          sweepTime: candle.time,
+          sweepIndex: index,
+        });
+        break;
+      }
+    }
+  }
+
+  return out.sort((a, b) => a.sweepIndex - b.sweepIndex);
 }
 
 function fvgMitigated(
@@ -566,6 +632,7 @@ export function buildZeroDteStructureMap(
       trendExternal: null,
       swings: [],
       breaks: [],
+      sweeps: [],
       fvgs: [],
       reactionZones: [],
       reversals: [],
@@ -584,6 +651,7 @@ export function buildZeroDteStructureMap(
     trendExternal: external.trend,
     swings: [...internalSwings, ...externalSwings].sort((a, b) => a.time - b.time),
     breaks: [...internal.breaks, ...external.breaks].sort((a, b) => a.breakTime - b.breakTime),
+    sweeps: buildLiquiditySweeps(candles, [...internalSwings, ...externalSwings]),
     fvgs: buildFvgs(candles, settings),
     reactionZones: buildReactionZones(candles, settings),
     reversals: buildThreeBarReversals(candles),

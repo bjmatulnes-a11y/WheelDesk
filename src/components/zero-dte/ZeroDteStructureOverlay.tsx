@@ -9,6 +9,7 @@ import type {
 } from "../../lib/zeroDteStructureMap";
 import { buildStructureAnchorConfluence } from "../../lib/zeroDteStructureMap";
 import type { ZeroDteOverlaySettings } from "./ZeroDteOverlayControls";
+import type { ZeroDteDirectionalSignal } from "../../lib/zeroDteDirectionalSignal";
 
 const COLORS = {
   bull: "#14D990",
@@ -41,6 +42,7 @@ export function ZeroDteStructureOverlay(props: {
   settings: ZeroDteOverlaySettings;
   anchors?: readonly StructureAnchor[];
   confluenceTolerancePoints?: number;
+  decision?: ZeroDteDirectionalSignal | null;
 }) {
   const {
     container,
@@ -50,6 +52,7 @@ export function ZeroDteStructureOverlay(props: {
     settings,
     anchors = [],
     confluenceTolerancePoints = 1.5,
+    decision = null,
   } = props;
 
   useEffect(() => {
@@ -79,6 +82,52 @@ export function ZeroDteStructureOverlay(props: {
       const y = (price: number) => series.priceToCoordinate(price);
       const rightNowX = snapshot.generatedAt ? x(snapshot.generatedAt) : null;
       const rightEdge = inBounds(rightNowX, width) ? Math.max(rightNowX, width - 62) : width - 62;
+
+      if (settings.decisionArrow && decision && decision.action !== "WAIT") {
+        const yy = y(decision.currentPrice);
+        if (inBounds(yy, height)) {
+          const bullish = decision.action === "BUY";
+          const color = bullish ? COLORS.bull : COLORS.bear;
+          const arrow = div({
+            position: "absolute",
+            right: "76px",
+            top: px(Math.max(10, Math.min(height - 54, yy + (bullish ? 12 : -48)))),
+            minWidth: "82px",
+            padding: "5px 8px 6px",
+            borderRadius: "8px",
+            border: `1px solid ${color}`,
+            background: "rgba(2,6,23,.90)",
+            color,
+            fontSize: "15px",
+            fontWeight: "900",
+            letterSpacing: ".02em",
+            lineHeight: "1",
+            textAlign: "center",
+            whiteSpace: "nowrap",
+            boxShadow: `0 0 0 1px rgba(2,6,23,.55), 0 3px 10px rgba(0,0,0,.45)`,
+            zIndex: "20",
+          }, `${bullish ? "↑ BUY" : "↓ SELL"}`);
+          arrow.title = [
+            `WheelDesk ${decision.action} · ${decision.strategy ?? ""} · score ${decision.score}`,
+            ...decision.reasons,
+          ].filter(Boolean).join("\n");
+          root.appendChild(arrow);
+
+          const strategy = div({
+            position: "absolute",
+            right: "76px",
+            top: px(Math.max(29, Math.min(height - 31, yy + (bullish ? 34 : -26)))),
+            minWidth: "82px",
+            color: COLORS.text,
+            fontSize: "8px",
+            fontWeight: "700",
+            textAlign: "center",
+            opacity: ".8",
+            zIndex: "20",
+          }, decision.strategy ?? "");
+          root.appendChild(strategy);
+        }
+      }
 
       const drawBox = (args: {
         startTime: number;
@@ -331,7 +380,7 @@ export function ZeroDteStructureOverlay(props: {
         container.style.position = priorPosition;
       }
     };
-  }, [container, chart, series, snapshot, settings, anchors, confluenceTolerancePoints]);
+  }, [container, chart, series, snapshot, settings, anchors, confluenceTolerancePoints, decision]);
 
   return null;
 }
