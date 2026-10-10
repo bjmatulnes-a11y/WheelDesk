@@ -71,6 +71,15 @@ export type ZeroDteShadowTrade = {
   pathFlowSource: "engine" | "fallback" | null;
   pathTerminalTrough: number | null;
   pathTerminalCrest: number | null;
+  directionalSide?: "BULL" | "BEAR" | "WAIT" | null;
+  directionalScore?: number | null;
+  directionalStructureScore?: number | null;
+  directionalMarketScore?: number | null;
+  directionalAgreesWithTrade?: boolean | null;
+  structureTrendExternal?: "BULL" | "BEAR" | null;
+  lastBreakKind?: "BOS" | "CHOCH" | null;
+  lastBreakAgeBars?: number | null;
+  recentSweep?: "BULL" | "BEAR" | null;
   portfolioDecision: ShadowPortfolioDecision | null;
   portfolioRole: ShadowPortfolioRole | null;
   portfolioConviction: LiveEsConvictionTier | null;

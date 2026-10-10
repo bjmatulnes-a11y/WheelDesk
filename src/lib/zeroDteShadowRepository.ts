@@ -50,6 +50,16 @@ export async function openZeroDteShadowTrade(args: {
   signal: ConfirmedExecutionSignal;
   spxRows: ZeroDteChainRow[];
   opportunity: AdaptivePortfolioOpportunity;
+  directional?: {
+    directionalSide: "BULL" | "BEAR" | "WAIT";
+    directionalScore: number | null;
+    directionalStructureScore: number | null;
+    directionalMarketScore: number | null;
+    structureTrendExternal: "BULL" | "BEAR" | null;
+    lastBreakKind: "BOS" | "CHOCH" | null;
+    lastBreakAgeBars: number | null;
+    recentSweep: "BULL" | "BEAR" | null;
+  } | null;
 }) {
   const signal = args.signal;
   if (
@@ -64,6 +74,14 @@ export async function openZeroDteShadowTrade(args: {
   }
 
   const entryShortLegs = buildShadowShortLegEntries(args.spxRows, signal.legs);
+  const directional = args.directional ?? null;
+  const directionalAgreesWithTrade = directional?.directionalSide === "WAIT" || !directional
+    ? null
+    : signal.strategy === "put-credit-spread"
+      ? directional.directionalSide === "BULL"
+      : signal.strategy === "call-credit-spread"
+        ? directional.directionalSide === "BEAR"
+        : null;
   const json = await call({
     action: "open",
     tradeDate: signal.tradeDate,
@@ -100,6 +118,15 @@ export async function openZeroDteShadowTrade(args: {
     pathFlowSource: signal.pathFlowSource,
     pathTerminalTrough: signal.pathTerminalTrough,
     pathTerminalCrest: signal.pathTerminalCrest,
+    directionalSide: directional?.directionalSide ?? null,
+    directionalScore: directional?.directionalScore ?? null,
+    directionalStructureScore: directional?.directionalStructureScore ?? null,
+    directionalMarketScore: directional?.directionalMarketScore ?? null,
+    directionalAgreesWithTrade,
+    structureTrendExternal: directional?.structureTrendExternal ?? null,
+    lastBreakKind: directional?.lastBreakKind ?? null,
+    lastBreakAgeBars: directional?.lastBreakAgeBars ?? null,
+    recentSweep: directional?.recentSweep ?? null,
     portfolioDecision: args.opportunity.decision,
     portfolioRole: args.opportunity.role,
     portfolioConviction: args.opportunity.conviction,

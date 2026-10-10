@@ -118,7 +118,10 @@ import {
 import { ZeroDteStructureOverlay } from "./zero-dte/ZeroDteStructureOverlay";
 import {
   aggregateStructureCandles,
+  advanceDirectionalLatch,
+  applyDirectionalLatch,
   buildZeroDteDirectionalSignal,
+  emptyDirectionalLatch,
 } from "../lib/zeroDteDirectionalSignal";
 
 type Candle = {
@@ -270,6 +273,18 @@ type LiquidityZoneRect = {
   showLabel: boolean;
 };
 
+type DirectionalDecisionEvent = {
+  time: number;
+  side: "BULL" | "BEAR";
+  score: number;
+  structureScore: number;
+  marketScore: number;
+};
+
+function directionalDecisionStorageKey(tradeDate: string) {
+  return `wheeldesk:zero-dte:directional-decisions:${tradeDate}`;
+}
+
 export default function SpxCommandChart() {
   const chartHostRef = useRef<HTMLDivElement | null>(null);
   const [chartHostElement, setChartHostElement] = useState<HTMLDivElement | null>(null);
@@ -281,6 +296,9 @@ export default function SpxCommandChart() {
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const lineSeriesRef = useRef<Array<ISeriesApi<"Line">>>([]);
   const signalMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const decisionMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const directionalTradeDateRef = useRef<string | null>(null);
+  const directionalLatchRef = useRef(emptyDirectionalLatch());
   const hasInitialFitRef = useRef(false);
   const strategyInitializedForDateRef = useRef<string | null>(null);
   const strategyUserPinnedRef = useRef(false);
@@ -337,6 +355,9 @@ export default function SpxCommandChart() {
   };
   const [signalPaintFilter, setSignalPaintFilter] =
     useState<ExecutionSignalPaintFilter>("all");
+  const [directionalLatch, setDirectionalLatch] = useState(() => emptyDirectionalLatch());
+  const [directionalDecisionEvents, setDirectionalDecisionEvents] =
+    useState<DirectionalDecisionEvent[]>([]);
   const [riskPolicy, setRiskPolicy] = useState<ZeroDteRiskPolicy>(() =>
     loadZeroDteRiskPolicy(),
   );
@@ -1312,12 +1333,14 @@ export default function SpxCommandChart() {
     chartRef.current = chart;
     candleSeriesRef.current = candleSeries;
     signalMarkersRef.current = createSeriesMarkers(candleSeries, []);
+    decisionMarkersRef.current = createSeriesMarkers(candleSeries, []);
 
     return () => {
       chart.remove();
       chartRef.current = null;
       candleSeriesRef.current = null;
       signalMarkersRef.current = null;
+      decisionMarkersRef.current = null;
       lineSeriesRef.current = [];
     };
   }, []);
@@ -2138,7 +2161,7 @@ export default function SpxCommandChart() {
     strikeFlow,
   ]);
 
-  const directionalSignal = useMemo(() =>
+  const rawDirectionalSignal = useMemo(() =>
     buildZeroDteDirectionalSignal({
       candles: decisionStructureCandles,
       structure: decisionStructureSnapshot,
@@ -2163,6 +2186,153 @@ export default function SpxCommandChart() {
     harvest?.mood,
     recommendation,
   ]);
+
+  useEffect(() => {
+    const tradeDate = harvest?.tradeDate ?? null;
+    if (directionalTradeDateRef.current === tradeDate) return;
+
+    directionalTradeDateRef.current = tradeDate;
+    const reset = emptyDirectionalLatch();
+    directionalLatchRef.current = reset;
+    setDirectionalLatch(reset);
+
+    if (!tradeDate || typeof window === "undefined") {
+      setDirectionalDecisionEvents([]);
+      return;
+    }
+
+    try {
+      const raw = window.localStorage.getItem(directionalDecisionStorageKey(tradeDate));
+      if (!raw) {
+        setDirectionalDecisionEvents([]);
+        return;
+      }
+      const parsed = JSON.parse(raw);
+      const events: DirectionalDecisionEvent[] = Array.isArray(parsed)
+        ? parsed.flatMap((item) => {
+            if (
+              !item ||
+              typeof item !== "object" ||
+              (item.side !== "BULL" && item.side !== "BEAR") ||
+              !Number.isFinite(Number(item.time)) ||
+              !Number.isFinite(Number(item.score)) ||
+              !Number.isFinite(Number(item.structureScore)) ||
+              !Number.isFinite(Number(item.marketScore))
+            ) return [];
+            return [{
+              time: Number(item.time),
+              side: item.side as "BULL" | "BEAR",
+              score: Number(item.score),
+              structureScore: Number(item.structureScore),
+              marketScore: Number(item.marketScore),
+            }];
+          })
+        : [];
+      setDirectionalDecisionEvents(events);
+    } catch {
+      setDirectionalDecisionEvents([]);
+    }
+  }, [harvest?.tradeDate]);
+
+  useEffect(() => {
+    const tradeDate = harvest?.tradeDate ?? null;
+    const completedBarTime = decisionStructureCandles.at(-1)?.time ?? null;
+    if (!tradeDate || completedBarTime === null) return;
+    if (directionalTradeDateRef.current !== tradeDate) return;
+
+    const step = advanceDirectionalLatch(
+      directionalLatchRef.current,
+      rawDirectionalSignal,
+      completedBarTime,
+    );
+    if (step.state === directionalLatchRef.current) return;
+
+    directionalLatchRef.current = step.state;
+    setDirectionalLatch(step.state);
+
+    if (!step.entered || typeof window === "undefined") return;
+    const bull = step.entered === "BULL";
+    const event: DirectionalDecisionEvent = {
+      time: completedBarTime,
+      side: step.entered,
+      score: bull ? rawDirectionalSignal.bullishScore : rawDirectionalSignal.bearishScore,
+      structureScore: bull
+        ? rawDirectionalSignal.groups.structureBull
+        : rawDirectionalSignal.groups.structureBear,
+      marketScore: bull
+        ? rawDirectionalSignal.groups.marketBull
+        : rawDirectionalSignal.groups.marketBear,
+    };
+
+    setDirectionalDecisionEvents((current) => {
+      const key = `${event.time}:${event.side}`;
+      const next = [
+        ...current.filter((item) => `${item.time}:${item.side}` !== key),
+        event,
+      ].sort((a, b) => a.time - b.time);
+      try {
+        window.localStorage.setItem(
+          directionalDecisionStorageKey(tradeDate),
+          JSON.stringify(next),
+        );
+      } catch {
+        // Decision history is helpful validation data, but chart trading must
+        // remain functional if browser storage is unavailable.
+      }
+      return next;
+    });
+  }, [decisionStructureCandles, harvest?.tradeDate, rawDirectionalSignal]);
+
+  const directionalSignal = useMemo(
+    () => applyDirectionalLatch(rawDirectionalSignal, directionalLatch),
+    [directionalLatch, rawDirectionalSignal],
+  );
+
+  const clearDirectionalDecisionEvents = useCallback(() => {
+    const tradeDate = harvest?.tradeDate;
+    setDirectionalDecisionEvents([]);
+    if (!tradeDate || typeof window === "undefined") return;
+    try {
+      window.localStorage.removeItem(directionalDecisionStorageKey(tradeDate));
+    } catch {
+      // Non-fatal: clearing the visual history should never interrupt trading.
+    }
+  }, [harvest?.tradeDate]);
+
+  const directionalShadowContext = useMemo(() => {
+    const lastIndex = Math.max(0, decisionStructureCandles.length - 1);
+    const lastBreak = decisionStructureSnapshot.breaks.at(-1) ?? null;
+    const lastSweep = decisionStructureSnapshot.sweeps.at(-1) ?? null;
+    const directionalSide = directionalSignal.action === "BUY"
+      ? "BULL"
+      : directionalSignal.action === "SELL"
+        ? "BEAR"
+        : "WAIT";
+    const scoreBull = directionalSide === "BULL" || (
+      directionalSide === "WAIT" && directionalSignal.bullishScore >= directionalSignal.bearishScore
+    );
+    return {
+      directionalSide,
+      directionalScore: directionalSide === "BULL"
+        ? directionalSignal.bullishScore
+        : directionalSide === "BEAR"
+          ? directionalSignal.bearishScore
+          : Math.max(directionalSignal.bullishScore, directionalSignal.bearishScore),
+      directionalStructureScore: scoreBull
+        ? directionalSignal.groups.structureBull
+        : directionalSignal.groups.structureBear,
+      directionalMarketScore: scoreBull
+        ? directionalSignal.groups.marketBull
+        : directionalSignal.groups.marketBear,
+      structureTrendExternal: decisionStructureSnapshot.trendExternal,
+      lastBreakKind: lastBreak?.kind ?? null,
+      lastBreakAgeBars: lastBreak ? Math.max(0, lastIndex - lastBreak.breakIndex) : null,
+      recentSweep:
+        lastSweep && lastIndex - lastSweep.sweepIndex <= 8
+          ? lastSweep.direction
+          : null,
+    } as const;
+  }, [decisionStructureCandles.length, decisionStructureSnapshot, directionalSignal]);
 
   const signalPaint = useExecutionSignalPaint({
     tradeDate: harvest?.tradeDate,
@@ -2282,7 +2452,12 @@ export default function SpxCommandChart() {
             riskPolicy,
             auction: liveAuctionManagementRef.current,
           });
-          const trade = await openZeroDteShadowTrade({ signal, spxRows, opportunity });
+          const trade = await openZeroDteShadowTrade({
+            signal,
+            spxRows,
+            opportunity,
+            directional: directionalShadowContext,
+          });
           if (trade) {
             workingTrades.push(trade);
             setShadowTrades((current) => {
@@ -2306,7 +2481,14 @@ export default function SpxCommandChart() {
 
       setShadowError(failures.length ? failures.join(" ") : null);
     })();
-  }, [portfolioRead, riskPolicy, shadowTrades, signalPaint.signals, spxRows]);
+  }, [
+    directionalShadowContext,
+    portfolioRead,
+    riskPolicy,
+    shadowTrades,
+    signalPaint.signals,
+    spxRows,
+  ]);
 
   useEffect(() => {
     if (
@@ -2452,6 +2634,21 @@ export default function SpxCommandChart() {
       })),
     );
   }, [frequency, visibleExecutionSignals]);
+
+  useEffect(() => {
+    const markerApi = decisionMarkersRef.current;
+    if (!markerApi) return;
+
+    markerApi.setMarkers(
+      directionalDecisionEvents.map((event) => ({
+        time: alignToDisplayCandle(event.time, frequency) as UTCTimestamp,
+        position: event.side === "BULL" ? "belowBar" : "aboveBar",
+        color: event.side === "BULL" ? "#14D990" : "#F24968",
+        shape: "circle" as const,
+        text: `${event.side} ${Math.round(event.score)}`,
+      })),
+    );
+  }, [directionalDecisionEvents, frequency]);
 
   useEffect(() => {
     if (
@@ -2745,7 +2942,10 @@ export default function SpxCommandChart() {
         </div>
         <button
           type="button"
-          onClick={signalPaint.clearToday}
+          onClick={() => {
+            signalPaint.clearToday();
+            clearDirectionalDecisionEvents();
+          }}
           style={styles.signalClearButton}
         >
           Clear Today

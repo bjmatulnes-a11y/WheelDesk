@@ -111,6 +111,30 @@ async function openShadow(body: any, userId: string) {
         : null,
     path_terminal_trough: numeric(body.pathTerminalTrough),
     path_terminal_crest: numeric(body.pathTerminalCrest),
+    directional_side:
+      body.directionalSide === "BULL" || body.directionalSide === "BEAR" || body.directionalSide === "WAIT"
+        ? body.directionalSide
+        : null,
+    directional_score: numeric(body.directionalScore),
+    directional_structure_score: numeric(body.directionalStructureScore),
+    directional_market_score: numeric(body.directionalMarketScore),
+    directional_agrees_with_trade:
+      typeof body.directionalAgreesWithTrade === "boolean"
+        ? body.directionalAgreesWithTrade
+        : null,
+    structure_trend_external:
+      body.structureTrendExternal === "BULL" || body.structureTrendExternal === "BEAR"
+        ? body.structureTrendExternal
+        : null,
+    last_break_kind:
+      body.lastBreakKind === "BOS" || body.lastBreakKind === "CHOCH"
+        ? body.lastBreakKind
+        : null,
+    last_break_age_bars: numeric(body.lastBreakAgeBars),
+    recent_sweep:
+      body.recentSweep === "BULL" || body.recentSweep === "BEAR"
+        ? body.recentSweep
+        : null,
     portfolio_decision: portfolioDecision,
     portfolio_role: normalizePortfolioRole(body.portfolioRole),
     portfolio_conviction: normalizeConviction(body.portfolioConviction),
@@ -530,6 +554,30 @@ function mapShadowTrade(row: any) {
         : null,
     pathTerminalTrough: numeric(row.path_terminal_trough),
     pathTerminalCrest: numeric(row.path_terminal_crest),
+    directionalSide:
+      row.directional_side === "BULL" || row.directional_side === "BEAR" || row.directional_side === "WAIT"
+        ? row.directional_side
+        : null,
+    directionalScore: numeric(row.directional_score),
+    directionalStructureScore: numeric(row.directional_structure_score),
+    directionalMarketScore: numeric(row.directional_market_score),
+    directionalAgreesWithTrade:
+      typeof row.directional_agrees_with_trade === "boolean"
+        ? row.directional_agrees_with_trade
+        : null,
+    structureTrendExternal:
+      row.structure_trend_external === "BULL" || row.structure_trend_external === "BEAR"
+        ? row.structure_trend_external
+        : null,
+    lastBreakKind:
+      row.last_break_kind === "BOS" || row.last_break_kind === "CHOCH"
+        ? row.last_break_kind
+        : null,
+    lastBreakAgeBars: numeric(row.last_break_age_bars),
+    recentSweep:
+      row.recent_sweep === "BULL" || row.recent_sweep === "BEAR"
+        ? row.recent_sweep
+        : null,
     portfolioDecision: normalizePortfolioDecision(row.portfolio_decision),
     portfolioRole: normalizePortfolioRole(row.portfolio_role),
     portfolioConviction: normalizeConviction(row.portfolio_conviction),

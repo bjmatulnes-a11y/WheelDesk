@@ -309,7 +309,7 @@ function buildBreaks(
 }
 
 
-function buildLiquiditySweeps(
+export function buildLiquiditySweeps(
   candles: readonly StructureCandle[],
   swings: readonly StructureSwing[],
 ): LiquiditySweep[] {
@@ -323,43 +323,54 @@ function buildLiquiditySweeps(
       const candle = candles[index];
       if (!candle) continue;
 
-      if (
-        swing.kind === "HIGH" &&
-        candle.high > swing.price &&
-        candle.close < swing.price
-      ) {
-        out.push({
-          id: `SWEEP:BEAR:${swing.scale}:${swing.time}:${candle.time}`,
-          direction: "BEAR",
-          scale: swing.scale,
-          level: swing.price,
-          swingTime: swing.time,
-          sweepTime: candle.time,
-          sweepIndex: index,
-        });
-        break;
-      }
-
-      if (
-        swing.kind === "LOW" &&
-        candle.low < swing.price &&
-        candle.close > swing.price
-      ) {
-        out.push({
-          id: `SWEEP:BULL:${swing.scale}:${swing.time}:${candle.time}`,
-          direction: "BULL",
-          scale: swing.scale,
-          level: swing.price,
-          swingTime: swing.time,
-          sweepTime: candle.time,
-          sweepIndex: index,
-        });
-        break;
+      if (swing.kind === "HIGH") {
+        // A candle close through the swing consumes/breaks the level. Once that
+        // happens, a later failed retest is not a sweep of the original swing.
+        if (candle.close > swing.price) break;
+        if (candle.high > swing.price && candle.close < swing.price) {
+          out.push({
+            id: `SWEEP:BEAR:${swing.scale}:${swing.time}:${candle.time}`,
+            direction: "BEAR",
+            scale: swing.scale,
+            level: swing.price,
+            swingTime: swing.time,
+            sweepTime: candle.time,
+            sweepIndex: index,
+          });
+          break;
+        }
+      } else {
+        // Same rule on the downside: a close below is a structure break, not
+        // a liquidity sweep that can be rediscovered on a later retest.
+        if (candle.close < swing.price) break;
+        if (candle.low < swing.price && candle.close > swing.price) {
+          out.push({
+            id: `SWEEP:BULL:${swing.scale}:${swing.time}:${candle.time}`,
+            direction: "BULL",
+            scale: swing.scale,
+            level: swing.price,
+            swingTime: swing.time,
+            sweepTime: candle.time,
+            sweepIndex: index,
+          });
+          break;
+        }
       }
     }
   }
 
-  return out.sort((a, b) => a.sweepIndex - b.sweepIndex);
+  // Internal and external pivots can resolve to the same exact level. When the
+  // same candle sweeps both, count the event once and retain the external swing.
+  const deduped = new Map<string, LiquiditySweep>();
+  for (const sweep of out) {
+    const key = `${sweep.direction}:${sweep.sweepIndex}:${sweep.level.toFixed(6)}`;
+    const prior = deduped.get(key);
+    if (!prior || (prior.scale === "INTERNAL" && sweep.scale === "EXTERNAL")) {
+      deduped.set(key, sweep);
+    }
+  }
+
+  return [...deduped.values()].sort((a, b) => a.sweepIndex - b.sweepIndex);
 }
 
 function fvgMitigated(

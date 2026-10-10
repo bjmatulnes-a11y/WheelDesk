@@ -20,12 +20,24 @@ export type ZeroDteDirectionalSignal = {
   bullishScore: number;
   bearishScore: number;
   margin: number;
+  threshold: number;
+  requiredMargin: number;
   generatedAt: number | null;
   currentPrice: number;
   state: ZeroDteDirectionalState;
   structureConfirmed: boolean;
   reasons: string[];
   blockers: string[];
+  gates: {
+    bullConfirmed: boolean;
+    bearConfirmed: boolean;
+    bullVeto: boolean;
+    bearVeto: boolean;
+    bullExternalBosVeto: boolean;
+    bearExternalBosVeto: boolean;
+    transition: boolean;
+    higherExternalTrend: StructureDirection | null;
+  };
   groups: {
     structureBull: number;
     structureBear: number;
@@ -45,6 +57,8 @@ type StructureScore = {
   bearConfirmed: boolean;
   bullVeto: boolean;
   bearVeto: boolean;
+  bullExternalBosVeto: boolean;
+  bearExternalBosVeto: boolean;
   transition: boolean;
   reasonsBull: string[];
   reasonsBear: string[];
@@ -95,8 +109,8 @@ export function buildZeroDteDirectionalSignal(args: {
 
   const putRead = findEntryRead(args.executionReads ?? [], "put-credit-spread");
   const callRead = findEntryRead(args.executionReads ?? [], "call-credit-spread");
-  const executionBull = scoreExecution(putRead);
-  const executionBear = scoreExecution(callRead);
+  const executionBull = scoreExecutionAdjustment(putRead);
+  const executionBear = scoreExecutionAdjustment(callRead);
 
   const bull = combineScores(structure.bull, market.bull, executionBull);
   const bear = combineScores(structure.bear, market.bear, executionBear);
@@ -110,10 +124,15 @@ export function buildZeroDteDirectionalSignal(args: {
   const requiredMargin = transition ? 20 : 14;
   const winnerConfirmed = winner === "BULL" ? structure.bullConfirmed : structure.bearConfirmed;
   const winnerVeto = winner === "BULL" ? structure.bullVeto : structure.bearVeto;
+  const winnerStructureScore = winner === "BULL" ? structure.bull : structure.bear;
+  const chopGuardRequired = transition || !args.higherTimeframeStructure?.trendExternal;
   const blockers: string[] = [];
 
   if (!winnerConfirmed) blockers.push("Structure has not confirmed the winning side.");
   if (winnerVeto) blockers.push("Fresh opposite continuation structure vetoes the signal.");
+  if (chopGuardRequired && winnerStructureScore < 45) {
+    blockers.push(`Structure score ${winnerStructureScore} is below 45 for transition / unconfirmed 5m structure.`);
+  }
   if (winnerScore < threshold) blockers.push(`Score ${winnerScore} is below ${threshold}.`);
   if (margin < requiredMargin) blockers.push(`Directional margin ${margin} is below ${requiredMargin}.`);
   if (!Number.isFinite(currentPrice) || currentPrice <= 0) blockers.push("Current SPX price is unavailable.");
@@ -138,12 +157,24 @@ export function buildZeroDteDirectionalSignal(args: {
     bullishScore: bull,
     bearishScore: bear,
     margin,
+    threshold,
+    requiredMargin,
     generatedAt: args.structure.generatedAt,
     currentPrice,
     state: transition ? "TRANSITION" : winnerScore >= 60 ? "TREND" : "NEUTRAL",
     structureConfirmed: winnerConfirmed,
     reasons: dedupe(reasons).slice(0, 8),
     blockers: dedupe(blockers),
+    gates: {
+      bullConfirmed: structure.bullConfirmed,
+      bearConfirmed: structure.bearConfirmed,
+      bullVeto: structure.bullVeto,
+      bearVeto: structure.bearVeto,
+      bullExternalBosVeto: structure.bullExternalBosVeto,
+      bearExternalBosVeto: structure.bearExternalBosVeto,
+      transition,
+      higherExternalTrend: args.higherTimeframeStructure?.trendExternal ?? null,
+    },
     groups: {
       structureBull: structure.bull,
       structureBear: structure.bear,
@@ -285,6 +316,8 @@ function scoreStructure(args: {
 
   const bullVeto = freshOppositeContinuation(latestExternal, latestInternal, lastIndex, "BULL");
   const bearVeto = freshOppositeContinuation(latestExternal, latestInternal, lastIndex, "BEAR");
+  const bullExternalBosVeto = freshOppositeExternalContinuation(latestExternal, lastIndex, "BULL");
+  const bearExternalBosVeto = freshOppositeExternalContinuation(latestExternal, lastIndex, "BEAR");
 
   return {
     bull: clamp(Math.round(bull), 0, 100),
@@ -293,6 +326,8 @@ function scoreStructure(args: {
     bearConfirmed,
     bullVeto,
     bearVeto,
+    bullExternalBosVeto,
+    bearExternalBosVeto,
     transition,
     reasonsBull,
     reasonsBear,
@@ -392,27 +427,19 @@ function scoreMarket(args: {
   };
 }
 
-function scoreExecution(read: ZeroDteExecutionRead | null): number | null {
+export function scoreExecutionAdjustment(read: ZeroDteExecutionRead | null): number | null {
   if (!read?.candidate) return null;
-  let score = clamp(read.entryScore, 0, 100) * 0.55;
-  if (read.signalGrade === "A+") score += 10;
-  else if (read.signalGrade === "A") score += 7;
-  else if (read.signalGrade === "B") score += 4;
-
-  if (read.lifecycle === "SELL_READY") score += 22;
-  else if (read.lifecycle === "ARMED") score += 13;
-
-  if (read.priceRejectionReady) score += 8;
-  if (read.regimeTriggerReady) score += 8;
-  if (read.entryHardBlocked) score *= 0.35;
-  return clamp(Math.round(score), 0, 100);
+  let adjustment = 0;
+  if (read.entryHardBlocked) adjustment -= 10;
+  else if (read.lifecycle === "SELL_READY") adjustment += 8;
+  else if (read.lifecycle === "ARMED") adjustment += 4;
+  if (read.priceRejectionReady) adjustment += 3;
+  return adjustment;
 }
 
-function combineScores(structure: number, market: number, execution: number | null): number {
-  if (execution === null) {
-    return clamp(Math.round(structure * 0.62 + market * 0.38), 0, 100);
-  }
-  return clamp(Math.round(structure * 0.5 + market * 0.3 + execution * 0.2), 0, 100);
+export function combineScores(structure: number, market: number, execution: number | null): number {
+  const base = structure * 0.62 + market * 0.38;
+  return clamp(Math.round(base + (execution ?? 0)), 0, 100);
 }
 
 function findEntryRead(
@@ -425,7 +452,8 @@ function findEntryRead(
 function executionReasons(read: ZeroDteExecutionRead | null, label: "PCS" | "CCS"): string[] {
   if (!read?.candidate) return [];
   const reasons: string[] = [`${label} entry score ${Math.round(read.entryScore)}`];
-  if (read.lifecycle === "SELL_READY" || read.lifecycle === "ARMED") reasons.push(`${label} ${read.lifecycle.replaceAll("_", " ")}`);
+  if (read.lifecycle === "SELL_READY") reasons.push(`${label} execution ready`);
+  else if (read.lifecycle === "ARMED") reasons.push(`${label} armed`);
   if (read.priceRejectionReady) reasons.push(`${label} rejection confirmed`);
   if (read.entryHardBlocked) reasons.push(`${label} execution gate blocked`);
   return reasons;
@@ -441,8 +469,8 @@ function waitReasons(args: {
 }): string[] {
   const reasons: string[] = [`Bull ${args.bull} vs Bear ${args.bear}`];
   if (args.structure.transition) reasons.push("Alternating structure: transition / whipsaw");
-  if (args.structure.bullVeto) reasons.push("Fresh bearish continuation blocks BUY");
-  if (args.structure.bearVeto) reasons.push("Fresh bullish continuation blocks SELL");
+  if (args.structure.bullVeto) reasons.push("Fresh bearish continuation blocks bullish bias");
+  if (args.structure.bearVeto) reasons.push("Fresh bullish continuation blocks bearish bias");
   if (args.putRead?.entryHardBlocked && args.callRead?.entryHardBlocked) reasons.push("Both spread sides are execution-blocked");
   return reasons;
 }
@@ -465,6 +493,19 @@ function freshOppositeContinuation(
     lastIndex - latestInternal.breakIndex <= 3
   ) return true;
   return false;
+}
+
+function freshOppositeExternalContinuation(
+  latestExternal: StructureBreak | null,
+  lastIndex: number,
+  desired: Side,
+): boolean {
+  const opposite: Side = desired === "BULL" ? "BEAR" : "BULL";
+  return Boolean(
+    latestExternal?.direction === opposite &&
+    latestExternal.kind === "BOS" &&
+    lastIndex - latestExternal.breakIndex <= 7,
+  );
 }
 
 function addTrend(
@@ -507,19 +548,168 @@ export function aggregateStructureCandles(
 ): StructureCandle[] {
   const seconds = Math.max(1, Math.round(minutes)) * 60;
   const buckets = new Map<number, StructureCandle>();
+  const counts = new Map<number, number>();
   for (const candle of candles) {
     const time = Math.floor(candle.time / seconds) * seconds;
     const current = buckets.get(time);
     if (!current) {
       buckets.set(time, { ...candle, time });
+      counts.set(time, 1);
       continue;
     }
+    counts.set(time, (counts.get(time) ?? 0) + 1);
     current.high = Math.max(current.high, candle.high);
     current.low = Math.min(current.low, candle.low);
     current.close = candle.close;
     if (finite(candle.volume)) current.volume = (finite(current.volume) ? current.volume! : 0) + candle.volume!;
   }
-  return [...buckets.values()].sort((a, b) => a.time - b.time);
+  const result = [...buckets.values()].sort((a, b) => a.time - b.time);
+  const lastOneMinuteTime = candles.at(-1)?.time ?? null;
+  const lastBucket = result.at(-1) ?? null;
+  if (lastBucket && lastOneMinuteTime !== null) {
+    const completeByTime = lastBucket.time + seconds <= lastOneMinuteTime + 60;
+    const completeByCount = (counts.get(lastBucket.time) ?? 0) >= Math.max(1, Math.round(minutes));
+    if (!completeByTime || !completeByCount) result.pop();
+  }
+  return result;
+}
+
+export type ZeroDteDirectionalLatchSide = "BULL" | "BEAR" | "WAIT";
+
+export type ZeroDteDirectionalLatchState = {
+  side: ZeroDteDirectionalLatchSide;
+  enteredBarTime: number | null;
+  lastBarTime: number | null;
+  barsHeld: number;
+};
+
+export type ZeroDteDirectionalLatchStep = {
+  state: ZeroDteDirectionalLatchState;
+  entered: "BULL" | "BEAR" | null;
+  exited: "BULL" | "BEAR" | null;
+};
+
+export function emptyDirectionalLatch(): ZeroDteDirectionalLatchState {
+  return {
+    side: "WAIT",
+    enteredBarTime: null,
+    lastBarTime: null,
+    barsHeld: 0,
+  };
+}
+
+/**
+ * Advance the visible directional decision exactly once per completed 1m bar.
+ * The raw signal may update every harvest tick, but the latch intentionally
+ * prevents those intrabar updates from blinking the chart decision on/off.
+ */
+export function advanceDirectionalLatch(
+  previous: ZeroDteDirectionalLatchState,
+  raw: ZeroDteDirectionalSignal,
+  completedBarTime: number,
+): ZeroDteDirectionalLatchStep {
+  if (previous.lastBarTime === completedBarTime) {
+    return { state: previous, entered: null, exited: null };
+  }
+
+  if (previous.side === "WAIT") {
+    const entered = raw.action === "BUY" ? "BULL" : raw.action === "SELL" ? "BEAR" : null;
+    if (!entered) {
+      return {
+        state: { ...previous, lastBarTime: completedBarTime },
+        entered: null,
+        exited: null,
+      };
+    }
+    return {
+      state: {
+        side: entered,
+        enteredBarTime: completedBarTime,
+        lastBarTime: completedBarTime,
+        barsHeld: 1,
+      },
+      entered,
+      exited: null,
+    };
+  }
+
+  const held = previous.side;
+  const heldScore = held === "BULL" ? raw.bullishScore : raw.bearishScore;
+  const heldVeto = held === "BULL" ? raw.gates.bullVeto : raw.gates.bearVeto;
+  const heldExternalBosVeto = held === "BULL"
+    ? raw.gates.bullExternalBosVeto
+    : raw.gates.bearExternalBosVeto;
+  const oppositeConfirmed = held === "BULL" ? raw.gates.bearConfirmed : raw.gates.bullConfirmed;
+  const nextBarsHeld = previous.barsHeld + 1;
+
+  // A genuine continuation veto exits immediately; this is the one exception
+  // to the three-bar minimum hold because the directional thesis is invalid.
+  if (heldVeto || heldExternalBosVeto) {
+    return {
+      state: {
+        side: "WAIT",
+        enteredBarTime: null,
+        lastBarTime: completedBarTime,
+        barsHeld: 0,
+      },
+      entered: null,
+      exited: held,
+    };
+  }
+
+  const minimumHoldSatisfied = previous.barsHeld >= 3;
+  const holdFloor = Math.max(0, raw.threshold - 10);
+  const shouldExit = minimumHoldSatisfied && (heldScore < holdFloor || oppositeConfirmed);
+  if (shouldExit) {
+    return {
+      state: {
+        side: "WAIT",
+        enteredBarTime: null,
+        lastBarTime: completedBarTime,
+        barsHeld: 0,
+      },
+      entered: null,
+      exited: held,
+    };
+  }
+
+  return {
+    state: {
+      ...previous,
+      lastBarTime: completedBarTime,
+      barsHeld: nextBarsHeld,
+    },
+    entered: null,
+    exited: null,
+  };
+}
+
+export function applyDirectionalLatch(
+  raw: ZeroDteDirectionalSignal,
+  latch: ZeroDteDirectionalLatchState,
+): ZeroDteDirectionalSignal {
+  if (latch.side === "WAIT") {
+    return {
+      ...raw,
+      action: "WAIT",
+      strategy: null,
+      structureConfirmed: false,
+    };
+  }
+
+  const bull = latch.side === "BULL";
+  return {
+    ...raw,
+    action: bull ? "BUY" : "SELL",
+    strategy: bull ? "PCS" : "CCS",
+    score: bull ? raw.bullishScore : raw.bearishScore,
+    structureConfirmed: bull ? raw.gates.bullConfirmed : raw.gates.bearConfirmed,
+    blockers: [],
+    reasons: dedupe([
+      `Latched ${latch.side} decision · held ${latch.barsHeld} completed bar${latch.barsHeld === 1 ? "" : "s"}`,
+      ...raw.reasons,
+    ]).slice(0, 8),
+  };
 }
 
 function dedupe(values: string[]): string[] {

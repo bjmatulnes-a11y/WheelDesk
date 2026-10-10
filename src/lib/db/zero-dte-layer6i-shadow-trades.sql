@@ -42,6 +42,16 @@ CREATE TABLE IF NOT EXISTS zero_dte_shadow_trades (
   path_terminal_trough numeric,
   path_terminal_crest numeric,
 
+  directional_side text,
+  directional_score numeric,
+  directional_structure_score numeric,
+  directional_market_score numeric,
+  directional_agrees_with_trade boolean,
+  structure_trend_external text,
+  last_break_kind text,
+  last_break_age_bars numeric,
+  recent_sweep text,
+
   last_sample_at timestamptz,
   current_mark_credit numeric,
   current_buyback_debit numeric,
@@ -175,7 +185,16 @@ SELECT
     ELSE NULL
   END AS peak_capture_efficiency_pct,
   t.exit_reason,
-  t.exit_time
+  t.exit_time,
+  t.directional_side,
+  t.directional_score,
+  t.directional_structure_score,
+  t.directional_market_score,
+  t.directional_agrees_with_trade,
+  t.structure_trend_external,
+  t.last_break_kind,
+  t.last_break_age_bars,
+  t.recent_sweep
 FROM zero_dte_shadow_trades t
 LEFT JOIN LATERAL (
   SELECT s.pnl_conservative_dollars

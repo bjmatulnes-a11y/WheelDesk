@@ -76,7 +76,7 @@ export function ZeroDteOverlayControls(props: {
   };
 
   const items: Array<[keyof ZeroDteOverlaySettings, string]> = [
-    ["decisionArrow", "Arrow"],
+    ["decisionArrow", "Bias"],
     ["externalStructure", "Structure"],
     ["internalStructure", "Internal"],
     ["swingLabels", "Swings"],
@@ -124,7 +124,7 @@ export function ZeroDteOverlayControls(props: {
             key === "reactionZones"
               ? "Reaction Zones require aligned ES/SPY proxy volume. SPX volume is intentionally ignored."
               : key === "decisionArrow"
-                ? "Show only confirmed WheelDesk BUY/SELL directional decisions; WAIT intentionally draws no arrow."
+                ? "Show the WheelDesk directional bias: BULL · PCS, BEAR · CCS, or a muted WAIT state."
                 : undefined
           }
           onClick={() => toggle(key)}

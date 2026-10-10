@@ -83,22 +83,76 @@ export function ZeroDteStructureOverlay(props: {
       const rightNowX = snapshot.generatedAt ? x(snapshot.generatedAt) : null;
       const rightEdge = inBounds(rightNowX, width) ? Math.max(rightNowX, width - 62) : width - 62;
 
-      if (settings.decisionArrow && decision && decision.action !== "WAIT") {
+      if (settings.decisionArrow && decision) {
         const yy = y(decision.currentPrice);
-        if (inBounds(yy, height)) {
+        const anchorY = inBounds(yy, height) ? yy : 24;
+        const winnerBull = decision.bullishScore >= decision.bearishScore;
+        const structureScore = winnerBull
+          ? decision.groups.structureBull
+          : decision.groups.structureBear;
+        const marketScore = winnerBull
+          ? decision.groups.marketBull
+          : decision.groups.marketBear;
+        const executionScore = winnerBull
+          ? decision.groups.executionBull
+          : decision.groups.executionBear;
+        const execText = executionScore == null
+          ? "exec 0"
+          : `exec ${executionScore >= 0 ? "+" : ""}${executionScore}`;
+
+        if (decision.action === "WAIT") {
+          const firstBlocker = decision.blockers[0] ?? "Waiting for completed structure confirmation.";
+          const wait = div({
+            position: "absolute",
+            right: "76px",
+            top: px(Math.max(10, Math.min(height - 54, anchorY - 20))),
+            maxWidth: "285px",
+            padding: "5px 8px 6px",
+            borderRadius: "7px",
+            border: "1px solid rgba(148,163,184,.42)",
+            background: "rgba(15,23,42,.88)",
+            color: COLORS.neutral,
+            fontSize: "10px",
+            fontWeight: "700",
+            lineHeight: "1.25",
+            textAlign: "left",
+            whiteSpace: "normal",
+            boxShadow: "0 3px 10px rgba(0,0,0,.35)",
+            zIndex: "20",
+          });
+          wait.appendChild(div({
+            fontSize: "10px",
+            fontWeight: "800",
+            whiteSpace: "nowrap",
+          }, `WAIT · Bull ${decision.bullishScore} / Bear ${decision.bearishScore} · need ${decision.threshold} · margin ${decision.margin}/${decision.requiredMargin}`));
+          wait.appendChild(div({
+            marginTop: "3px",
+            fontSize: "9px",
+            fontWeight: "600",
+            opacity: ".9",
+          }, `⛔ ${firstBlocker}`));
+          wait.title = [
+            "WheelDesk directional bias · WAIT",
+            `structure ${structureScore} · market ${marketScore} · ${execText}`,
+            ...decision.blockers,
+            ...decision.reasons,
+          ].filter(Boolean).join("\n");
+          root.appendChild(wait);
+        } else {
           const bullish = decision.action === "BUY";
           const color = bullish ? COLORS.bull : COLORS.bear;
+          const label = bullish ? "▲ BULL · PCS" : "▼ BEAR · CCS";
           const arrow = div({
             position: "absolute",
             right: "76px",
-            top: px(Math.max(10, Math.min(height - 54, yy + (bullish ? 12 : -48)))),
-            minWidth: "82px",
+            top: px(Math.max(10, Math.min(height - 54, anchorY + (bullish ? 12 : -48)))),
+            minWidth: "104px",
             padding: "5px 8px 6px",
             borderRadius: "8px",
             border: `1px solid ${color}`,
             background: "rgba(2,6,23,.90)",
             color,
-            fontSize: "15px",
+            fontSize: "13px",
             fontWeight: "900",
             letterSpacing: ".02em",
             lineHeight: "1",
@@ -106,26 +160,27 @@ export function ZeroDteStructureOverlay(props: {
             whiteSpace: "nowrap",
             boxShadow: `0 0 0 1px rgba(2,6,23,.55), 0 3px 10px rgba(0,0,0,.45)`,
             zIndex: "20",
-          }, `${bullish ? "↑ BUY" : "↓ SELL"}`);
+          }, label);
           arrow.title = [
-            `WheelDesk ${decision.action} · ${decision.strategy ?? ""} · score ${decision.score}`,
+            `WheelDesk directional bias · ${bullish ? "BULL · PCS" : "BEAR · CCS"} · score ${decision.score}`,
+            `structure ${bullish ? decision.groups.structureBull : decision.groups.structureBear} · market ${bullish ? decision.groups.marketBull : decision.groups.marketBear} · ${bullish ? (decision.groups.executionBull == null ? "exec 0" : `exec ${decision.groups.executionBull >= 0 ? "+" : ""}${decision.groups.executionBull}`) : (decision.groups.executionBear == null ? "exec 0" : `exec ${decision.groups.executionBear >= 0 ? "+" : ""}${decision.groups.executionBear}`)}`,
             ...decision.reasons,
           ].filter(Boolean).join("\n");
           root.appendChild(arrow);
 
-          const strategy = div({
+          const score = div({
             position: "absolute",
             right: "76px",
-            top: px(Math.max(29, Math.min(height - 31, yy + (bullish ? 34 : -26)))),
-            minWidth: "82px",
+            top: px(Math.max(29, Math.min(height - 31, anchorY + (bullish ? 34 : -26)))),
+            minWidth: "104px",
             color: COLORS.text,
             fontSize: "8px",
             fontWeight: "700",
             textAlign: "center",
             opacity: ".8",
             zIndex: "20",
-          }, decision.strategy ?? "");
-          root.appendChild(strategy);
+          }, `score ${decision.score}`);
+          root.appendChild(score);
         }
       }
 
