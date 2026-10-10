@@ -10,6 +10,7 @@ import type {
 import { buildStructureAnchorConfluence } from "../../lib/zeroDteStructureMap";
 import type { ZeroDteOverlaySettings } from "./ZeroDteOverlayControls";
 import type { ZeroDteDirectionalSignal } from "../../lib/zeroDteDirectionalSignal";
+import type { PriorStructureLevel } from "../../lib/zeroDtePriorStructure";
 
 const COLORS = {
   bull: "#14D990",
@@ -43,6 +44,14 @@ export function ZeroDteStructureOverlay(props: {
   anchors?: readonly StructureAnchor[];
   confluenceTolerancePoints?: number;
   decision?: ZeroDteDirectionalSignal | null;
+  priorLevels?: readonly PriorStructureLevel[];
+  expectedMove?: number | null;
+  spot?: number | null;
+  priorContext?: {
+    openingText: string;
+    dailyText: string;
+    dailyFlipInPlay: boolean;
+  } | null;
 }) {
   const {
     container,
@@ -53,6 +62,10 @@ export function ZeroDteStructureOverlay(props: {
     anchors = [],
     confluenceTolerancePoints = 1.5,
     decision = null,
+    priorLevels = [],
+    expectedMove = null,
+    spot = null,
+    priorContext = null,
   } = props;
 
   useEffect(() => {
@@ -82,6 +95,137 @@ export function ZeroDteStructureOverlay(props: {
       const y = (price: number) => series.priceToCoordinate(price);
       const rightNowX = snapshot.generatedAt ? x(snapshot.generatedAt) : null;
       const rightEdge = inBounds(rightNowX, width) ? Math.max(rightNowX, width - 62) : width - 62;
+
+      if (settings.priorLevels && priorContext) {
+        const chip = div({
+          position: "absolute",
+          left: "9px",
+          top: "8px",
+          maxWidth: "calc(100% - 210px)",
+          padding: "4px 7px",
+          borderRadius: "6px",
+          border: "1px solid rgba(100,116,139,.28)",
+          background: "rgba(2,6,23,.70)",
+          color: "#a9bad0",
+          fontSize: "9px",
+          fontWeight: "650",
+          lineHeight: "1.25",
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          boxShadow: "0 2px 8px rgba(0,0,0,.24)",
+          zIndex: "18",
+        });
+        chip.appendChild(div({ display: "inline" }, priorContext.openingText));
+        const separator = document.createTextNode("  |  ");
+        chip.appendChild(separator);
+        chip.appendChild(div({
+          display: "inline",
+          color: priorContext.dailyFlipInPlay ? "#fbbf24" : "#a9bad0",
+        }, priorContext.dailyText));
+        chip.title = `${priorContext.openingText} | ${priorContext.dailyText}`;
+        root.appendChild(chip);
+      }
+
+      if (settings.priorLevels && priorLevels.length && Number.isFinite(spot) && Number.isFinite(expectedMove) && (expectedMove ?? 0) > 0) {
+        const maxDistance = (expectedMove as number) * 1.5;
+        const referenceColor = "rgba(129,153,181,.72)";
+        const priorAnchorKinds = new Set(["PRIOR_DAY", "OVERNIGHT", "WEEKLY", "DAILY", "CARRIED_SWING", "CARRIED_FVG"]);
+        const coincidesWithNonPriorAnchor = (level: PriorStructureLevel) =>
+          settings.confluenceBadges && anchors.some((anchor) =>
+            !priorAnchorKinds.has(anchor.sourceKind ?? "OTHER") &&
+            Math.abs(anchor.price - level.price) <= confluenceTolerancePoints,
+          );
+
+        const linePattern = (kind: PriorStructureLevel["kind"]) => {
+          if (kind === "PRIOR_DAY") return { borderTop: `1px solid ${referenceColor}` };
+          if (kind === "OVERNIGHT") return {
+            height: "1px",
+            backgroundImage: `repeating-linear-gradient(to right, ${referenceColor} 0 6px, transparent 6px 10px)`,
+          };
+          if (kind === "WEEKLY") return {
+            height: "1px",
+            backgroundImage: `repeating-linear-gradient(to right, ${referenceColor} 0 2px, transparent 2px 6px)`,
+          };
+          if (kind === "DAILY") return {
+            height: "1px",
+            backgroundImage: `repeating-linear-gradient(to right, ${referenceColor} 0 8px, transparent 8px 12px, ${referenceColor} 12px 14px, transparent 14px 20px)`,
+          };
+          return {
+            height: "1px",
+            backgroundImage: `repeating-linear-gradient(to right, ${referenceColor} 0 5px, transparent 5px 9px)`,
+          };
+        };
+
+        for (const level of priorLevels) {
+          const low = Number.isFinite(level.low) ? Number(level.low) : level.price;
+          const high = Number.isFinite(level.high) ? Number(level.high) : level.price;
+          const nearestDistance = Math.min(Math.abs(low - (spot as number)), Math.abs(high - (spot as number)));
+          if (nearestDistance > maxDistance) continue;
+
+          if (level.kind === "CARRIED_FVG" && Number.isFinite(level.low) && Number.isFinite(level.high)) {
+            const yTop = y(Number(level.high));
+            const yBottom = y(Number(level.low));
+            if (!inBounds(yTop, height) || !inBounds(yBottom, height)) continue;
+            const top = Math.min(yTop, yBottom);
+            const boxHeight = Math.max(2, Math.abs(yBottom - yTop));
+            const bearish = level.id.includes("_BEAR_");
+            const zoneColor = bearish ? "rgba(242,73,104,.42)" : "rgba(20,217,144,.42)";
+            root.appendChild(div({
+              position: "absolute",
+              left: "0px",
+              top: px(top),
+              width: px(Math.max(1, width - 60)),
+              height: px(boxHeight),
+              background: bearish ? "rgba(242,73,104,.045)" : "rgba(20,217,144,.045)",
+              borderTop: `1px dashed ${zoneColor}`,
+              borderBottom: `1px dashed ${zoneColor}`,
+              opacity: ".58",
+              zIndex: "1",
+            }));
+            if (!coincidesWithNonPriorAnchor(level)) {
+              root.appendChild(div({
+                position: "absolute",
+                right: "64px",
+                top: px(top + 2),
+                color: "#8ea3bc",
+                fontSize: "8px",
+                opacity: ".72",
+                whiteSpace: "nowrap",
+                zIndex: "2",
+              }, `${level.label} ${low.toFixed(1)}–${high.toFixed(1)}`));
+            }
+            continue;
+          }
+
+          const yy = y(level.price);
+          if (!inBounds(yy, height)) continue;
+          const line = div({
+            position: "absolute",
+            left: "0px",
+            top: px(yy),
+            width: px(Math.max(1, width - 60)),
+            opacity: level.approximate ? ".34" : level.kind === "CARRIED_SWING" ? ".46" : ".62",
+            zIndex: "1",
+            ...linePattern(level.kind),
+          });
+          root.appendChild(line);
+          if (!coincidesWithNonPriorAnchor(level)) {
+            root.appendChild(div({
+              position: "absolute",
+              right: "64px",
+              top: px(yy - 10),
+              color: "#91a8c1",
+              fontSize: "8px",
+              fontWeight: "700",
+              opacity: level.approximate ? ".55" : ".82",
+              whiteSpace: "nowrap",
+              textShadow: "0 1px 2px rgba(0,0,0,.95)",
+              zIndex: "2",
+            }, `${level.label} ${level.price.toFixed(1)}${level.approximate ? " ~" : ""}`));
+          }
+        }
+      }
 
       if (settings.decisionArrow && decision) {
         const yy = y(decision.currentPrice);
@@ -376,11 +520,10 @@ export function ZeroDteStructureOverlay(props: {
           anchors,
           tolerancePoints: confluenceTolerancePoints,
         });
-        const seenPrices = new Set<string>();
+        const seenPrices: number[] = [];
         for (const item of confluence.filter((entry) => entry.count >= 2)) {
-          const priceKey = item.anchor.price.toFixed(2);
-          if (seenPrices.has(priceKey)) continue;
-          seenPrices.add(priceKey);
+          if (seenPrices.some((price) => Math.abs(price - item.anchor.price) <= confluenceTolerancePoints)) continue;
+          seenPrices.push(item.anchor.price);
           const yy = y(item.anchor.price);
           if (!inBounds(yy, height)) continue;
           const color = item.anchor.tone === "BULL"
@@ -435,7 +578,20 @@ export function ZeroDteStructureOverlay(props: {
         container.style.position = priorPosition;
       }
     };
-  }, [container, chart, series, snapshot, settings, anchors, confluenceTolerancePoints, decision]);
+  }, [
+    container,
+    chart,
+    series,
+    snapshot,
+    settings,
+    anchors,
+    confluenceTolerancePoints,
+    decision,
+    priorLevels,
+    expectedMove,
+    spot,
+    priorContext,
+  ]);
 
   return null;
 }

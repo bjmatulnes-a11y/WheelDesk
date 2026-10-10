@@ -17,6 +17,7 @@ import {
 import { loadZeroDteShadowTrades } from "../lib/zeroDteShadowRepository";
 import { authenticatedApiHeaders } from "../lib/auth/authenticated-api";
 import type { ZeroDteShadowTrade } from "../lib/zeroDteShadowTrade";
+import { buildBasisSummary, latestHistoricalCandleAtOrBefore } from "../lib/zeroDteBasis";
 
 type ApiResponse = {
   ok: boolean;
@@ -753,46 +754,6 @@ function formatTradeLegs(trade: ZeroDteShadowTrade) {
     return center == null ? trade.label : `center ${center} · wings ${bought.sort((a, b) => a - b).join("/")}`;
   }
   return [...sold, ...bought].filter((value) => Number.isFinite(value)).join("/") || trade.label;
-}
-
-function latestHistoricalCandleAtOrBefore(
-  candles: HistoricalEsCandle[],
-  epochSeconds: number,
-  toleranceSeconds = 90,
-) {
-  let best: HistoricalEsCandle | null = null;
-  let bestLag = Number.POSITIVE_INFINITY;
-  for (const candle of candles) {
-    if (candle.time > epochSeconds) continue;
-    const lag = epochSeconds - candle.time;
-    if (lag < bestLag) {
-      best = candle;
-      bestLag = lag;
-    }
-  }
-  return best && bestLag <= toleranceSeconds ? best : null;
-}
-
-function buildBasisSummary(esCandles: HistoricalEsCandle[], spxCandles: HistoricalEsCandle[]) {
-  if (!esCandles.length || !spxCandles.length) {
-    return { median: null as number | null, coveragePct: null as number | null };
-  }
-  const orderedSpx = [...spxCandles].sort((a, b) => a.time - b.time);
-  const firstSpx = orderedSpx[0]?.time ?? 0;
-  const lastSpx = orderedSpx.at(-1)?.time ?? 0;
-  const eligibleEs = esCandles.filter((candle) => candle.time >= firstSpx && candle.time <= lastSpx);
-  const values: number[] = [];
-  for (const es of eligibleEs) {
-    const spx = latestHistoricalCandleAtOrBefore(orderedSpx, es.time, 90);
-    if (spx) values.push(es.close - spx.close);
-  }
-  if (!values.length) return { median: null, coveragePct: 0 };
-  values.sort((a, b) => a - b);
-  const middle = Math.floor(values.length / 2);
-  const median = values.length % 2
-    ? values[middle]
-    : (values[middle - 1] + values[middle]) / 2;
-  return { median, coveragePct: eligibleEs.length ? (values.length / eligibleEs.length) * 100 : 0 };
 }
 
 function tradeReferenceStrike(trade: ZeroDteShadowTrade) {

@@ -123,6 +123,19 @@ import {
   buildZeroDteDirectionalSignal,
   emptyDirectionalLatch,
 } from "../lib/zeroDteDirectionalSignal";
+import {
+  computeOpeningPriorContext,
+  dailyFlipInPlay,
+  dailyPriorContextText,
+  dateInTimeZone,
+  filterActiveCarriedLevels,
+  nearestPriorLevel,
+  openingPriorContextText,
+  priorStructureFetchKey,
+  zonedDateTimeToEpochMs,
+  type PriorStructure,
+  type PriorStructureLevel,
+} from "../lib/zeroDtePriorStructure";
 
 type Candle = {
   time: number;
@@ -315,6 +328,7 @@ export default function SpxCommandChart() {
   const [candles, setCandles] = useState<Candle[]>([]);
   const [signalCandles, setSignalCandles] = useState<Candle[]>([]);
   const [harvest, setHarvest] = useState<HarvestResponse | null>(null);
+  const [priorStructure, setPriorStructure] = useState<PriorStructure | null>(null);
   const [frequency, setFrequency] = useState<1 | 5>(1);
   const [selectedExpiration, setSelectedExpiration] = useState("auto");
   const [expirationOptions, setExpirationOptions] = useState<
@@ -464,6 +478,70 @@ export default function SpxCommandChart() {
     };
   }, []);
 
+  const priorStructureKey = priorStructureFetchKey({
+    tradeDate: harvest?.tradeDate ?? null,
+    generatedAt: harvest?.generatedAt ?? null,
+  });
+
+  useEffect(() => {
+    const tradeDate = priorStructureKey;
+    if (!tradeDate) {
+      setPriorStructure(null);
+      return;
+    }
+
+    let cancelled = false;
+    let refreshTimer: number | null = null;
+    const loadPriorStructure = async () => {
+      try {
+        const headers = await authenticatedApiHeaders();
+        const response = await fetch(
+          `/api/zero-dte/prior-structure?tradeDate=${encodeURIComponent(tradeDate)}`,
+          { headers, cache: "no-store" },
+        );
+        const json = await readJsonResponse<PriorStructure & { ok?: boolean; error?: string }>(
+          response,
+          "Prior-session structure",
+        );
+        if (!response.ok || json.ok === false) {
+          throw new Error(json.error || "Prior-session structure load failed.");
+        }
+        if (!cancelled) {
+          setPriorStructure(json);
+        }
+      } catch (loadError) {
+        if (!cancelled) {
+          setPriorStructure(null);
+          console.warn(
+            "Prior-session structure load failed:",
+            loadError instanceof Error ? loadError.message : loadError,
+          );
+        }
+      }
+    };
+
+    void loadPriorStructure();
+
+    // ONH/ONL are allowed to refresh before the cash open, but this timer is
+    // independent of the 5-second harvest loop and stops after one open-time refresh.
+    const todayCentral = dateInTimeZone(Math.floor(Date.now() / 1000));
+    const openMs = zonedDateTimeToEpochMs(tradeDate, 8, 30);
+    if (tradeDate === todayCentral && Date.now() < openMs) {
+      refreshTimer = window.setInterval(() => {
+        void loadPriorStructure();
+        if (Date.now() >= openMs && refreshTimer !== null) {
+          window.clearInterval(refreshTimer);
+          refreshTimer = null;
+        }
+      }, 60_000);
+    }
+
+    return () => {
+      cancelled = true;
+      if (refreshTimer !== null) window.clearInterval(refreshTimer);
+    };
+  }, [priorStructureKey]);
+
   useEffect(() => {
     if (!harvest?.tradeDate) {
       setShadowTrades([]);
@@ -517,6 +595,47 @@ export default function SpxCommandChart() {
     );
     return scoped;
   }, [harvest?.generatedAt, harvest?.tradeDate, signalCandles]);
+
+  const activePriorStructureLevels = useMemo<PriorStructureLevel[]>(() => {
+    if (!priorStructure) return [];
+    return filterActiveCarriedLevels(priorStructure.levels, officialSignalCandles);
+  }, [officialSignalCandles, priorStructure]);
+
+  const priorContextExpectedMove = manualChainResearch
+    ? recommendation?.expectedMove ?? null
+    : openingMap?.expectedMove ?? null;
+
+  const openingPriorContext = useMemo(() =>
+    computeOpeningPriorContext({
+      todayCandles: officialSignalCandles,
+      levels: activePriorStructureLevels,
+      expectedMove: priorContextExpectedMove,
+    }),
+  [activePriorStructureLevels, officialSignalCandles, priorContextExpectedMove]);
+
+  const dailyFlipActive = dailyFlipInPlay(
+    currentPrice,
+    priorStructure?.daily.flipLevel ?? null,
+    priorContextExpectedMove ?? recommendation?.expectedMove ?? null,
+  );
+
+  const priorContextOverlay = useMemo(() => {
+    if (!priorStructure) return null;
+    return {
+      openingText: openingPriorContextText(openingPriorContext),
+      dailyText: dailyPriorContextText(
+        priorStructure.daily.trend,
+        priorStructure.daily.flipLevel,
+        dailyFlipActive,
+      ),
+      dailyFlipInPlay: dailyFlipActive,
+    };
+  }, [dailyFlipActive, openingPriorContext, priorStructure]);
+
+  const structureConfluenceTolerance = Math.max(
+    1,
+    0.05 * Math.max(1, priorContextExpectedMove ?? recommendation?.expectedMove ?? 20),
+  );
 
   const structureDisplayCandles = useMemo(() => {
     if (!harvest?.generatedAt) return [] as Candle[];
@@ -844,9 +963,10 @@ export default function SpxCommandChart() {
       label: string,
       price: number | null | undefined,
       tone: NonNullable<StructureAnchor["tone"]>,
+      sourceKind: NonNullable<StructureAnchor["sourceKind"]>,
     ) => {
       if (!Number.isFinite(price)) return;
-      items.push({ id, label, price: Number(price), tone });
+      items.push({ id, label, price: Number(price), tone, sourceKind });
     };
 
     add(
@@ -854,24 +974,28 @@ export default function SpxCommandChart() {
       "CALL WALL",
       controllingMap?.callWall ?? recommendation?.spx.callWall,
       "BEAR",
+      "OI",
     );
     add(
       "put-wall",
       "PUT WALL",
       controllingMap?.putWall ?? recommendation?.spx.putWall,
       "BULL",
+      "OI",
     );
     add(
       "pin",
       "PIN",
       controllingMap?.pin ?? recommendation?.spx.strongestPin,
       "NEUTRAL",
+      "OI",
     );
     add(
       "if-center",
       "IF CENTER",
       controllingMap?.center ?? recommendation?.suggestedCenter,
       "NEUTRAL",
+      "OI",
     );
 
     const selectedCandidate = executionCandidates[selectedExecutionStrategy] ?? null;
@@ -882,11 +1006,29 @@ export default function SpxCommandChart() {
         `${leg.optionType === "call" ? "CALL" : "PUT"} SHORT`,
         leg.strike,
         leg.optionType === "call" ? "BEAR" : "BULL",
+        "TRADE",
+      );
+    }
+
+    for (const level of activePriorStructureLevels) {
+      const tone: NonNullable<StructureAnchor["tone"]> =
+        level.id === "PDH" || level.id === "ONH" || level.id === "PWH" || level.id.includes("SWING_HIGH") || level.id.includes("FVG_BEAR")
+          ? "BEAR"
+          : level.id === "PDL" || level.id === "ONL" || level.id === "PWL" || level.id.includes("SWING_LOW") || level.id.includes("FVG_BULL")
+            ? "BULL"
+            : "NEUTRAL";
+      add(
+        `prior-${level.id}`,
+        level.label,
+        level.price,
+        tone,
+        level.kind,
       );
     }
 
     return items;
   }, [
+    activePriorStructureLevels,
     controllingMap,
     executionCandidates,
     recommendation,
@@ -2173,8 +2315,13 @@ export default function SpxCommandChart() {
       pin: controllingMap?.pin ?? recommendation?.spx.strongestPin ?? null,
       callWall: controllingMap?.callWall ?? recommendation?.spx.callWall ?? null,
       putWall: controllingMap?.putWall ?? recommendation?.spx.putWall ?? null,
+      priorLevels: activePriorStructureLevels,
+      openingPriorContext,
+      usePriorStructure: true,
     }),
   [
+    activePriorStructureLevels,
+    openingPriorContext,
     controllingMap?.callWall,
     controllingMap?.pin,
     controllingMap?.putWall,
@@ -2311,6 +2458,7 @@ export default function SpxCommandChart() {
     const scoreBull = directionalSide === "BULL" || (
       directionalSide === "WAIT" && directionalSignal.bullishScore >= directionalSignal.bearishScore
     );
+    const nearest = nearestPriorLevel(activePriorStructureLevels, currentPrice);
     return {
       directionalSide,
       directionalScore: directionalSide === "BULL"
@@ -2331,8 +2479,26 @@ export default function SpxCommandChart() {
         lastSweep && lastIndex - lastSweep.sweepIndex <= 8
           ? lastSweep.direction
           : null,
+      openingDayType: openingPriorContext?.openingDayType ?? null,
+      gapVsExpectedMove: openingPriorContext?.gapVsExpectedMove ?? null,
+      regainedPriorRange: openingPriorContext?.regainedPriorRange ?? null,
+      nearestPriorLevelId: nearest?.level.id ?? null,
+      nearestPriorLevelDistance: nearest?.distance ?? null,
+      dailyTrend: priorStructure?.daily.trend ?? null,
+      dailyFlipInPlay: priorStructure ? dailyFlipActive : null,
+      priorLevels: activePriorStructureLevels,
+      spotAtEntry: currentPrice,
     } as const;
-  }, [decisionStructureCandles.length, decisionStructureSnapshot, directionalSignal]);
+  }, [
+    activePriorStructureLevels,
+    currentPrice,
+    dailyFlipActive,
+    decisionStructureCandles.length,
+    decisionStructureSnapshot,
+    directionalSignal,
+    openingPriorContext,
+    priorStructure,
+  ]);
 
   const signalPaint = useExecutionSignalPaint({
     tradeDate: harvest?.tradeDate,
@@ -3029,8 +3195,12 @@ export default function SpxCommandChart() {
               snapshot={structureSnapshot}
               settings={structureOverlaySettings}
               anchors={structureAnchors}
-              confluenceTolerancePoints={1.5}
+              confluenceTolerancePoints={structureConfluenceTolerance}
               decision={directionalSignal}
+              priorLevels={activePriorStructureLevels}
+              expectedMove={priorContextExpectedMove ?? recommendation?.expectedMove ?? null}
+              spot={currentPrice}
+              priorContext={priorContextOverlay}
             />
             {overlays.liquidityZones ? (
               <div style={styles.liquidityOverlay} aria-hidden="true">

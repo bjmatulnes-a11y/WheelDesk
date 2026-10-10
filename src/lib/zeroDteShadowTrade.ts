@@ -80,6 +80,14 @@ export type ZeroDteShadowTrade = {
   lastBreakKind?: "BOS" | "CHOCH" | null;
   lastBreakAgeBars?: number | null;
   recentSweep?: "BULL" | "BEAR" | null;
+  openingDayType?: "INSIDE_RANGE" | "OUTSIDE_UP" | "OUTSIDE_DOWN" | null;
+  gapVsExpectedMove?: number | null;
+  regainedPriorRange?: boolean | null;
+  nearestPriorLevelId?: string | null;
+  nearestPriorLevelDistance?: number | null;
+  shortStrikeBeyondPriorLevel?: boolean | null;
+  dailyTrend?: "BULL" | "BEAR" | null;
+  dailyFlipInPlay?: boolean | null;
   portfolioDecision: ShadowPortfolioDecision | null;
   portfolioRole: ShadowPortfolioRole | null;
   portfolioConviction: LiveEsConvictionTier | null;

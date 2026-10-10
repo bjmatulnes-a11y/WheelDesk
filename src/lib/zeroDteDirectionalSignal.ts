@@ -8,6 +8,10 @@ import type {
   StructureBreak,
   ZeroDteStructureSnapshot,
 } from "./zeroDteStructureMap";
+import type {
+  OpeningPriorContext,
+  PriorStructureLevel,
+} from "./zeroDtePriorStructure";
 
 export type ZeroDteDirectionalAction = "BUY" | "SELL" | "WAIT";
 export type ZeroDteDirectionalStrategy = "PCS" | "CCS" | null;
@@ -82,6 +86,9 @@ export function buildZeroDteDirectionalSignal(args: {
   pin?: number | null;
   callWall?: number | null;
   putWall?: number | null;
+  priorLevels?: readonly PriorStructureLevel[];
+  openingPriorContext?: OpeningPriorContext | null;
+  usePriorStructure?: boolean;
 }): ZeroDteDirectionalSignal {
   const recommendation = args.recommendation ?? null;
   const currentPrice = finite(recommendation?.spxPrice)
@@ -89,12 +96,14 @@ export function buildZeroDteDirectionalSignal(args: {
     : args.candles.at(-1)?.close ?? 0;
   const expectedMove = Math.max(1, finite(recommendation?.expectedMove) ? recommendation!.expectedMove : 20);
 
+  const usePriorStructure = args.usePriorStructure !== false;
   const structure = scoreStructure({
     candles: args.candles,
     snapshot: args.structure,
     higher: args.higherTimeframeStructure ?? null,
     currentPrice,
     expectedMove,
+    priorLevels: usePriorStructure ? args.priorLevels ?? [] : [],
   });
   const market = scoreMarket({
     recommendation,
@@ -105,6 +114,8 @@ export function buildZeroDteDirectionalSignal(args: {
     putWall: args.putWall ?? recommendation?.spx.putWall ?? null,
     currentPrice,
     expectedMove,
+    openingPriorContext: usePriorStructure ? args.openingPriorContext ?? null : null,
+    usePriorStructure,
   });
 
   const putRead = findEntryRead(args.executionReads ?? [], "put-credit-spread");
@@ -192,6 +203,7 @@ function scoreStructure(args: {
   higher: ZeroDteStructureSnapshot | null;
   currentPrice: number;
   expectedMove: number;
+  priorLevels: readonly PriorStructureLevel[];
 }): StructureScore {
   const { candles, snapshot, higher, currentPrice, expectedMove } = args;
   const lastIndex = Math.max(0, candles.length - 1);
@@ -304,6 +316,20 @@ function scoreStructure(args: {
     bear *= 0.78;
   }
 
+  const priorSweep = priorSessionSweepBonus({
+    snapshot,
+    levels: args.priorLevels,
+    expectedMove,
+    lastIndex,
+  });
+  if (priorSweep?.direction === "BULL") {
+    bull += 6;
+    reasonsBull.push(`Prior/overnight level sweep reclaimed (${priorSweep.levelId})`);
+  } else if (priorSweep?.direction === "BEAR") {
+    bear += 6;
+    reasonsBear.push(`Prior/overnight level sweep rejected (${priorSweep.levelId})`);
+  }
+
   const latestBreakAge = latestBreak ? lastIndex - latestBreak.breakIndex : Number.POSITIVE_INFINITY;
   const bullConfirmed = Boolean(
     (latestBreak?.direction === "BULL" && latestBreakAge <= 10) ||
@@ -343,6 +369,8 @@ function scoreMarket(args: {
   putWall: number | null;
   currentPrice: number;
   expectedMove: number;
+  openingPriorContext: OpeningPriorContext | null;
+  usePriorStructure: boolean;
 }): MarketScore {
   let bull = 0;
   let bear = 0;
@@ -410,11 +438,24 @@ function scoreMarket(args: {
   }
 
   const wallProximity = Math.max(3, Math.min(args.expectedMove * 0.16, 12));
-  if (finite(args.putWall) && Math.abs(args.currentPrice - args.putWall) <= wallProximity) {
+  const trendGap = args.usePriorStructure &&
+    args.openingPriorContext?.gapClass === "LARGE" &&
+    !args.openingPriorContext.regainedPriorRange
+      ? args.openingPriorContext.openingDayType
+      : null;
+  if (
+    finite(args.putWall) &&
+    Math.abs(args.currentPrice - args.putWall) <= wallProximity &&
+    trendGap !== "OUTSIDE_DOWN"
+  ) {
     bull += 7;
     reasonsBull.push("Near put-wall support");
   }
-  if (finite(args.callWall) && Math.abs(args.currentPrice - args.callWall) <= wallProximity) {
+  if (
+    finite(args.callWall) &&
+    Math.abs(args.currentPrice - args.callWall) <= wallProximity &&
+    trendGap !== "OUTSIDE_UP"
+  ) {
     bear += 7;
     reasonsBear.push("Near call-wall resistance");
   }
@@ -425,6 +466,28 @@ function scoreMarket(args: {
     reasonsBull,
     reasonsBear,
   };
+}
+
+function priorSessionSweepBonus(args: {
+  snapshot: ZeroDteStructureSnapshot;
+  levels: readonly PriorStructureLevel[];
+  expectedMove: number;
+  lastIndex: number;
+}): { direction: StructureDirection; levelId: string } | null {
+  const keyLevels = args.levels.filter((level) =>
+    level.id === "PDH" || level.id === "PDL" || level.id === "ONH" || level.id === "ONL",
+  );
+  if (!keyLevels.length) return null;
+  const tolerance = Math.max(1, 0.05 * Math.max(1, args.expectedMove));
+  const recent = [...args.snapshot.sweeps]
+    .reverse()
+    .find((sweep) =>
+      args.lastIndex - sweep.sweepIndex <= 8 &&
+      keyLevels.some((level) => Math.abs(level.price - sweep.level) <= tolerance),
+    );
+  if (!recent) return null;
+  const level = keyLevels.find((item) => Math.abs(item.price - recent.level) <= tolerance);
+  return level ? { direction: recent.direction, levelId: level.id } : null;
 }
 
 export function scoreExecutionAdjustment(read: ZeroDteExecutionRead | null): number | null {

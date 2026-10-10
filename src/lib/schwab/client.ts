@@ -283,28 +283,42 @@ export type SchwabPriceHistoryResponse = {
 export async function fetchSchwabPriceHistory(args: {
   userId: string;
   symbol: string;
+  frequencyType?: "minute" | "daily";
   frequency?: 1 | 5 | 10 | 15 | 30;
+  periodType?: "day" | "month" | "year" | "ytd";
+  period?: number;
   startDate?: number;
   endDate?: number;
+  needExtendedHoursData?: boolean;
+  needPreviousClose?: boolean;
 }): Promise<SchwabPriceHistoryResponse> {
   const rawNow = Date.now();
-  // Align default history windows to the same four-second bucket used by the
-  // live collector cache. Separate browser tabs asking for the same chart in
-  // the same refresh window therefore share one Schwab request.
+  // Align default minute-history windows to the same four-second bucket used
+  // by the live collector cache. Existing callers keep the prior 24h defaults.
   const now = Math.floor(rawNow / 4_000) * 4_000;
+  const frequencyType = args.frequencyType ?? "minute";
   const params = new URLSearchParams({
     symbol: args.symbol,
-    periodType: "day",
-    period: "1",
-    frequencyType: "minute",
+    periodType: args.periodType ?? "day",
+    period: String(args.period ?? 1),
+    frequencyType,
     frequency: String(args.frequency ?? 1),
-    startDate: String(args.startDate ?? now - 24 * 60 * 60 * 1000),
-    endDate: String(args.endDate ?? now),
-    needExtendedHoursData: "false",
-    needPreviousClose: "true",
+    needExtendedHoursData: args.needExtendedHoursData ? "true" : "false",
+    needPreviousClose: args.needPreviousClose === false ? "false" : "true",
   });
 
-  return cachedSchwabFetch<SchwabPriceHistoryResponse>(args.userId, `/pricehistory?${params.toString()}`, 4_000);
+  if (args.startDate !== undefined) params.set("startDate", String(args.startDate));
+  if (args.endDate !== undefined) params.set("endDate", String(args.endDate));
+  if (frequencyType === "minute" && args.startDate === undefined && args.endDate === undefined) {
+    params.set("startDate", String(now - 24 * 60 * 60 * 1000));
+    params.set("endDate", String(now));
+  }
+
+  return cachedSchwabFetch<SchwabPriceHistoryResponse>(
+    args.userId,
+    `/pricehistory?${params.toString()}`,
+    4_000,
+  );
 }
 
 export async function fetchSchwabQuotes(

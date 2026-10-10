@@ -5,6 +5,7 @@ import React from "react";
 export interface ZeroDteOverlaySettings {
   enabled: boolean;
   decisionArrow: boolean;
+  priorLevels: boolean;
   externalStructure: boolean;
   internalStructure: boolean;
   swingLabels: boolean;
@@ -19,6 +20,7 @@ export interface ZeroDteOverlaySettings {
 export const SIGNAL_STRUCTURE_OVERLAY: ZeroDteOverlaySettings = {
   enabled: true,
   decisionArrow: true,
+  priorLevels: true,
   externalStructure: false,
   internalStructure: false,
   swingLabels: false,
@@ -32,6 +34,7 @@ export const SIGNAL_STRUCTURE_OVERLAY: ZeroDteOverlaySettings = {
 export const CLEAN_STRUCTURE_OVERLAY: ZeroDteOverlaySettings = {
   enabled: true,
   decisionArrow: true,
+  priorLevels: true,
   externalStructure: true,
   internalStructure: false,
   swingLabels: true,
@@ -45,6 +48,7 @@ export const CLEAN_STRUCTURE_OVERLAY: ZeroDteOverlaySettings = {
 export const FULL_STRUCTURE_OVERLAY: ZeroDteOverlaySettings = {
   enabled: true,
   decisionArrow: true,
+  priorLevels: true,
   externalStructure: true,
   internalStructure: true,
   swingLabels: true,
@@ -77,6 +81,7 @@ export function ZeroDteOverlayControls(props: {
 
   const items: Array<[keyof ZeroDteOverlaySettings, string]> = [
     ["decisionArrow", "Bias"],
+    ["priorLevels", "Prior"],
     ["externalStructure", "Structure"],
     ["internalStructure", "Internal"],
     ["swingLabels", "Swings"],
@@ -125,7 +130,9 @@ export function ZeroDteOverlayControls(props: {
               ? "Reaction Zones require aligned ES/SPY proxy volume. SPX volume is intentionally ignored."
               : key === "decisionArrow"
                 ? "Show the WheelDesk directional bias: BULL · PCS, BEAR · CCS, or a muted WAIT state."
-                : undefined
+                : key === "priorLevels"
+                  ? "Show prior-session, overnight, weekly, daily-flip, and active carried prior-session structure."
+                  : undefined
           }
           onClick={() => toggle(key)}
         >

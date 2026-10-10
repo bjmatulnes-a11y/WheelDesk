@@ -670,11 +670,23 @@ export function buildZeroDteStructureMap(
   };
 }
 
+export type StructureAnchorSourceKind =
+  | "OI"
+  | "TRADE"
+  | "PRIOR_DAY"
+  | "OVERNIGHT"
+  | "WEEKLY"
+  | "DAILY"
+  | "CARRIED_SWING"
+  | "CARRIED_FVG"
+  | "OTHER";
+
 export interface StructureAnchor {
   id: string;
   label: string;
   price: number;
   tone?: "BULL" | "BEAR" | "NEUTRAL";
+  sourceKind?: StructureAnchorSourceKind;
 }
 
 export interface StructureAnchorConfluence {
@@ -711,6 +723,29 @@ export function buildStructureAnchorConfluence(args: {
         reasons.push("reaction zone");
       }
 
-      return { anchor, count: reasons.length, reasons };
+      for (const other of args.anchors) {
+        if (other.id === anchor.id || !finite(other.price) || !near(other.price)) continue;
+        const anchorKind = anchor.sourceKind ?? "OTHER";
+        const otherKind = other.sourceKind ?? "OTHER";
+        if (anchorKind === otherKind) continue;
+        const reason = anchorReasonForSourceKind(otherKind);
+        if (reason) reasons.push(reason);
+      }
+
+      const uniqueReasons = [...new Set(reasons)];
+      // The anchor itself is one confluence component. This makes an OI wall
+      // aligned with PDL/ONH correctly read as ×2 rather than ×1.
+      return { anchor, count: 1 + uniqueReasons.length, reasons: uniqueReasons };
     });
+}
+
+function anchorReasonForSourceKind(kind: StructureAnchorSourceKind): string | null {
+  if (kind === "PRIOR_DAY") return "prior-day level";
+  if (kind === "OVERNIGHT") return "overnight level";
+  if (kind === "WEEKLY") return "weekly level";
+  if (kind === "DAILY") return "daily flip";
+  if (kind === "CARRIED_SWING" || kind === "CARRIED_FVG") return "prior-session structure";
+  if (kind === "OI") return "OI anchor";
+  if (kind === "TRADE") return "selected short strike";
+  return null;
 }

@@ -26,10 +26,31 @@ export async function GET(request: NextRequest) {
         ? rawFrequency
         : 1;
 
+    const frequencyType = request.nextUrl.searchParams.get("frequencyType") === "daily"
+      ? "daily"
+      : "minute";
+    const rawPeriodType = request.nextUrl.searchParams.get("periodType");
+    const periodType = rawPeriodType === "month" || rawPeriodType === "year" || rawPeriodType === "ytd"
+      ? rawPeriodType
+      : "day";
+    const rawPeriod = Number(request.nextUrl.searchParams.get("period") ?? "1");
+    const period = Number.isFinite(rawPeriod) && rawPeriod > 0 ? Math.floor(rawPeriod) : 1;
+    const rawStart = request.nextUrl.searchParams.get("startDate");
+    const rawEnd = request.nextUrl.searchParams.get("endDate");
+    const startDate = rawStart !== null && Number.isFinite(Number(rawStart)) ? Number(rawStart) : undefined;
+    const endDate = rawEnd !== null && Number.isFinite(Number(rawEnd)) ? Number(rawEnd) : undefined;
+    const needExtendedHoursData = request.nextUrl.searchParams.get("extended") === "1";
+
     const result = await fetchSchwabPriceHistory({
       userId: access.access.user.id,
       symbol,
+      frequencyType,
       frequency,
+      periodType,
+      period,
+      startDate,
+      endDate,
+      needExtendedHoursData,
     });
 
     const candles = (result.candles ?? [])

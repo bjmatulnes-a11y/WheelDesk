@@ -52,6 +52,15 @@ CREATE TABLE IF NOT EXISTS zero_dte_shadow_trades (
   last_break_age_bars numeric,
   recent_sweep text,
 
+  opening_day_type text,
+  gap_vs_expected_move numeric,
+  regained_prior_range boolean,
+  nearest_prior_level_id text,
+  nearest_prior_level_distance numeric,
+  short_strike_beyond_prior_level boolean,
+  daily_trend text,
+  daily_flip_in_play boolean,
+
   last_sample_at timestamptz,
   current_mark_credit numeric,
   current_buyback_debit numeric,
@@ -194,7 +203,15 @@ SELECT
   t.structure_trend_external,
   t.last_break_kind,
   t.last_break_age_bars,
-  t.recent_sweep
+  t.recent_sweep,
+  t.opening_day_type,
+  t.gap_vs_expected_move,
+  t.regained_prior_range,
+  t.nearest_prior_level_id,
+  t.nearest_prior_level_distance,
+  t.short_strike_beyond_prior_level,
+  t.daily_trend,
+  t.daily_flip_in_play
 FROM zero_dte_shadow_trades t
 LEFT JOIN LATERAL (
   SELECT s.pnl_conservative_dollars

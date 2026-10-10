@@ -6,6 +6,10 @@ import { buildShadowShortLegEntries, shadowWidthPoints } from "./zeroDteShadowTr
 import type { ZeroDteChainRow } from "./zeroDteOiIntelligence";
 import type { AdaptivePortfolioOpportunity, ShadowLegSnapshot } from "./zeroDteAdaptivePortfolio";
 import { getSupabaseAuthClient } from "./auth/supabase-auth-client";
+import {
+  priorLevelGuardsShortStrike,
+  type PriorStructureLevel,
+} from "./zeroDtePriorStructure";
 
 async function authHeaders(includeJson = false) {
   const headers: Record<string, string> = includeJson
@@ -59,6 +63,15 @@ export async function openZeroDteShadowTrade(args: {
     lastBreakKind: "BOS" | "CHOCH" | null;
     lastBreakAgeBars: number | null;
     recentSweep: "BULL" | "BEAR" | null;
+    openingDayType: "INSIDE_RANGE" | "OUTSIDE_UP" | "OUTSIDE_DOWN" | null;
+    gapVsExpectedMove: number | null;
+    regainedPriorRange: boolean | null;
+    nearestPriorLevelId: string | null;
+    nearestPriorLevelDistance: number | null;
+    dailyTrend: "BULL" | "BEAR" | null;
+    dailyFlipInPlay: boolean | null;
+    priorLevels: readonly PriorStructureLevel[];
+    spotAtEntry: number;
   } | null;
 }) {
   const signal = args.signal;
@@ -82,6 +95,16 @@ export async function openZeroDteShadowTrade(args: {
       : signal.strategy === "call-credit-spread"
         ? directional.directionalSide === "BEAR"
         : null;
+  const shortStrike = signal.strategy === "put-credit-spread" || signal.strategy === "call-credit-spread"
+    ? signal.legs.find((leg) => leg.action === "sell")?.strike ?? null
+    : null;
+  const shortStrikeBeyondPriorLevel = directional
+    ? priorLevelGuardsShortStrike({
+        levels: directional.priorLevels,
+        spot: directional.spotAtEntry,
+        shortStrike,
+      })
+    : null;
   const json = await call({
     action: "open",
     tradeDate: signal.tradeDate,
@@ -127,6 +150,14 @@ export async function openZeroDteShadowTrade(args: {
     lastBreakKind: directional?.lastBreakKind ?? null,
     lastBreakAgeBars: directional?.lastBreakAgeBars ?? null,
     recentSweep: directional?.recentSweep ?? null,
+    openingDayType: directional?.openingDayType ?? null,
+    gapVsExpectedMove: directional?.gapVsExpectedMove ?? null,
+    regainedPriorRange: directional?.regainedPriorRange ?? null,
+    nearestPriorLevelId: directional?.nearestPriorLevelId ?? null,
+    nearestPriorLevelDistance: directional?.nearestPriorLevelDistance ?? null,
+    shortStrikeBeyondPriorLevel,
+    dailyTrend: directional?.dailyTrend ?? null,
+    dailyFlipInPlay: directional?.dailyFlipInPlay ?? null,
     portfolioDecision: args.opportunity.decision,
     portfolioRole: args.opportunity.role,
     portfolioConviction: args.opportunity.conviction,

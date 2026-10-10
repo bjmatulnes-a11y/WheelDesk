@@ -135,6 +135,26 @@ async function openShadow(body: any, userId: string) {
       body.recentSweep === "BULL" || body.recentSweep === "BEAR"
         ? body.recentSweep
         : null,
+    opening_day_type:
+      body.openingDayType === "INSIDE_RANGE" || body.openingDayType === "OUTSIDE_UP" || body.openingDayType === "OUTSIDE_DOWN"
+        ? body.openingDayType
+        : null,
+    gap_vs_expected_move: numeric(body.gapVsExpectedMove),
+    regained_prior_range:
+      typeof body.regainedPriorRange === "boolean" ? body.regainedPriorRange : null,
+    nearest_prior_level_id:
+      typeof body.nearestPriorLevelId === "string" && body.nearestPriorLevelId.trim()
+        ? body.nearestPriorLevelId.trim()
+        : null,
+    nearest_prior_level_distance: numeric(body.nearestPriorLevelDistance),
+    short_strike_beyond_prior_level:
+      typeof body.shortStrikeBeyondPriorLevel === "boolean"
+        ? body.shortStrikeBeyondPriorLevel
+        : null,
+    daily_trend:
+      body.dailyTrend === "BULL" || body.dailyTrend === "BEAR" ? body.dailyTrend : null,
+    daily_flip_in_play:
+      typeof body.dailyFlipInPlay === "boolean" ? body.dailyFlipInPlay : null,
     portfolio_decision: portfolioDecision,
     portfolio_role: normalizePortfolioRole(body.portfolioRole),
     portfolio_conviction: normalizeConviction(body.portfolioConviction),
@@ -578,6 +598,24 @@ function mapShadowTrade(row: any) {
       row.recent_sweep === "BULL" || row.recent_sweep === "BEAR"
         ? row.recent_sweep
         : null,
+    openingDayType:
+      row.opening_day_type === "INSIDE_RANGE" || row.opening_day_type === "OUTSIDE_UP" || row.opening_day_type === "OUTSIDE_DOWN"
+        ? row.opening_day_type
+        : null,
+    gapVsExpectedMove: numeric(row.gap_vs_expected_move),
+    regainedPriorRange:
+      typeof row.regained_prior_range === "boolean" ? row.regained_prior_range : null,
+    nearestPriorLevelId:
+      typeof row.nearest_prior_level_id === "string" ? row.nearest_prior_level_id : null,
+    nearestPriorLevelDistance: numeric(row.nearest_prior_level_distance),
+    shortStrikeBeyondPriorLevel:
+      typeof row.short_strike_beyond_prior_level === "boolean"
+        ? row.short_strike_beyond_prior_level
+        : null,
+    dailyTrend:
+      row.daily_trend === "BULL" || row.daily_trend === "BEAR" ? row.daily_trend : null,
+    dailyFlipInPlay:
+      typeof row.daily_flip_in_play === "boolean" ? row.daily_flip_in_play : null,
     portfolioDecision: normalizePortfolioDecision(row.portfolio_decision),
     portfolioRole: normalizePortfolioRole(row.portfolio_role),
     portfolioConviction: normalizeConviction(row.portfolio_conviction),
