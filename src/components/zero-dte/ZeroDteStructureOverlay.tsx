@@ -307,6 +307,7 @@ export function ZeroDteStructureOverlay(props: {
           }, label);
           arrow.title = [
             `WheelDesk directional bias · ${bullish ? "BULL · PCS" : "BEAR · CCS"} · score ${decision.score}`,
+            `trigger ${decision.trigger === "REVERSAL_CAPTURE" ? "reversal capture" : "composite confirmation"}`,
             `structure ${bullish ? decision.groups.structureBull : decision.groups.structureBear} · market ${bullish ? decision.groups.marketBull : decision.groups.marketBear} · ${bullish ? (decision.groups.executionBull == null ? "exec 0" : `exec ${decision.groups.executionBull >= 0 ? "+" : ""}${decision.groups.executionBull}`) : (decision.groups.executionBear == null ? "exec 0" : `exec ${decision.groups.executionBear >= 0 ? "+" : ""}${decision.groups.executionBear}`)}`,
             ...decision.reasons,
           ].filter(Boolean).join("\n");
@@ -323,7 +324,7 @@ export function ZeroDteStructureOverlay(props: {
             textAlign: "center",
             opacity: ".8",
             zIndex: "20",
-          }, `score ${decision.score}`);
+          }, decision.trigger === "REVERSAL_CAPTURE" ? `REV · ${decision.score}` : `score ${decision.score}`);
           root.appendChild(score);
         }
       }

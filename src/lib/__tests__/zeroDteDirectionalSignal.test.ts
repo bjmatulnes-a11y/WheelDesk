@@ -4,6 +4,7 @@ import {
   aggregateStructureCandles,
   buildZeroDteDirectionalSignal,
   combineScores,
+  detectDirectionalReversalCapture,
   emptyDirectionalLatch,
   scoreExecutionAdjustment,
   type ZeroDteDirectionalSignal,
@@ -32,6 +33,7 @@ function rawSignal(overrides: Partial<ZeroDteDirectionalSignal> = {}): ZeroDteDi
     generatedAt: 60,
     currentPrice: 100,
     state: "TREND",
+    trigger: "COMPOSITE",
     structureConfirmed: true,
     reasons: [],
     blockers: [],
@@ -42,6 +44,8 @@ function rawSignal(overrides: Partial<ZeroDteDirectionalSignal> = {}): ZeroDteDi
       bearVeto: false,
       bullExternalBosVeto: false,
       bearExternalBosVeto: false,
+      bullReversalCapture: false,
+      bearReversalCapture: false,
       transition: false,
       higherExternalTrend: "BULL",
     },
@@ -182,4 +186,158 @@ describe("WheelDesk directional decision fixes", () => {
     expect(aggregated).toHaveLength(1);
     expect(aggregated[0].time).toBe(0);
   });
+
+  it("fires an early BULL reversal capture on CHoCH -> BOS + HL + bull FVG", () => {
+    const candles = Array.from({ length: 12 }, (_, i) =>
+      candle(i * 60, 100 + i * 0.2, 101 + i * 0.2, 99 + i * 0.2, 100.4 + i * 0.2),
+    );
+    const snapshot: ZeroDteStructureSnapshot = {
+      generatedAt: candles.at(-1)?.time ?? null,
+      trendInternal: "BULL",
+      trendExternal: "BEAR",
+      swings: [{
+        id: "hl",
+        scale: "INTERNAL",
+        kind: "LOW",
+        label: "HL",
+        time: 7 * 60,
+        confirmedAt: 9 * 60,
+        price: 100.2,
+        index: 7,
+        confirmIndex: 9,
+      }],
+      breaks: [
+        { id: "down", scale: "EXTERNAL", kind: "BOS", direction: "BEAR", level: 101, swingTime: 120, breakTime: 5 * 60, breakIndex: 5 },
+        { id: "choch", scale: "INTERNAL", kind: "CHOCH", direction: "BULL", level: 101.4, swingTime: 6 * 60, breakTime: 8 * 60, breakIndex: 8 },
+        { id: "bos", scale: "INTERNAL", kind: "BOS", direction: "BULL", level: 102, swingTime: 7 * 60, breakTime: 10 * 60, breakIndex: 10 },
+      ],
+      sweeps: [],
+      fvgs: [{
+        id: "fvg",
+        direction: "BULL",
+        low: 101.2,
+        high: 101.8,
+        startedAt: 9 * 60,
+        startIndex: 9,
+        mitigated: false,
+        mitigatedAt: null,
+        mitigationIndex: null,
+      }],
+      reactionZones: [],
+      reversals: [],
+      fibLevels: [],
+    };
+    const read = detectDirectionalReversalCapture({
+      candles,
+      snapshot,
+      currentPrice: 102.6,
+      expectedMove: 20,
+      direction: "BULL",
+      leastResistancePath: null,
+    });
+    expect(read.qualified).toBe(true);
+    expect(read.confirmations).toContain("HL confirmed");
+    expect(read.confirmations).toContain("Bull FVG holding");
+
+    const signal = buildZeroDteDirectionalSignal({
+      candles,
+      structure: snapshot,
+      higherTimeframeStructure: null,
+      recommendation: {
+        spxPrice: 102.6,
+        expectedMove: 20,
+        dealerPressure: 0,
+        spx: { strongestPin: null, callWall: null, putWall: null },
+      } as any,
+      leastResistancePath: null,
+      executionReads: [],
+    });
+    expect(signal.score).toBeLessThan(74);
+    expect(signal.action).toBe("BUY");
+    expect(signal.strategy).toBe("PCS");
+    expect(signal.trigger).toBe("REVERSAL_CAPTURE");
+
+    const chased = detectDirectionalReversalCapture({
+      candles,
+      snapshot,
+      currentPrice: 110,
+      expectedMove: 20,
+      direction: "BULL",
+      leastResistancePath: null,
+    });
+    expect(chased.qualified).toBe(false);
+    expect(chased.blocker).toContain("too extended");
+  });
+
+  it("fires the mirrored BEAR reversal capture on CHoCH -> BOS + LH + bear FVG", () => {
+    const candles = Array.from({ length: 12 }, (_, i) =>
+      candle(i * 60, 110 - i * 0.2, 111 - i * 0.2, 109 - i * 0.2, 109.6 - i * 0.2),
+    );
+    const snapshot: ZeroDteStructureSnapshot = {
+      generatedAt: candles.at(-1)?.time ?? null,
+      trendInternal: "BEAR",
+      trendExternal: "BULL",
+      swings: [{
+        id: "lh",
+        scale: "INTERNAL",
+        kind: "HIGH",
+        label: "LH",
+        time: 7 * 60,
+        confirmedAt: 9 * 60,
+        price: 109.8,
+        index: 7,
+        confirmIndex: 9,
+      }],
+      breaks: [
+        { id: "up", scale: "EXTERNAL", kind: "BOS", direction: "BULL", level: 109, swingTime: 120, breakTime: 5 * 60, breakIndex: 5 },
+        { id: "choch", scale: "INTERNAL", kind: "CHOCH", direction: "BEAR", level: 108.6, swingTime: 6 * 60, breakTime: 8 * 60, breakIndex: 8 },
+        { id: "bos", scale: "INTERNAL", kind: "BOS", direction: "BEAR", level: 108, swingTime: 7 * 60, breakTime: 10 * 60, breakIndex: 10 },
+      ],
+      sweeps: [],
+      fvgs: [{
+        id: "fvg",
+        direction: "BEAR",
+        low: 108.2,
+        high: 108.8,
+        startedAt: 9 * 60,
+        startIndex: 9,
+        mitigated: false,
+        mitigatedAt: null,
+        mitigationIndex: null,
+      }],
+      reactionZones: [],
+      reversals: [],
+      fibLevels: [],
+    };
+    const read = detectDirectionalReversalCapture({
+      candles,
+      snapshot,
+      currentPrice: 107.4,
+      expectedMove: 20,
+      direction: "BEAR",
+      leastResistancePath: null,
+    });
+    expect(read.qualified).toBe(true);
+    expect(read.confirmations).toContain("LH confirmed");
+    expect(read.confirmations).toContain("Bear FVG holding");
+
+    const signal = buildZeroDteDirectionalSignal({
+      candles,
+      structure: snapshot,
+      higherTimeframeStructure: null,
+      recommendation: {
+        spxPrice: 107.4,
+        expectedMove: 20,
+        dealerPressure: 0,
+        spx: { strongestPin: null, callWall: null, putWall: null },
+      } as any,
+      leastResistancePath: null,
+      executionReads: [],
+    });
+    expect(signal.score).toBeLessThan(74);
+    expect(signal.action).toBe("SELL");
+    expect(signal.strategy).toBe("CCS");
+    expect(signal.trigger).toBe("REVERSAL_CAPTURE");
+  });
+
 });

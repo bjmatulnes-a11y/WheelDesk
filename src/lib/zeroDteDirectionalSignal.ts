@@ -16,6 +16,7 @@ import type {
 export type ZeroDteDirectionalAction = "BUY" | "SELL" | "WAIT";
 export type ZeroDteDirectionalStrategy = "PCS" | "CCS" | null;
 export type ZeroDteDirectionalState = "TREND" | "TRANSITION" | "NEUTRAL";
+export type ZeroDteDirectionalTrigger = "COMPOSITE" | "REVERSAL_CAPTURE" | null;
 
 export type ZeroDteDirectionalSignal = {
   action: ZeroDteDirectionalAction;
@@ -29,6 +30,7 @@ export type ZeroDteDirectionalSignal = {
   generatedAt: number | null;
   currentPrice: number;
   state: ZeroDteDirectionalState;
+  trigger: ZeroDteDirectionalTrigger;
   structureConfirmed: boolean;
   reasons: string[];
   blockers: string[];
@@ -39,6 +41,8 @@ export type ZeroDteDirectionalSignal = {
     bearVeto: boolean;
     bullExternalBosVeto: boolean;
     bearExternalBosVeto: boolean;
+    bullReversalCapture: boolean;
+    bearReversalCapture: boolean;
     transition: boolean;
     higherExternalTrend: StructureDirection | null;
   };
@@ -73,6 +77,19 @@ type MarketScore = {
   bear: number;
   reasonsBull: string[];
   reasonsBear: string[];
+};
+
+export type ZeroDteReversalCaptureRead = {
+  direction: StructureDirection;
+  qualified: boolean;
+  choch: StructureBreak | null;
+  bos: StructureBreak | null;
+  bosAgeBars: number | null;
+  confirmationCount: number;
+  confirmations: string[];
+  chaseDistancePoints: number | null;
+  maxChaseDistancePoints: number | null;
+  blocker: string | null;
 };
 
 export function buildZeroDteDirectionalSignal(args: {
@@ -130,6 +147,25 @@ export function buildZeroDteDirectionalSignal(args: {
   const loserScore = winner === "BULL" ? bear : bull;
   const margin = Math.max(0, winnerScore - loserScore);
 
+  const bullReversal = detectDirectionalReversalCapture({
+    candles: args.candles,
+    snapshot: args.structure,
+    leastResistancePath: args.leastResistancePath ?? null,
+    currentPrice,
+    expectedMove,
+    direction: "BULL",
+  });
+  const bearReversal = detectDirectionalReversalCapture({
+    candles: args.candles,
+    snapshot: args.structure,
+    leastResistancePath: args.leastResistancePath ?? null,
+    currentPrice,
+    expectedMove,
+    direction: "BEAR",
+  });
+  const priceValid = Number.isFinite(currentPrice) && currentPrice > 0;
+  const reversalSide = priceValid ? chooseReversalCaptureSide(bullReversal, bearReversal) : null;
+
   const transition = structure.transition;
   const threshold = transition ? 82 : 74;
   const requiredMargin = transition ? 20 : 14;
@@ -137,34 +173,53 @@ export function buildZeroDteDirectionalSignal(args: {
   const winnerVeto = winner === "BULL" ? structure.bullVeto : structure.bearVeto;
   const winnerStructureScore = winner === "BULL" ? structure.bull : structure.bear;
   const chopGuardRequired = transition || !args.higherTimeframeStructure?.trendExternal;
-  const blockers: string[] = [];
+  const compositeBlockers: string[] = [];
 
-  if (!winnerConfirmed) blockers.push("Structure has not confirmed the winning side.");
-  if (winnerVeto) blockers.push("Fresh opposite continuation structure vetoes the signal.");
+  if (!winnerConfirmed) compositeBlockers.push("Structure has not confirmed the winning side.");
+  if (winnerVeto) compositeBlockers.push("Fresh opposite continuation structure vetoes the signal.");
   if (chopGuardRequired && winnerStructureScore < 45) {
-    blockers.push(`Structure score ${winnerStructureScore} is below 45 for transition / unconfirmed 5m structure.`);
+    compositeBlockers.push(`Structure score ${winnerStructureScore} is below 45 for transition / unconfirmed 5m structure.`);
   }
-  if (winnerScore < threshold) blockers.push(`Score ${winnerScore} is below ${threshold}.`);
-  if (margin < requiredMargin) blockers.push(`Directional margin ${margin} is below ${requiredMargin}.`);
-  if (!Number.isFinite(currentPrice) || currentPrice <= 0) blockers.push("Current SPX price is unavailable.");
+  if (winnerScore < threshold) compositeBlockers.push(`Score ${winnerScore} is below ${threshold}.`);
+  if (margin < requiredMargin) compositeBlockers.push(`Directional margin ${margin} is below ${requiredMargin}.`);
+  if (!priceValid) compositeBlockers.push("Current SPX price is unavailable.");
 
-  const action: ZeroDteDirectionalAction = blockers.length
-    ? "WAIT"
-    : winner === "BULL"
-      ? "BUY"
-      : "SELL";
+  const compositeSide: Side | null = compositeBlockers.length ? null : winner;
+  const selectedSide = reversalSide ?? compositeSide;
+  const trigger: ZeroDteDirectionalTrigger = reversalSide
+    ? "REVERSAL_CAPTURE"
+    : compositeSide
+      ? "COMPOSITE"
+      : null;
+  const action: ZeroDteDirectionalAction = selectedSide === "BULL"
+    ? "BUY"
+    : selectedSide === "BEAR"
+      ? "SELL"
+      : "WAIT";
   const strategy: ZeroDteDirectionalStrategy = action === "BUY" ? "PCS" : action === "SELL" ? "CCS" : null;
+  const selectedScore = selectedSide === "BULL" ? bull : selectedSide === "BEAR" ? bear : winnerScore;
+  const selectedConfirmed = selectedSide === "BULL"
+    ? (structure.bullConfirmed || bullReversal.qualified)
+    : selectedSide === "BEAR"
+      ? (structure.bearConfirmed || bearReversal.qualified)
+      : winnerConfirmed;
+  const blockers = action === "WAIT" ? compositeBlockers : [];
 
+  const reversalReasons = selectedSide === "BULL" && bullReversal.qualified
+    ? reversalCaptureReasons(bullReversal)
+    : selectedSide === "BEAR" && bearReversal.qualified
+      ? reversalCaptureReasons(bearReversal)
+      : [];
   const reasons = action === "BUY"
-    ? [...structure.reasonsBull, ...market.reasonsBull, ...executionReasons(putRead, "PCS")]
+    ? [...reversalReasons, ...structure.reasonsBull, ...market.reasonsBull, ...executionReasons(putRead, "PCS")]
     : action === "SELL"
-      ? [...structure.reasonsBear, ...market.reasonsBear, ...executionReasons(callRead, "CCS")]
+      ? [...reversalReasons, ...structure.reasonsBear, ...market.reasonsBear, ...executionReasons(callRead, "CCS")]
       : waitReasons({ bull, bear, structure, market, putRead, callRead });
 
   return {
     action,
     strategy,
-    score: winnerScore,
+    score: selectedScore,
     bullishScore: bull,
     bearishScore: bear,
     margin,
@@ -172,17 +227,20 @@ export function buildZeroDteDirectionalSignal(args: {
     requiredMargin,
     generatedAt: args.structure.generatedAt,
     currentPrice,
-    state: transition ? "TRANSITION" : winnerScore >= 60 ? "TREND" : "NEUTRAL",
-    structureConfirmed: winnerConfirmed,
+    state: transition ? "TRANSITION" : selectedScore >= 60 ? "TREND" : "NEUTRAL",
+    trigger,
+    structureConfirmed: selectedConfirmed,
     reasons: dedupe(reasons).slice(0, 8),
     blockers: dedupe(blockers),
     gates: {
-      bullConfirmed: structure.bullConfirmed,
-      bearConfirmed: structure.bearConfirmed,
-      bullVeto: structure.bullVeto,
-      bearVeto: structure.bearVeto,
-      bullExternalBosVeto: structure.bullExternalBosVeto,
-      bearExternalBosVeto: structure.bearExternalBosVeto,
+      bullConfirmed: structure.bullConfirmed || bullReversal.qualified,
+      bearConfirmed: structure.bearConfirmed || bearReversal.qualified,
+      bullVeto: structure.bullVeto && !bullReversal.qualified,
+      bearVeto: structure.bearVeto && !bearReversal.qualified,
+      bullExternalBosVeto: structure.bullExternalBosVeto && !bullReversal.qualified,
+      bearExternalBosVeto: structure.bearExternalBosVeto && !bearReversal.qualified,
+      bullReversalCapture: bullReversal.qualified,
+      bearReversalCapture: bearReversal.qualified,
       transition,
       higherExternalTrend: args.higherTimeframeStructure?.trendExternal ?? null,
     },
@@ -357,6 +415,237 @@ function scoreStructure(args: {
     transition,
     reasonsBull,
     reasonsBear,
+  };
+}
+
+
+function chooseReversalCaptureSide(
+  bull: ZeroDteReversalCaptureRead,
+  bear: ZeroDteReversalCaptureRead,
+): Side | null {
+  if (bull.qualified && !bear.qualified) return "BULL";
+  if (bear.qualified && !bull.qualified) return "BEAR";
+  if (!bull.qualified || !bear.qualified) return null;
+
+  const bullIndex = bull.bos?.breakIndex ?? -1;
+  const bearIndex = bear.bos?.breakIndex ?? -1;
+  if (bullIndex === bearIndex) return null;
+  return bullIndex > bearIndex ? "BULL" : "BEAR";
+}
+
+function reversalCaptureReasons(read: ZeroDteReversalCaptureRead): string[] {
+  if (!read.qualified) return [];
+  const side = read.direction === "BULL" ? "Bullish" : "Bearish";
+  return [
+    `${side} reversal capture: CHoCH → BOS`,
+    ...read.confirmations.slice(0, 3),
+  ];
+}
+
+/**
+ * Early-turn path for the simple BULL/PCS and BEAR/CCS chart decision.
+ *
+ * This intentionally does not lower the normal 74/82 composite thresholds.
+ * Instead it recognizes a compact structural reversal sequence soon after it
+ * confirms, so lagging market context cannot hide an otherwise actionable turn.
+ *
+ * Mandatory:
+ *   same-direction CHoCH -> later same-direction BOS
+ *   BOS no older than 4 completed 1m bars
+ *   no opposite BOS after that BOS
+ *   not already extended too far beyond the BOS level
+ *
+ * Plus at least two independent confirmations:
+ *   HL/LH, same-direction active FVG, same-direction liquidity sweep, LRP agreement.
+ */
+export function detectDirectionalReversalCapture(args: {
+  candles: readonly StructureCandle[];
+  snapshot: ZeroDteStructureSnapshot;
+  leastResistancePath?: ZeroDteLeastResistancePath | null;
+  currentPrice: number;
+  expectedMove: number;
+  direction: StructureDirection;
+}): ZeroDteReversalCaptureRead {
+  const { candles, snapshot, direction } = args;
+  const lastIndex = Math.max(0, candles.length - 1);
+  const opposite: Side = direction === "BULL" ? "BEAR" : "BULL";
+  const sameDirectionBreaks = snapshot.breaks.filter((event) => event.direction === direction);
+
+  let choch: StructureBreak | null = null;
+  let bos: StructureBreak | null = null;
+  for (let index = sameDirectionBreaks.length - 1; index >= 0; index -= 1) {
+    const candidateBos = sameDirectionBreaks[index];
+    if (candidateBos.kind !== "BOS") continue;
+    const age = lastIndex - candidateBos.breakIndex;
+    if (age < 0 || age > 4) continue;
+
+    const candidateChoch = [...sameDirectionBreaks]
+      .slice(0, index)
+      .reverse()
+      .find((event) =>
+        event.kind === "CHOCH" &&
+        event.breakIndex < candidateBos.breakIndex &&
+        candidateBos.breakIndex - event.breakIndex <= 10,
+      ) ?? null;
+    if (!candidateChoch) continue;
+    choch = candidateChoch;
+    bos = candidateBos;
+    break;
+  }
+
+  if (!choch || !bos) {
+    return {
+      direction,
+      qualified: false,
+      choch,
+      bos,
+      bosAgeBars: bos ? Math.max(0, lastIndex - bos.breakIndex) : null,
+      confirmationCount: 0,
+      confirmations: [],
+      chaseDistancePoints: null,
+      maxChaseDistancePoints: null,
+      blocker: "CHoCH → BOS reversal sequence is not confirmed.",
+    };
+  }
+
+  const bosAgeBars = Math.max(0, lastIndex - bos.breakIndex);
+  const conflictingBreakBetween = snapshot.breaks.some((event) =>
+    event.direction === opposite &&
+    event.breakIndex > choch!.breakIndex &&
+    event.breakIndex < bos!.breakIndex,
+  );
+  if (conflictingBreakBetween) {
+    return {
+      direction,
+      qualified: false,
+      choch,
+      bos,
+      bosAgeBars,
+      confirmationCount: 0,
+      confirmations: [],
+      chaseDistancePoints: null,
+      maxChaseDistancePoints: null,
+      blocker: "Opposite structure interrupted the CHoCH → BOS sequence.",
+    };
+  }
+
+  const bosStillHeld = direction === "BULL"
+    ? args.currentPrice >= bos.level
+    : args.currentPrice <= bos.level;
+  if (!bosStillHeld) {
+    return {
+      direction,
+      qualified: false,
+      choch,
+      bos,
+      bosAgeBars,
+      confirmationCount: 0,
+      confirmations: [],
+      chaseDistancePoints: 0,
+      maxChaseDistancePoints: null,
+      blocker: "Price failed back through the reversal BOS level.",
+    };
+  }
+
+  const oppositeBosAfter = snapshot.breaks.some((event) =>
+    event.kind === "BOS" &&
+    event.direction === opposite &&
+    event.breakIndex > bos!.breakIndex,
+  );
+  if (oppositeBosAfter) {
+    return {
+      direction,
+      qualified: false,
+      choch,
+      bos,
+      bosAgeBars,
+      confirmationCount: 0,
+      confirmations: [],
+      chaseDistancePoints: null,
+      maxChaseDistancePoints: null,
+      blocker: "Opposite BOS printed after the reversal BOS.",
+    };
+  }
+
+  const atr = averageTrueRange(candles, 14);
+  const maxChaseDistancePoints = Math.max(
+    3,
+    Math.min(8, Math.max(args.expectedMove * 0.18, atr * 1.8)),
+  );
+  const chaseDistancePoints = direction === "BULL"
+    ? Math.max(0, args.currentPrice - bos.level)
+    : Math.max(0, bos.level - args.currentPrice);
+  if (chaseDistancePoints > maxChaseDistancePoints) {
+    return {
+      direction,
+      qualified: false,
+      choch,
+      bos,
+      bosAgeBars,
+      confirmationCount: 0,
+      confirmations: [],
+      chaseDistancePoints,
+      maxChaseDistancePoints,
+      blocker: "Reversal is already too extended to issue a fresh capture signal.",
+    };
+  }
+
+  const confirmations: string[] = [];
+
+  const desiredSwingLabel = direction === "BULL" ? "HL" : "LH";
+  const confirmingSwing = [...snapshot.swings]
+    .reverse()
+    .find((swing) =>
+      swing.label === desiredSwingLabel &&
+      swing.confirmIndex >= choch!.breakIndex - 2 &&
+      lastIndex - swing.confirmIndex <= 10,
+    );
+  if (confirmingSwing) confirmations.push(`${desiredSwingLabel} confirmed`);
+
+  const minGap = Math.max(0.35, atr * 0.16);
+  const fvgProximity = Math.max(4, Math.min(args.expectedMove * 0.30, 16));
+  const confirmingFvg = [...snapshot.fvgs]
+    .reverse()
+    .find((fvg) => {
+      if (fvg.mitigated || fvg.direction !== direction || fvg.high - fvg.low < minGap) return false;
+      if (fvg.startIndex < choch!.breakIndex - 1) return false;
+      if (direction === "BULL") {
+        return fvg.low <= args.currentPrice && args.currentPrice - fvg.high <= fvgProximity;
+      }
+      return fvg.high >= args.currentPrice && fvg.low - args.currentPrice <= fvgProximity;
+    });
+  if (confirmingFvg) confirmations.push(`${direction === "BULL" ? "Bull" : "Bear"} FVG holding`);
+
+  const confirmingSweep = [...snapshot.sweeps]
+    .reverse()
+    .find((sweep) =>
+      sweep.direction === direction &&
+      sweep.sweepIndex >= choch!.breakIndex - 8 &&
+      sweep.sweepIndex <= bos!.breakIndex &&
+      lastIndex - sweep.sweepIndex <= 12,
+    );
+  if (confirmingSweep) confirmations.push(`${direction === "BULL" ? "Downside" : "Upside"} sweep`);
+
+  const path = args.leastResistancePath;
+  const pathAligned = Boolean(
+    path &&
+    path.direction === (direction === "BULL" ? "UP" : "DOWN") &&
+    path.confidence >= 45,
+  );
+  if (pathAligned) confirmations.push(`LRP ${direction === "BULL" ? "up" : "down"} ${Math.round(path!.confidence)}%`);
+
+  const qualified = confirmations.length >= 2;
+  return {
+    direction,
+    qualified,
+    choch,
+    bos,
+    bosAgeBars,
+    confirmationCount: confirmations.length,
+    confirmations,
+    chaseDistancePoints,
+    maxChaseDistancePoints,
+    blocker: qualified ? null : "Reversal needs at least two confirmations beyond CHoCH → BOS.",
   };
 }
 
@@ -641,6 +930,7 @@ export type ZeroDteDirectionalLatchSide = "BULL" | "BEAR" | "WAIT";
 
 export type ZeroDteDirectionalLatchState = {
   side: ZeroDteDirectionalLatchSide;
+  trigger: ZeroDteDirectionalTrigger;
   enteredBarTime: number | null;
   lastBarTime: number | null;
   barsHeld: number;
@@ -655,6 +945,7 @@ export type ZeroDteDirectionalLatchStep = {
 export function emptyDirectionalLatch(): ZeroDteDirectionalLatchState {
   return {
     side: "WAIT",
+    trigger: null,
     enteredBarTime: null,
     lastBarTime: null,
     barsHeld: 0,
@@ -687,6 +978,7 @@ export function advanceDirectionalLatch(
     return {
       state: {
         side: entered,
+        trigger: raw.trigger ?? "COMPOSITE",
         enteredBarTime: completedBarTime,
         lastBarTime: completedBarTime,
         barsHeld: 1,
@@ -711,6 +1003,7 @@ export function advanceDirectionalLatch(
     return {
       state: {
         side: "WAIT",
+        trigger: null,
         enteredBarTime: null,
         lastBarTime: completedBarTime,
         barsHeld: 0,
@@ -727,6 +1020,7 @@ export function advanceDirectionalLatch(
     return {
       state: {
         side: "WAIT",
+        trigger: null,
         enteredBarTime: null,
         lastBarTime: completedBarTime,
         barsHeld: 0,
@@ -765,6 +1059,7 @@ export function applyDirectionalLatch(
     ...raw,
     action: bull ? "BUY" : "SELL",
     strategy: bull ? "PCS" : "CCS",
+    trigger: latch.trigger,
     score: bull ? raw.bullishScore : raw.bearishScore,
     structureConfirmed: bull ? raw.gates.bullConfirmed : raw.gates.bearConfirmed,
     blockers: [],

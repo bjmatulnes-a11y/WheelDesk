@@ -292,6 +292,7 @@ type DirectionalDecisionEvent = {
   score: number;
   structureScore: number;
   marketScore: number;
+  trigger?: "COMPOSITE" | "REVERSAL_CAPTURE" | null;
 };
 
 function directionalDecisionStorageKey(tradeDate: string) {
@@ -2372,6 +2373,10 @@ export default function SpxCommandChart() {
               score: Number(item.score),
               structureScore: Number(item.structureScore),
               marketScore: Number(item.marketScore),
+              trigger:
+                item.trigger === "REVERSAL_CAPTURE" || item.trigger === "COMPOSITE"
+                  ? item.trigger
+                  : null,
             }];
           })
         : [];
@@ -2409,6 +2414,7 @@ export default function SpxCommandChart() {
       marketScore: bull
         ? rawDirectionalSignal.groups.marketBull
         : rawDirectionalSignal.groups.marketBear,
+      trigger: rawDirectionalSignal.trigger,
     };
 
     setDirectionalDecisionEvents((current) => {
