@@ -292,7 +292,7 @@ type DirectionalDecisionEvent = {
   score: number;
   structureScore: number;
   marketScore: number;
-  trigger?: "COMPOSITE" | "REVERSAL_CAPTURE" | null;
+  trigger?: "COMPOSITE" | "REVERSAL_CAPTURE" | "CONTINUATION_CAPTURE" | null;
 };
 
 function directionalDecisionStorageKey(tradeDate: string) {
@@ -2374,7 +2374,9 @@ export default function SpxCommandChart() {
               structureScore: Number(item.structureScore),
               marketScore: Number(item.marketScore),
               trigger:
-                item.trigger === "REVERSAL_CAPTURE" || item.trigger === "COMPOSITE"
+                item.trigger === "REVERSAL_CAPTURE" ||
+                item.trigger === "CONTINUATION_CAPTURE" ||
+                item.trigger === "COMPOSITE"
                   ? item.trigger
                   : null,
             }];

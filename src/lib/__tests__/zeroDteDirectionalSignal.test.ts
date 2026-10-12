@@ -5,6 +5,7 @@ import {
   buildZeroDteDirectionalSignal,
   combineScores,
   detectDirectionalReversalCapture,
+  detectDirectionalContinuationCapture,
   emptyDirectionalLatch,
   scoreExecutionAdjustment,
   type ZeroDteDirectionalSignal,
@@ -46,6 +47,8 @@ function rawSignal(overrides: Partial<ZeroDteDirectionalSignal> = {}): ZeroDteDi
       bearExternalBosVeto: false,
       bullReversalCapture: false,
       bearReversalCapture: false,
+      bullContinuationCapture: false,
+      bearContinuationCapture: false,
       transition: false,
       higherExternalTrend: "BULL",
     },
@@ -338,6 +341,194 @@ describe("WheelDesk directional decision fixes", () => {
     expect(signal.action).toBe("SELL");
     expect(signal.strategy).toBe("CCS");
     expect(signal.trigger).toBe("REVERSAL_CAPTURE");
+  });
+
+  it("fires an early BEAR continuation capture on prior BOS -> LH -> fresh BOS + bear FVG", () => {
+    const candles = Array.from({ length: 14 }, (_, i) =>
+      candle(i * 60, 110 - i * 0.15, 111 - i * 0.15, 109 - i * 0.15, 109.7 - i * 0.15),
+    );
+    const snapshot: ZeroDteStructureSnapshot = {
+      generatedAt: candles.at(-1)?.time ?? null,
+      trendInternal: "BEAR",
+      trendExternal: "BEAR",
+      swings: [{
+        id: "lh-cont",
+        scale: "INTERNAL",
+        kind: "HIGH",
+        label: "LH",
+        time: 7 * 60,
+        confirmedAt: 9 * 60,
+        price: 108.9,
+        index: 7,
+        confirmIndex: 9,
+      }],
+      breaks: [
+        { id: "bos-1", scale: "INTERNAL", kind: "BOS", direction: "BEAR", level: 109.2, swingTime: 2 * 60, breakTime: 5 * 60, breakIndex: 5 },
+        { id: "choch-pull", scale: "INTERNAL", kind: "CHOCH", direction: "BULL", level: 108.7, swingTime: 6 * 60, breakTime: 8 * 60, breakIndex: 8 },
+        { id: "bos-2", scale: "INTERNAL", kind: "BOS", direction: "BEAR", level: 108.0, swingTime: 8 * 60, breakTime: 11 * 60, breakIndex: 11 },
+      ],
+      sweeps: [],
+      fvgs: [{
+        id: "bear-cont-fvg",
+        direction: "BEAR",
+        low: 108.3,
+        high: 108.8,
+        startedAt: 9 * 60,
+        startIndex: 9,
+        mitigated: false,
+        mitigatedAt: null,
+        mitigationIndex: null,
+      }],
+      reactionZones: [],
+      reversals: [],
+      fibLevels: [],
+    };
+
+    const read = detectDirectionalContinuationCapture({
+      candles,
+      snapshot,
+      currentPrice: 107.4,
+      expectedMove: 20,
+      direction: "BEAR",
+      leastResistancePath: null,
+    });
+    expect(read.qualified).toBe(true);
+    expect(read.confirmations).toContain("LH pullback confirmed");
+    expect(read.confirmations.some((item) => item.includes("Bear FVG"))).toBe(true);
+
+    const signal = buildZeroDteDirectionalSignal({
+      candles,
+      structure: snapshot,
+      higherTimeframeStructure: null,
+      recommendation: {
+        spxPrice: 107.4,
+        expectedMove: 20,
+        dealerPressure: 0,
+        spx: { strongestPin: null, callWall: null, putWall: null },
+      } as any,
+      leastResistancePath: null,
+      executionReads: [],
+    });
+    expect(signal.score).toBeLessThan(signal.threshold);
+    expect(signal.action).toBe("SELL");
+    expect(signal.strategy).toBe("CCS");
+    expect(signal.trigger).toBe("CONTINUATION_CAPTURE");
+  });
+
+  it("fires the mirrored BULL continuation capture on prior BOS -> HL -> fresh BOS + bull FVG", () => {
+    const candles = Array.from({ length: 14 }, (_, i) =>
+      candle(i * 60, 100 + i * 0.15, 101 + i * 0.15, 99 + i * 0.15, 100.3 + i * 0.15),
+    );
+    const snapshot: ZeroDteStructureSnapshot = {
+      generatedAt: candles.at(-1)?.time ?? null,
+      trendInternal: "BULL",
+      trendExternal: "BULL",
+      swings: [{
+        id: "hl-cont",
+        scale: "INTERNAL",
+        kind: "LOW",
+        label: "HL",
+        time: 7 * 60,
+        confirmedAt: 9 * 60,
+        price: 101.1,
+        index: 7,
+        confirmIndex: 9,
+      }],
+      breaks: [
+        { id: "bos-1", scale: "INTERNAL", kind: "BOS", direction: "BULL", level: 100.8, swingTime: 2 * 60, breakTime: 5 * 60, breakIndex: 5 },
+        { id: "choch-pull", scale: "INTERNAL", kind: "CHOCH", direction: "BEAR", level: 101.3, swingTime: 6 * 60, breakTime: 8 * 60, breakIndex: 8 },
+        { id: "bos-2", scale: "INTERNAL", kind: "BOS", direction: "BULL", level: 102.0, swingTime: 8 * 60, breakTime: 11 * 60, breakIndex: 11 },
+      ],
+      sweeps: [],
+      fvgs: [{
+        id: "bull-cont-fvg",
+        direction: "BULL",
+        low: 101.2,
+        high: 101.7,
+        startedAt: 9 * 60,
+        startIndex: 9,
+        mitigated: false,
+        mitigatedAt: null,
+        mitigationIndex: null,
+      }],
+      reactionZones: [],
+      reversals: [],
+      fibLevels: [],
+    };
+
+    const read = detectDirectionalContinuationCapture({
+      candles,
+      snapshot,
+      currentPrice: 102.6,
+      expectedMove: 20,
+      direction: "BULL",
+      leastResistancePath: null,
+    });
+    expect(read.qualified).toBe(true);
+    expect(read.confirmations).toContain("HL pullback confirmed");
+
+    const signal = buildZeroDteDirectionalSignal({
+      candles,
+      structure: snapshot,
+      higherTimeframeStructure: null,
+      recommendation: {
+        spxPrice: 102.6,
+        expectedMove: 20,
+        dealerPressure: 0,
+        spx: { strongestPin: null, callWall: null, putWall: null },
+      } as any,
+      leastResistancePath: null,
+      executionReads: [],
+    });
+    expect(signal.score).toBeLessThan(signal.threshold);
+    expect(signal.action).toBe("BUY");
+    expect(signal.strategy).toBe("PCS");
+    expect(signal.trigger).toBe("CONTINUATION_CAPTURE");
+  });
+
+  it("does not fire continuation without the HL/LH pullback", () => {
+    const candles = Array.from({ length: 12 }, (_, i) =>
+      candle(i * 60, 110 - i * 0.15, 111 - i * 0.15, 109 - i * 0.15, 109.7 - i * 0.15),
+    );
+    const snapshot: ZeroDteStructureSnapshot = {
+      generatedAt: candles.at(-1)?.time ?? null,
+      trendInternal: "BEAR",
+      trendExternal: "BEAR",
+      swings: [],
+      breaks: [
+        { id: "bos-a", scale: "INTERNAL", kind: "BOS", direction: "BEAR", level: 109, swingTime: 60, breakTime: 4 * 60, breakIndex: 4 },
+        { id: "bos-b", scale: "INTERNAL", kind: "BOS", direction: "BEAR", level: 108, swingTime: 6 * 60, breakTime: 10 * 60, breakIndex: 10 },
+      ],
+      sweeps: [], fvgs: [], reactionZones: [], reversals: [], fibLevels: [],
+    };
+    const read = detectDirectionalContinuationCapture({
+      candles, snapshot, currentPrice: 107.6, expectedMove: 20, direction: "BEAR", leastResistancePath: null,
+    });
+    expect(read.qualified).toBe(false);
+    expect(read.blocker).toContain("LH pullback");
+  });
+
+  it("blocks a continuation arrow after the fresh BOS has already run too far", () => {
+    const candles = Array.from({ length: 14 }, (_, i) =>
+      candle(i * 60, 110 - i * 0.15, 111 - i * 0.15, 109 - i * 0.15, 109.7 - i * 0.15),
+    );
+    const snapshot: ZeroDteStructureSnapshot = {
+      generatedAt: candles.at(-1)?.time ?? null,
+      trendInternal: "BEAR", trendExternal: "BEAR",
+      swings: [{ id: "lh", scale: "INTERNAL", kind: "HIGH", label: "LH", time: 7 * 60, confirmedAt: 9 * 60, price: 109, index: 7, confirmIndex: 9 }],
+      breaks: [
+        { id: "bos-a", scale: "INTERNAL", kind: "BOS", direction: "BEAR", level: 109, swingTime: 60, breakTime: 5 * 60, breakIndex: 5 },
+        { id: "bos-b", scale: "INTERNAL", kind: "BOS", direction: "BEAR", level: 108, swingTime: 7 * 60, breakTime: 11 * 60, breakIndex: 11 },
+      ],
+      sweeps: [],
+      fvgs: [{ id: "f", direction: "BEAR", low: 108.2, high: 108.8, startedAt: 9 * 60, startIndex: 9, mitigated: false, mitigatedAt: null, mitigationIndex: null }],
+      reactionZones: [], reversals: [], fibLevels: [],
+    };
+    const read = detectDirectionalContinuationCapture({
+      candles, snapshot, currentPrice: 100, expectedMove: 20, direction: "BEAR", leastResistancePath: null,
+    });
+    expect(read.qualified).toBe(false);
+    expect(read.blocker).toContain("too extended");
   });
 
 });
