@@ -17,11 +17,12 @@ export function buildCreditSpreadTrackRecord(args: {
   openingDayType: "INSIDE_RANGE" | "OUTSIDE_UP" | "OUTSIDE_DOWN" | null;
   entryTimeBucket: string | null;
 }): CreditSpreadTrackRecord | null {
-  if (!args.leg) return null;
-  const side = args.leg.side;
+  const leg = args.leg;
+  if (!leg) return null;
+  const side = leg.side;
   const strategy = side === "PCS" ? "put-credit-spread" : "call-credit-spread";
-  const guardKind = args.leg.guard?.kind ?? null;
-  const distanceEm = args.leg.distanceEm;
+  const guardKind = leg.guard?.kind ?? null;
+  const distanceEm = leg.distanceEm;
   const base = args.trades.filter((trade) =>
     trade.state === "closed" &&
     trade.strategy === strategy &&
@@ -31,7 +32,7 @@ export function buildCreditSpreadTrackRecord(args: {
     (trade.planDistanceEm == null || Math.abs(trade.planDistanceEm - distanceEm) <= 0.1),
   );
   const exact = base.filter((trade) =>
-    trade.entryTrigger === args.leg.entryTrigger &&
+    trade.entryTrigger === leg.entryTrigger &&
     (args.entryTimeBucket === null || trade.entryTimeBucket === args.entryTimeBucket),
   );
   if (exact.length >= 10) return summarize(exact, "EXACT");
