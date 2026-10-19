@@ -297,19 +297,22 @@ export async function fetchSchwabPriceHistory(args: {
   // by the live collector cache. Existing callers keep the prior 24h defaults.
   const now = Math.floor(rawNow / 4_000) * 4_000;
   const frequencyType = args.frequencyType ?? "minute";
+  const hasExplicitRange = args.startDate !== undefined || args.endDate !== undefined;
   const params = new URLSearchParams({
     symbol: args.symbol,
     periodType: args.periodType ?? "day",
-    period: String(args.period ?? 1),
     frequencyType,
     frequency: String(args.frequency ?? 1),
     needExtendedHoursData: args.needExtendedHoursData ? "true" : "false",
     needPreviousClose: args.needPreviousClose === false ? "false" : "true",
   });
+  // Schwab's price-history API accepts either a chart period or explicit dates.
+  // Avoid sending both because accounts/SDKs have shown inconsistent precedence.
+  if (!hasExplicitRange) params.set("period", String(args.period ?? 1));
 
   if (args.startDate !== undefined) params.set("startDate", String(args.startDate));
   if (args.endDate !== undefined) params.set("endDate", String(args.endDate));
-  if (frequencyType === "minute" && args.startDate === undefined && args.endDate === undefined) {
+  if (frequencyType === "minute" && !hasExplicitRange) {
     params.set("startDate", String(now - 24 * 60 * 60 * 1000));
     params.set("endDate", String(now));
   }
