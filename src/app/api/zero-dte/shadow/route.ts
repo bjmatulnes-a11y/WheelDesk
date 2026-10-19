@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseServer } from "../../../../lib/supabase-server";
 import { getAuthenticatedUserFromRequest } from "../../../../lib/billing/auth-request";
+import { shadowSettlementCloseValuePoints, shadowSettlementDebitPoints } from "../../../../lib/zeroDteShadowTrade";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -451,11 +452,27 @@ async function sampleShadowBatch(body: any, userId: string) {
       }
 
       if (adaptive.shouldExit && adaptive.exitReason) {
+        const adaptiveSettlementCloseValue =
+          adaptive.exitReason === "ADAPTIVE_SESSION_CLOSE"
+            ? shadowSettlementCloseValuePoints(
+                Array.isArray(update.adaptive_active_legs)
+                  ? (update.adaptive_active_legs as any[])
+                  : Array.isArray(row.adaptive_active_legs) && row.adaptive_active_legs.length
+                    ? row.adaptive_active_legs
+                    : Array.isArray(row.legs)
+                      ? row.legs
+                      : [],
+                spot,
+              )
+            : null;
+        const adaptiveExitDebit = adaptiveSettlementCloseValue === null
+          ? buybackDebit
+          : Math.max(0, -adaptiveSettlementCloseValue);
         Object.assign(update, {
           adaptive_state: "closed",
           adaptive_exit_time: generatedAt,
           adaptive_exit_reason: adaptive.exitReason,
-          adaptive_exit_buyback_debit: buybackDebit,
+          adaptive_exit_buyback_debit: adaptiveExitDebit,
           adaptive_pnl_dollars: adaptiveCurrentPnl,
           adaptive_marked_pnl_dollars: adaptiveCurrentPnl,
           adaptive_structure_state: "CLOSED",
@@ -502,16 +519,23 @@ async function closeShadow(body: any, userId: string) {
   if (!row) return jsonError("Shadow trade not found", 404);
 
   const entryCredit = numeric(row.entry_sellable_credit) ?? 0;
+  const exitReason = String(body.exitReason ?? "EXIT_ENGINE");
+  const settlementSpot = numeric(body.settlementSpot);
+  const settlementDebit =
+    exitReason === "SESSION_CLOSE" && settlementSpot !== null
+      ? shadowSettlementDebitPoints(Array.isArray(row.legs) ? row.legs : [], settlementSpot)
+      : null;
+  const finalExitDebit = settlementDebit ?? exitDebit;
   const payload = {
     state: "closed",
     updated_at: body.exitTime,
     exit_time: body.exitTime,
-    exit_reason: String(body.exitReason ?? "EXIT_ENGINE"),
-    exit_buyback_debit: exitDebit,
+    exit_reason: exitReason,
+    exit_buyback_debit: finalExitDebit,
     exit_score: numeric(body.exitScore) ?? 0,
     exit_emergency: Boolean(body.emergencyExit),
     pnl_conservative_dollars:
-      exitDebit === null ? null : (entryCredit - exitDebit) * 100,
+      finalExitDebit === null ? null : (entryCredit - finalExitDebit) * 100,
   };
   const { data, error } = await supabaseServer
     .from("zero_dte_shadow_trades")
@@ -812,11 +836,22 @@ function errorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
   if (error && typeof error === "object") {
     const value = error as Record<string, unknown>;
+    const code = typeof value.code === "string" ? value.code : "";
+    const message = typeof value.message === "string" ? value.message : "";
+    const details = typeof value.details === "string" ? value.details : "";
+    const hint = typeof value.hint === "string" ? value.hint : "";
+    const schemaBehind =
+      code === "PGRST204" ||
+      code === "42703" ||
+      /could not find.*column|column .* does not exist/i.test(`${message} ${details}`);
     return [
-      typeof value.code === "string" ? `[${value.code}]` : "",
-      typeof value.message === "string" ? value.message : "",
-      typeof value.details === "string" ? value.details : "",
-      typeof value.hint === "string" ? `Hint: ${value.hint}` : "",
+      code ? `[${code}]` : "",
+      message,
+      details,
+      hint ? `Hint: ${hint}` : "",
+      schemaBehind
+        ? "Shadow Lab schema is behind this build. Run src/lib/db/zero-dte-shadow-repair-261019-migration.sql once in Supabase."
+        : "",
     ]
       .filter(Boolean)
       .join(" · ");

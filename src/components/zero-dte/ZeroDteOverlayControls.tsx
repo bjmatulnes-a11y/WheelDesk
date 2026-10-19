@@ -20,7 +20,7 @@ export interface ZeroDteOverlaySettings {
 export const SIGNAL_STRUCTURE_OVERLAY: ZeroDteOverlaySettings = {
   enabled: true,
   decisionArrow: true,
-  priorLevels: true,
+  priorLevels: false,
   externalStructure: false,
   internalStructure: false,
   swingLabels: false,

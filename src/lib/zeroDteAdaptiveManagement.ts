@@ -4,7 +4,7 @@ import type { ZeroDteExecutionRead } from "./zeroDteExecutionIntelligence";
 import { leastResistanceThreatensShort } from "./zeroDteLeastResistancePath";
 import type { ExecutionLeg } from "./zeroDteExecutionIntelligence";
 import type { ZeroDteChainRow } from "./zeroDteOiIntelligence";
-import type { ZeroDteShadowTrade, AdaptiveStructureState } from "./zeroDteShadowTrade";
+import { shadowSettlementCloseValuePoints, type ZeroDteShadowTrade, type AdaptiveStructureState } from "./zeroDteShadowTrade";
 import { aggregateGreeks, buildShadowLegSnapshots, type ShadowGreekSnapshot } from "./zeroDteAdaptivePortfolio";
 
 export type AdaptiveManagementState =
@@ -107,9 +107,21 @@ export function evaluateZeroDteAdaptiveManagement(args: {
     trade.strategy === "iron-fly" || !args.rows?.length
       ? null
       : markAdaptiveVerticalStructure(trade, args.rows);
-  const currentPnlDollars =
-    structureMark?.markedPnlDollars ??
-    (debit === null ? null : (trade.entrySellableCredit - debit) * 100);
+  const settlementLegs = trade.strategy === "iron-fly"
+    ? trade.legs
+    : trade.adaptiveActiveLegs?.length
+      ? trade.adaptiveActiveLegs
+      : trade.legs;
+  const settlementNetCash = trade.strategy === "iron-fly"
+    ? trade.entrySellableCredit
+    : trade.adaptiveNetCashPoints ?? trade.entrySellableCredit;
+  const settlementCloseValue = read.timeRegime.regime === "CLOSED"
+    ? shadowSettlementCloseValuePoints(settlementLegs, spot)
+    : null;
+  const currentPnlDollars = settlementCloseValue !== null
+    ? (settlementNetCash + settlementCloseValue) * 100
+    : structureMark?.markedPnlDollars ??
+      (debit === null ? null : (trade.entrySellableCredit - debit) * 100);
   const currentAdverse = currentPnlDollars === null ? 0 : Math.max(0, -currentPnlDollars);
   const currentFavorable = currentPnlDollars === null ? 0 : Math.max(0, currentPnlDollars);
   const priorAdaptiveMae = trade.adaptiveMaxAdverseExcursionDollars ?? 0;

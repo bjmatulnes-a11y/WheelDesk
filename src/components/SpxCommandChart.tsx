@@ -116,6 +116,8 @@ import {
   type ZeroDteOverlaySettings,
 } from "./zero-dte/ZeroDteOverlayControls";
 import { ZeroDteStructureOverlay } from "./zero-dte/ZeroDteStructureOverlay";
+import { ZeroDteCreditSpreadPlanCard } from "./zero-dte/ZeroDteCreditSpreadPlanCard";
+import { buildDefensibleCreditSpreadPlan } from "../lib/zeroDteCreditSpreadPlan";
 import {
   aggregateStructureCandles,
   advanceDirectionalLatch,
@@ -242,19 +244,21 @@ type OverlayKey =
   | "heatmap";
 
 const DEFAULT_OVERLAYS: Record<OverlayKey, boolean> = {
-  vwap: true,
+  // Account-repair / credit-spread focus: keep the trading chart intentionally quiet.
+  // All analytics still run underneath; advanced view can turn any layer back on.
+  vwap: false,
   ema9: false,
   ema20: false,
   ema50: false,
   walls: true,
   pin: true,
-  center: true,
-  expectedMove: true,
+  center: false,
+  expectedMove: false,
   forecast: false,
-  leastResistance: true,
-  structure: true,
-  liquidityZones: true,
-  heatmap: true,
+  leastResistance: false,
+  structure: false,
+  liquidityZones: false,
+  heatmap: false,
 };
 
 const OVERLAY_LABELS: Array<[OverlayKey, string]> = [
@@ -339,6 +343,7 @@ export default function SpxCommandChart() {
   const [overlays, setOverlays] = useState(DEFAULT_OVERLAYS);
   const [structureOverlaySettings, setStructureOverlaySettings] =
     useState<ZeroDteOverlaySettings>(SIGNAL_STRUCTURE_OVERLAY);
+  const [advancedView, setAdvancedView] = useState(false);
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
@@ -1610,7 +1615,7 @@ export default function SpxCommandChart() {
         );
       }
 
-      if (mapManager.state) {
+      if (advancedView && mapManager.state) {
         const opening = mapManager.state.opening;
         horizontal(opening.center, "rgba(255,212,0,.42)", 1, LineStyle.Dashed);
         horizontal(opening.lowerWing, "rgba(127,143,164,.36)", 1, LineStyle.Dashed);
@@ -1647,7 +1652,7 @@ export default function SpxCommandChart() {
       chart.timeScale().fitContent();
       hasInitialFitRef.current = true;
     }
-  }, [analytics, controllingMap, displaySessionCandles, leastResistancePath, mapManager.state, overlays, recommendation]);
+  }, [advancedView, analytics, controllingMap, displaySessionCandles, leastResistancePath, mapManager.state, overlays, recommendation]);
 
   useEffect(() => {
     const chartHost = chartHostRef.current;
@@ -2443,6 +2448,37 @@ export default function SpxCommandChart() {
     [directionalLatch, rawDirectionalSignal],
   );
 
+  const creditSpreadPlanCandidates = useMemo(() => {
+    const strategy = directionalSignal.strategy === "PCS"
+      ? "put-credit-spread"
+      : directionalSignal.strategy === "CCS"
+        ? "call-credit-spread"
+        : null;
+    if (!strategy || !scannerExecutionCandidateBooks) return [] as ExecutionCandidate[];
+    return scannerExecutionCandidateBooks[strategy]
+      .map((candidate) => repriceExecutionCandidate(candidate, spxRows));
+  }, [directionalSignal.strategy, scannerExecutionCandidateBooks, spxRows]);
+
+  const defensibleCreditSpreadPlan = useMemo(() =>
+    buildDefensibleCreditSpreadPlan({
+      directional: directionalSignal,
+      spot: currentPrice,
+      expectedMove: recommendation?.expectedMove ?? null,
+      candidates: creditSpreadPlanCandidates,
+      anchors: structureAnchors,
+      structure: decisionStructureSnapshot,
+      policy: riskPolicy,
+    }),
+  [
+    creditSpreadPlanCandidates,
+    currentPrice,
+    decisionStructureSnapshot,
+    directionalSignal,
+    recommendation?.expectedMove,
+    riskPolicy,
+    structureAnchors,
+  ]);
+
   const clearDirectionalDecisionEvents = useCallback(() => {
     const tradeDate = harvest?.tradeDate;
     setDirectionalDecisionEvents([]);
@@ -2753,6 +2789,7 @@ export default function SpxCommandChart() {
               generatedAt: harvest.generatedAt,
               read,
               reason,
+              settlementSpot: reason === "SESSION_CLOSE" ? recommendation.spxPrice : null,
             }),
           ),
         );
@@ -2983,6 +3020,15 @@ export default function SpxCommandChart() {
                   : "CONNECT SCHWAB"}
           </button>
 
+          <button
+            type="button"
+            onClick={() => setAdvancedView((value) => !value)}
+            style={advancedView ? styles.secondaryButton : styles.refreshButton}
+            title="Focus mode hides diagnostic overlays/panels but keeps every engine running underneath."
+          >
+            {advancedView ? "FOCUS VIEW" : "ADVANCED"}
+          </button>
+
           <select
             value={selectedExpiration}
             onChange={(event) => setSelectedExpiration(event.target.value)}
@@ -3025,68 +3071,46 @@ export default function SpxCommandChart() {
         </div>
       </div>
 
-      <div style={styles.metricGrid}>
-        <MetricCard label="SPX" value={currentPrice ? currentPrice.toFixed(2) : "—"} />
-        <MetricCard
-          label="Controlling Center"
-          value={controllingMap?.center?.toFixed(0) ?? recommendation?.suggestedCenter?.toFixed(0) ?? "—"}
-        />
-        <MetricCard
-          label="Put Wall"
-          value={controllingMap?.putWall?.toFixed(0) ?? recommendation?.spx.putWall?.toFixed(0) ?? "—"}
-        />
-        <MetricCard
-          label="Call Wall"
-          value={controllingMap?.callWall?.toFixed(0) ?? recommendation?.spx.callWall?.toFixed(0) ?? "—"}
-        />
-        <MetricCard
-          label="Pin"
-          value={controllingMap?.pin?.toFixed(0) ?? recommendation?.spx.strongestPin?.toFixed(0) ?? "—"}
-        />
-        <MetricCard
-          label="Dealer Pressure"
-          value={
-            recommendation
-              ? `${recommendation.dealerPressure > 0 ? "+" : ""}${recommendation.dealerPressure}`
-              : "—"
-          }
-        />
-        <MetricCard
-          label="Confidence"
-          value={
-            recommendation ? `${recommendation.confidenceScore}%` : "—"
-          }
-        />
-        <MetricCard
-          label="Expected Move"
-          value={recommendation?.expectedMove?.toFixed(1) ?? "—"}
-        />
-        <MetricCard
-          label="Path Bias"
-          value={leastResistancePath ? `${leastResistancePath.direction} · ${leastResistancePath.confidence}%` : "—"}
-        />
-      </div>
+      {advancedView ? (
+        <>
+          <div style={styles.metricGrid}>
+            <MetricCard label="SPX" value={currentPrice ? currentPrice.toFixed(2) : "—"} />
+            <MetricCard label="Controlling Center" value={controllingMap?.center?.toFixed(0) ?? recommendation?.suggestedCenter?.toFixed(0) ?? "—"} />
+            <MetricCard label="Put Wall" value={controllingMap?.putWall?.toFixed(0) ?? recommendation?.spx.putWall?.toFixed(0) ?? "—"} />
+            <MetricCard label="Call Wall" value={controllingMap?.callWall?.toFixed(0) ?? recommendation?.spx.callWall?.toFixed(0) ?? "—"} />
+            <MetricCard label="Pin" value={controllingMap?.pin?.toFixed(0) ?? recommendation?.spx.strongestPin?.toFixed(0) ?? "—"} />
+            <MetricCard label="Dealer Pressure" value={recommendation ? `${recommendation.dealerPressure > 0 ? "+" : ""}${recommendation.dealerPressure}` : "—"} />
+            <MetricCard label="Confidence" value={recommendation ? `${recommendation.confidenceScore}%` : "—"} />
+            <MetricCard label="Expected Move" value={recommendation?.expectedMove?.toFixed(1) ?? "—"} />
+            <MetricCard label="Path Bias" value={leastResistancePath ? `${leastResistancePath.direction} · ${leastResistancePath.confidence}%` : "—"} />
+          </div>
 
-      <div style={styles.overlayBar}>
-        {OVERLAY_LABELS.map(([key, label]) => (
-          <button
-            key={key}
-            onClick={() => toggleOverlay(key)}
-            style={{
-              ...styles.overlayButton,
-              ...(overlays[key] ? styles.overlayButtonActive : {}),
-            }}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+          <div style={styles.overlayBar}>
+            {OVERLAY_LABELS.map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => toggleOverlay(key)}
+                style={{ ...styles.overlayButton, ...(overlays[key] ? styles.overlayButtonActive : {}) }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
 
-      <ZeroDteOverlayControls
-        value={structureOverlaySettings}
-        onChange={setStructureOverlaySettings}
-      />
+          <ZeroDteOverlayControls value={structureOverlaySettings} onChange={setStructureOverlaySettings} />
+        </>
+      ) : (
+        <div style={styles.focusReadout}>
+          <span><strong>FOCUS</strong> · SPX {currentPrice ? currentPrice.toFixed(2) : "—"}</span>
+          <span>Put wall {controllingMap?.putWall?.toFixed(0) ?? recommendation?.spx.putWall?.toFixed(0) ?? "—"}</span>
+          <span>Call wall {controllingMap?.callWall?.toFixed(0) ?? recommendation?.spx.callWall?.toFixed(0) ?? "—"}</span>
+          <span>Pin {controllingMap?.pin?.toFixed(0) ?? recommendation?.spx.strongestPin?.toFixed(0) ?? "—"}</span>
+          <span>EM {recommendation?.expectedMove?.toFixed(1) ?? "—"}</span>
+        </div>
+      )}
 
+      {advancedView ? (
+        <>
       <div style={styles.signalPaintBar}>
         <div style={styles.signalPaintTitle}>
           <strong>Execution Paint</strong>
@@ -3163,6 +3187,9 @@ export default function SpxCommandChart() {
         </div>
       ) : null}
 
+        </>
+      ) : null}
+
       {error ? <div style={styles.error}>{error}</div> : null}
       {expirationError ? (
         <div style={styles.qualityWarning}>
@@ -3201,7 +3228,7 @@ export default function SpxCommandChart() {
               chart={chartRef.current}
               series={candleSeriesRef.current}
               snapshot={structureSnapshot}
-              settings={structureOverlaySettings}
+              settings={advancedView ? structureOverlaySettings : SIGNAL_STRUCTURE_OVERLAY}
               anchors={structureAnchors}
               confluenceTolerancePoints={structureConfluenceTolerance}
               decision={directionalSignal}
@@ -3251,31 +3278,39 @@ export default function SpxCommandChart() {
             ) : null}
           </div>
 
-          <ZeroDteEsOrderFlowPanel
-            enabled={!manualChainResearch}
-            spxPrice={currentPrice > 0 ? currentPrice : null}
-            onManagementRead={handleLiveAuctionManagementRead}
-          />
+          <div style={advancedView ? undefined : styles.hiddenAnalytics}>
+            <ZeroDteEsOrderFlowPanel
+              enabled={!manualChainResearch}
+              spxPrice={currentPrice > 0 ? currentPrice : null}
+              onManagementRead={handleLiveAuctionManagementRead}
+            />
+          </div>
 
           <div style={styles.legend}>
             <LegendItem color="#ff8a34" text="Call Wall" />
             <LegendItem color="#2f80ed" text="Put Wall" />
             <LegendItem color="#f4f7fb" text="Pin" />
-            {structureOverlaySettings.enabled ? (
+            {advancedView && structureOverlaySettings.enabled ? (
               <>
                 <LegendItem color="#14D990" text="Bull Structure / FVG" />
                 <LegendItem color="#F24968" text="Bear Structure / FVG" />
               </>
             ) : null}
-            <LegendItem color="#ffd400" text="IF Center" />
-            <LegendItem color="#c084fc" text="Least-resistance path / envelope" />
-            <LegendItem color="#71dce3" text="ES demand zone" />
-            <LegendItem color="#ff9096" text="ES supply zone" />
-            <LegendItem color="#cbd5e1" text="ES balanced acceptance" />
+            {advancedView ? (
+              <>
+                <LegendItem color="#ffd400" text="IF Center" />
+                <LegendItem color="#c084fc" text="Least-resistance path / envelope" />
+                <LegendItem color="#71dce3" text="ES demand zone" />
+                <LegendItem color="#ff9096" text="ES supply zone" />
+                <LegendItem color="#cbd5e1" text="ES balanced acceptance" />
+              </>
+            ) : null}
           </div>
         </div>
 
         <aside style={styles.sideRail}>
+          {advancedView ? (
+            <>
           <div
             style={{
               ...styles.executionCard,
@@ -3658,9 +3693,22 @@ export default function SpxCommandChart() {
               </>
             ) : null}
           </div>
+            </>
+          ) : (
+            <ZeroDteCreditSpreadPlanCard
+              plan={defensibleCreditSpreadPlan}
+              policy={riskPolicy}
+              shadowOpen={shadowTrades.filter((trade) => trade.state === "open").length}
+              shadowClosed={shadowTrades.filter((trade) => trade.state === "closed").length}
+              shadowError={shadowError}
+            />
+          )}
         </aside>
       </div>
 
+      {!advancedView && executionDbError ? <div style={styles.error}>Execution DB: {executionDbError}</div> : null}
+      {advancedView ? (
+        <>
       <ZeroDteRiskPolicyPanel
         policy={riskPolicy}
         onChange={setRiskPolicy}
@@ -3780,6 +3828,9 @@ export default function SpxCommandChart() {
           preferredSetupKey={entryExecutionRead?.setupKey ?? liveExecutionRead?.setupKey ?? null}
         />
       </div>
+        </>
+      ) : null}
+
     </section>
   );
 }
@@ -4169,6 +4220,22 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 19,
     fontWeight: 850,
     marginTop: 4,
+  },
+  focusReadout: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "6px 14px",
+    marginTop: 10,
+    marginBottom: 8,
+    padding: "8px 10px",
+    border: "1px solid #173047",
+    borderRadius: 9,
+    background: "#08131d",
+    color: "#9fb2c5",
+    fontSize: 11,
+  },
+  hiddenAnalytics: {
+    display: "none",
   },
   overlayBar: {
     display: "flex",

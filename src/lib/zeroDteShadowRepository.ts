@@ -238,6 +238,7 @@ export async function closeZeroDteShadowTrade(args: {
   generatedAt: string;
   read: ZeroDteExecutionRead;
   reason: string;
+  settlementSpot?: number | null;
 }) {
   const json = await call({
     action: "close",
@@ -248,6 +249,7 @@ export async function closeZeroDteShadowTrade(args: {
     exitBuybackDebit: args.read.currentBuybackDebit ?? args.read.currentCredit,
     exitScore: args.read.exitScore,
     emergencyExit: args.read.emergencyExit,
+    settlementSpot: args.settlementSpot ?? null,
   });
   return (json.trade ?? null) as ZeroDteShadowTrade | null;
 }

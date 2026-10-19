@@ -205,6 +205,18 @@ export function shadowTradeToExecutionPosition(
     setupSource: "engine",
     engineClearedAtEntry: true,
     overrideReason: null,
+    adaptiveManagementState: trade.adaptiveManagementState,
+    adaptiveAction: trade.adaptiveAction,
+    adaptiveReason: trade.adaptiveReason,
+    adaptiveStructureState: trade.adaptiveStructureState,
+    adaptiveActiveLegs: trade.adaptiveActiveLegs,
+    adaptiveNetCashPoints: trade.adaptiveNetCashPoints,
+    adaptiveReleasedShortStrike: trade.adaptiveReleasedShortStrike,
+    adaptiveReinstatedShortStrike: trade.adaptiveReinstatedShortStrike,
+    adaptiveMarkedPnlDollars: trade.adaptiveMarkedPnlDollars,
+    adaptiveMaxAdverseExcursionDollars: trade.adaptiveMaxAdverseExcursionDollars,
+    adaptiveMaxFavorableExcursionDollars: trade.adaptiveMaxFavorableExcursionDollars,
+    adaptiveLastUpdatedAt: trade.lastSampleAt,
     signalTime: trade.signalTime,
     signalCredit: trade.entryMarkCredit,
     entryMarkCredit: trade.entryMarkCredit,
@@ -333,6 +345,31 @@ export function shadowExitAdvisory(read: ZeroDteExecutionRead) {
     exitScore: read.exitScore,
     action: read.action,
   };
+}
+
+
+export function shadowSettlementCloseValuePoints(
+  legs: ExecutionLeg[],
+  spot: number,
+): number | null {
+  if (!Number.isFinite(spot) || spot <= 0 || !legs.length) return null;
+  let value = 0;
+  for (const leg of legs) {
+    if (!Number.isFinite(leg.strike)) return null;
+    const intrinsic = leg.optionType === "call"
+      ? Math.max(0, spot - leg.strike)
+      : Math.max(0, leg.strike - spot);
+    value += leg.action === "buy" ? intrinsic : -intrinsic;
+  }
+  return value;
+}
+
+export function shadowSettlementDebitPoints(
+  legs: ExecutionLeg[],
+  spot: number,
+): number | null {
+  const closeValue = shadowSettlementCloseValuePoints(legs, spot);
+  return closeValue === null ? null : Math.max(0, -closeValue);
 }
 
 function finitePositive(value: unknown) {
