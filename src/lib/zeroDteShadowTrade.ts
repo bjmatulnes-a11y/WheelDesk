@@ -88,6 +88,24 @@ export type ZeroDteShadowTrade = {
   shortStrikeBeyondPriorLevel?: boolean | null;
   dailyTrend?: "BULL" | "BEAR" | null;
   dailyFlipInPlay?: boolean | null;
+  edgePts?: number | null;
+  evPerLotDollars?: number | null;
+  histProbTouch?: number | null;
+  histProbItmAtClose?: number | null;
+  moveTableKeyUsed?: string | null;
+  moveTableN?: number | null;
+  planStatus?: "READY" | "PAIRED" | "WAIT" | "NO_TRADE_DAY" | null;
+  entryTrigger?: "FADE_REJECTION" | "FADE_SWEEP" | "NONE" | null;
+  entryTimeBucket?: string | null;
+  gammaRegime?: "POSITIVE" | "NEGATIVE" | null;
+  directionalTilt?: "BULL" | "BEAR" | "NONE" | null;
+  exitRule?: "TAKE_PROFIT" | "STRUCTURE_STOP" | "PRICE_STOP" | "TIME_STOP" | "EXPIRED" | null;
+  planGuardKind?: "OI" | "PRIOR" | "SWING" | "FVG" | null;
+  planGuardLabel?: string | null;
+  planGuardPrice?: number | null;
+  planDistanceEm?: number | null;
+  planTakeProfitPct?: number | null;
+  planStopCreditMultiple?: number | null;
   portfolioDecision: ShadowPortfolioDecision | null;
   portfolioRole: ShadowPortfolioRole | null;
   portfolioConviction: LiveEsConvictionTier | null;
@@ -166,7 +184,7 @@ export type ShadowShortLegEntry = {
 
 export type ShadowExitDecision = {
   shouldExit: boolean;
-  reason: "TAKE_PROFIT_50" | "SHORT_LEG_3X_STOP" | "PROFIT_PROTECTION" | null;
+  reason: "TAKE_PROFIT" | "STRUCTURE_STOP" | "PRICE_STOP" | "TIME_STOP" | "PROFIT_PROTECTION" | null;
   detail: string;
 };
 
@@ -293,31 +311,70 @@ export function currentShadowShortLegRead(
 
 export function evaluateZeroDteShadowExit(
   trade: ZeroDteShadowTrade,
+  context?: {
+    spotClose?: number | null;
+    generatedAt?: string | number | null;
+    remainingMovePoints?: number | null;
+  },
 ): ShadowExitDecision {
   if (trade.state !== "open" || trade.entrySellableCredit <= 0) {
     return { shouldExit: false, reason: null, detail: "Shadow trade is not open." };
   }
 
+  const takeProfitPct = clampNumber(trade.planTakeProfitPct ?? 0.5, 0.1, 0.9);
   if (
     trade.currentBuybackDebit !== null &&
-    trade.currentBuybackDebit <= trade.entrySellableCredit * 0.5
+    trade.currentBuybackDebit <= trade.entrySellableCredit * takeProfitPct
   ) {
     return {
       shouldExit: true,
-      reason: "TAKE_PROFIT_50",
-      detail: `Executable package debit ${trade.currentBuybackDebit.toFixed(2)} has captured at least 50% of the ${trade.entrySellableCredit.toFixed(2)} entry credit.`,
+      reason: "TAKE_PROFIT",
+      detail: `Executable package debit ${trade.currentBuybackDebit.toFixed(2)} reached the ${(takeProfitPct * 100).toFixed(0)}% entry-credit take-profit debit.`,
     };
   }
 
+  const stopMultiple = clampNumber(trade.planStopCreditMultiple ?? 2, 1.1, 5);
   if (
-    trade.currentShortLegMultiple !== null &&
-    trade.currentShortLegMultiple >= 3
+    trade.currentBuybackDebit !== null &&
+    trade.currentBuybackDebit >= trade.entrySellableCredit * stopMultiple
   ) {
     return {
       shouldExit: true,
-      reason: "SHORT_LEG_3X_STOP",
-      detail: `Worst short leg is ${trade.currentShortLegMultiple.toFixed(2)}x its executable entry sale price.`,
+      reason: "PRICE_STOP",
+      detail: `Spread buyback ${trade.currentBuybackDebit.toFixed(2)} reached ${stopMultiple.toFixed(2)}x the ${trade.entrySellableCredit.toFixed(2)} entry credit.`,
     };
+  }
+
+  const spotClose = finitePositive(context?.spotClose);
+  const guard = finitePositive(trade.planGuardPrice);
+  if (spotClose !== null && guard !== null) {
+    const structureBroken =
+      trade.strategy === "put-credit-spread"
+        ? spotClose < guard
+        : trade.strategy === "call-credit-spread"
+          ? spotClose > guard
+          : false;
+    if (structureBroken) {
+      return {
+        shouldExit: true,
+        reason: "STRUCTURE_STOP",
+        detail: `Completed 1m close ${spotClose.toFixed(1)} broke ${trade.planGuardLabel ?? "the guard"} ${guard.toFixed(1)}.`,
+      };
+    }
+  }
+
+  const generatedAt = epochSeconds(context?.generatedAt);
+  const shortStrike = trade.legs.find((leg) => leg.action === "sell")?.strike ?? null;
+  const remainingMove = finitePositive(context?.remainingMovePoints);
+  if (generatedAt !== null && spotClose !== null && Number.isFinite(shortStrike) && remainingMove !== null) {
+    const minute = centralMinuteOfDay(generatedAt);
+    if (minute >= 14 * 60 + 30 && Math.abs(spotClose - Number(shortStrike)) <= remainingMove * 0.25) {
+      return {
+        shouldExit: true,
+        reason: "TIME_STOP",
+        detail: `After 14:30 CT, spot is within 0.25x remaining move of the short strike.`,
+      };
+    }
   }
 
   const currentPnl =
@@ -337,6 +394,27 @@ export function evaluateZeroDteShadowExit(
   }
 
   return { shouldExit: false, reason: null, detail: "Deterministic shadow exit has not triggered." };
+}
+
+function epochSeconds(value: string | number | null | undefined) {
+  if (typeof value === "number" && Number.isFinite(value)) return value > 1e12 ? value / 1000 : value;
+  if (typeof value === "string") {
+    const ms = Date.parse(value);
+    return Number.isFinite(ms) ? ms / 1000 : null;
+  }
+  return null;
+}
+
+function centralMinuteOfDay(epoch: number) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(new Date(epoch * 1000));
+  const map = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return Number(map.hour) * 60 + Number(map.minute);
+}
+
+function clampNumber(value: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, value));
 }
 
 export function shadowExitAdvisory(read: ZeroDteExecutionRead) {

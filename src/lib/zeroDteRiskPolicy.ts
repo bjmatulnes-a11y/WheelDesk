@@ -16,6 +16,12 @@ export type ZeroDteRiskPolicy = {
   minimumAbsoluteDistancePoints: number;
   minimumAbsoluteDistanceSpotPct: number;
   eventRisk: ZeroDteEventRisk;
+  /** AUTO lets the credit-spread plan promote known macro dates to HIGH. */
+  eventRiskMode: "AUTO" | "NORMAL" | "HIGH";
+  entryWindowStart: string;
+  entryWindowEnd: string;
+  takeProfitPct: number;
+  stopCreditMultiple: number;
   strictZeroDte: true;
 };
 
@@ -44,6 +50,11 @@ export const DEFAULT_ZERO_DTE_RISK_POLICY: ZeroDteRiskPolicy = {
   minimumAbsoluteDistancePoints: 15,
   minimumAbsoluteDistanceSpotPct: 0.0022,
   eventRisk: "NORMAL",
+  eventRiskMode: "AUTO",
+  entryWindowStart: "09:30",
+  entryWindowEnd: "13:30",
+  takeProfitPct: 0.5,
+  stopCreditMultiple: 2.0,
   strictZeroDte: true,
 };
 
@@ -128,6 +139,24 @@ export function normalizeZeroDteRiskPolicy(
       0.02,
     ),
     eventRisk: value?.eventRisk === "HIGH" ? "HIGH" : "NORMAL",
+    eventRiskMode:
+      value?.eventRiskMode === "HIGH" || value?.eventRiskMode === "NORMAL" || value?.eventRiskMode === "AUTO"
+        ? value.eventRiskMode
+        : value?.eventRisk === "HIGH"
+          ? "HIGH"
+          : "AUTO",
+    entryWindowStart: normalizeClock(value?.entryWindowStart, DEFAULT_ZERO_DTE_RISK_POLICY.entryWindowStart),
+    entryWindowEnd: normalizeClock(value?.entryWindowEnd, DEFAULT_ZERO_DTE_RISK_POLICY.entryWindowEnd),
+    takeProfitPct: clamp(
+      finite(value?.takeProfitPct) ?? DEFAULT_ZERO_DTE_RISK_POLICY.takeProfitPct,
+      0.1,
+      0.9,
+    ),
+    stopCreditMultiple: clamp(
+      finite(value?.stopCreditMultiple) ?? DEFAULT_ZERO_DTE_RISK_POLICY.stopCreditMultiple,
+      1.1,
+      5,
+    ),
     strictZeroDte: true,
   };
 }
@@ -224,6 +253,25 @@ export function buildZeroDteVolContext(args: {
     rangeConsumptionPct,
     regime,
   };
+}
+
+export function effectiveCreditPlanEventRisk(
+  policy: ZeroDteRiskPolicy,
+  macroEvent: string | null | undefined,
+): ZeroDteEventRisk {
+  if (policy.eventRiskMode === "HIGH") return "HIGH";
+  if (policy.eventRiskMode === "NORMAL") return "NORMAL";
+  return macroEvent ? "HIGH" : policy.eventRisk;
+}
+
+function normalizeClock(value: unknown, fallback: string) {
+  if (typeof value !== "string") return fallback;
+  const match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
+  if (!match) return fallback;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return fallback;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
 function finite(value: unknown) {

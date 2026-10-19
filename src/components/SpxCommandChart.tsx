@@ -83,6 +83,7 @@ import { ZeroDteStructureManagementPanel } from "./ZeroDteStructureManagementPan
 import { ZeroDteShadowTradePanel } from "./ZeroDteShadowTradePanel";
 import {
   closeZeroDteShadowTrade,
+  loadZeroDteShadowHistory,
   loadZeroDteShadowTrades,
   openZeroDteShadowTrade,
   sampleZeroDteShadowTrades,
@@ -118,6 +119,14 @@ import {
 import { ZeroDteStructureOverlay } from "./zero-dte/ZeroDteStructureOverlay";
 import { ZeroDteCreditSpreadPlanCard } from "./zero-dte/ZeroDteCreditSpreadPlanCard";
 import { buildDefensibleCreditSpreadPlan } from "../lib/zeroDteCreditSpreadPlan";
+import {
+  buildInitialBalance,
+  buildLiveMoveTableContext,
+  emptyZeroDteMoveTable,
+  type ZeroDteMoveTable,
+} from "../lib/zeroDteMoveTable";
+import { macroEventForDate } from "../lib/zeroDteMacroCalendar";
+import { buildCreditSpreadTrackRecord } from "../lib/zeroDteCreditSpreadTrackRecord";
 import {
   aggregateStructureCandles,
   advanceDirectionalLatch,
@@ -382,7 +391,10 @@ export default function SpxCommandChart() {
     loadZeroDteRiskPolicy(),
   );
   const [shadowTrades, setShadowTrades] = useState<ZeroDteShadowTrade[]>([]);
+  const [shadowHistory, setShadowHistory] = useState<ZeroDteShadowTrade[]>([]);
   const [shadowError, setShadowError] = useState<string | null>(null);
+  const [moveTable, setMoveTable] = useState<ZeroDteMoveTable>(() => emptyZeroDteMoveTable());
+  const [vixContext, setVixContext] = useState<{ priorClose: number | null; current: number | null; changePct: number | null }>({ priorClose: null, current: null, changePct: null });
   const shadowOpeningSignalIdsRef = useRef<Set<string>>(new Set());
   const shadowSampleKeyRef = useRef<string | null>(null);
   const executionAdaptiveObservationRef = useRef<Map<string, string>>(new Map());
@@ -403,6 +415,19 @@ export default function SpxCommandChart() {
   useEffect(() => {
     const timer = window.setInterval(() => setFreshnessNow(Date.now()), 5_000);
     return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/data/spx-move-table.json", { cache: "no-store" })
+      .then(async (response) => response.ok ? response.json() : null)
+      .then((json) => {
+        if (!cancelled && json?.version === 1 && Array.isArray(json.buckets)) setMoveTable(json as ZeroDteMoveTable);
+      })
+      .catch(() => {
+        if (!cancelled) setMoveTable(emptyZeroDteMoveTable());
+      });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
@@ -549,6 +574,36 @@ export default function SpxCommandChart() {
   }, [priorStructureKey]);
 
   useEffect(() => {
+    const tradeDate = harvest?.tradeDate ?? null;
+    if (!tradeDate) {
+      setVixContext({ priorClose: null, current: null, changePct: null });
+      return;
+    }
+    let cancelled = false;
+    const loadVix = async () => {
+      try {
+        const headers = await authenticatedApiHeaders();
+        const [dailyResponse, minuteResponse] = await Promise.all([
+          fetch("/api/brokers/schwab/price-history?symbol=%24VIX&frequencyType=daily&frequency=1&periodType=month&period=1", { headers, cache: "no-store" }),
+          fetch("/api/brokers/schwab/price-history?symbol=%24VIX&frequencyType=minute&frequency=1&periodType=day&period=1", { headers, cache: "no-store" }),
+        ]);
+        const daily = await readJsonResponse<PriceHistoryResponse>(dailyResponse, "VIX daily history");
+        const minute = await readJsonResponse<PriceHistoryResponse>(minuteResponse, "VIX minute history");
+        const dailyRows = (daily.candles ?? []).filter((row) => row.close > 0).sort((a, b) => a.time - b.time);
+        const priorClose = [...dailyRows].reverse().find((row) => dateInTimeZone(row.time) < tradeDate)?.close ?? null;
+        const current = [...(minute.candles ?? [])].reverse().find((row) => dateInTimeZone(row.time) === tradeDate)?.close ?? null;
+        const changePct = priorClose && current ? ((current - priorClose) / priorClose) * 100 : null;
+        if (!cancelled) setVixContext({ priorClose, current, changePct });
+      } catch {
+        if (!cancelled) setVixContext({ priorClose: null, current: null, changePct: null });
+      }
+    };
+    void loadVix();
+    const timer = window.setInterval(() => void loadVix(), 60_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [harvest?.tradeDate]);
+
+  useEffect(() => {
     if (!harvest?.tradeDate) {
       setShadowTrades([]);
       return;
@@ -556,6 +611,9 @@ export default function SpxCommandChart() {
     shadowOpeningSignalIdsRef.current = new Set();
     shadowSampleKeyRef.current = null;
     let cancelled = false;
+    loadZeroDteShadowHistory(750)
+      .then((trades) => { if (!cancelled) setShadowHistory(trades); })
+      .catch(() => { if (!cancelled) setShadowHistory([]); });
     loadZeroDteShadowTrades(harvest.tradeDate)
       .then((trades) => {
         if (!cancelled) {
@@ -618,6 +676,16 @@ export default function SpxCommandChart() {
       expectedMove: priorContextExpectedMove,
     }),
   [activePriorStructureLevels, officialSignalCandles, priorContextExpectedMove]);
+
+  const initialBalance = useMemo(() => buildInitialBalance(officialSignalCandles), [officialSignalCandles]);
+  const macroEvent = macroEventForDate(harvest?.tradeDate ?? null);
+  const moveTableContext = useMemo(() => buildLiveMoveTableContext({
+    candles: officialSignalCandles,
+    generatedAt: harvest?.generatedAt ?? null,
+    dayType: openingPriorContext?.openingDayType ?? null,
+    gapClass: openingPriorContext?.gapClass ?? null,
+    priorVixClose: vixContext.priorClose,
+  }), [harvest?.generatedAt, officialSignalCandles, openingPriorContext?.gapClass, openingPriorContext?.openingDayType, vixContext.priorClose]);
 
   const dailyFlipActive = dailyFlipInPlay(
     currentPrice,
@@ -1032,9 +1100,15 @@ export default function SpxCommandChart() {
       );
     }
 
+    if (initialBalance) {
+      add("ib-high", "IB HIGH", initialBalance.high, "BEAR", "INITIAL_BALANCE");
+      add("ib-low", "IB LOW", initialBalance.low, "BULL", "INITIAL_BALANCE");
+    }
+
     return items;
   }, [
     activePriorStructureLevels,
+    initialBalance,
     controllingMap,
     executionCandidates,
     recommendation,
@@ -2449,15 +2523,12 @@ export default function SpxCommandChart() {
   );
 
   const creditSpreadPlanCandidates = useMemo(() => {
-    const strategy = directionalSignal.strategy === "PCS"
-      ? "put-credit-spread"
-      : directionalSignal.strategy === "CCS"
-        ? "call-credit-spread"
-        : null;
-    if (!strategy || !scannerExecutionCandidateBooks) return [] as ExecutionCandidate[];
-    return scannerExecutionCandidateBooks[strategy]
-      .map((candidate) => repriceExecutionCandidate(candidate, spxRows));
-  }, [directionalSignal.strategy, scannerExecutionCandidateBooks, spxRows]);
+    if (!scannerExecutionCandidateBooks) return [] as ExecutionCandidate[];
+    return [
+      ...scannerExecutionCandidateBooks["put-credit-spread"],
+      ...scannerExecutionCandidateBooks["call-credit-spread"],
+    ].map((candidate) => repriceExecutionCandidate(candidate, spxRows));
+  }, [scannerExecutionCandidateBooks, spxRows]);
 
   const defensibleCreditSpreadPlan = useMemo(() =>
     buildDefensibleCreditSpreadPlan({
@@ -2467,17 +2538,42 @@ export default function SpxCommandChart() {
       candidates: creditSpreadPlanCandidates,
       anchors: structureAnchors,
       structure: decisionStructureSnapshot,
+      candles: decisionStructureCandles,
       policy: riskPolicy,
+      moveTable,
+      moveTableContext,
+      gammaFlip: controllingMap?.structure?.gammaFlip ?? null,
+      generatedAt: harvest?.generatedAt ?? null,
+      openingPriorContext,
+      vixChangePct: vixContext.changePct,
+      macroEvent,
+      confluenceTolerance: structureConfluenceTolerance,
     }),
   [
     creditSpreadPlanCandidates,
     currentPrice,
+    decisionStructureCandles,
     decisionStructureSnapshot,
     directionalSignal,
     recommendation?.expectedMove,
     riskPolicy,
     structureAnchors,
+    moveTable,
+    moveTableContext,
+    controllingMap?.structure?.gammaFlip,
+    harvest?.generatedAt,
+    openingPriorContext,
+    vixContext.changePct,
+    macroEvent,
+    structureConfluenceTolerance,
   ]);
+
+  const creditSpreadTrackRecord = useMemo(() => buildCreditSpreadTrackRecord({
+    trades: shadowHistory,
+    leg: defensibleCreditSpreadPlan.primary,
+    openingDayType: openingPriorContext?.openingDayType ?? null,
+    entryTimeBucket: moveTableContext?.timeBucket ?? null,
+  }), [defensibleCreditSpreadPlan.primary, moveTableContext?.timeBucket, openingPriorContext?.openingDayType, shadowHistory]);
 
   const clearDirectionalDecisionEvents = useCallback(() => {
     const tradeDate = harvest?.tradeDate;
@@ -2666,6 +2762,7 @@ export default function SpxCommandChart() {
             signal,
             spxRows,
             opportunity,
+            creditPlan: defensibleCreditSpreadPlan,
             directional: directionalShadowContext,
           });
           if (trade) {
@@ -2692,6 +2789,7 @@ export default function SpxCommandChart() {
       setShadowError(failures.length ? failures.join(" ") : null);
     })();
   }, [
+    defensibleCreditSpreadPlan,
     directionalShadowContext,
     portfolioRead,
     riskPolicy,
@@ -2774,7 +2872,11 @@ export default function SpxCommandChart() {
           if (read.timeRegime.regime === "CLOSED") {
             return [{ tradeId, read, reason: "SESSION_CLOSE" }];
           }
-          const decision = evaluateZeroDteShadowExit(sampledTrade);
+          const decision = evaluateZeroDteShadowExit(sampledTrade, {
+            spotClose: officialSignalCandles.at(-1)?.close ?? recommendation.spxPrice,
+            generatedAt: harvest.generatedAt,
+            remainingMovePoints: read.remainingMovePoints ?? sampledTrade.remainingMovePoints,
+          });
           return decision.shouldExit && decision.reason
             ? [{ tradeId, read, reason: decision.reason }]
             : [];
@@ -2802,6 +2904,11 @@ export default function SpxCommandChart() {
             for (const trade of validClosed) byId.set(trade.id, trade);
             return [...byId.values()];
           });
+          setShadowHistory((current) => {
+            const byId = new Map(current.map((trade) => [trade.id, trade]));
+            for (const trade of validClosed) byId.set(trade.id, trade);
+            return [...byId.values()];
+          });
         }
         setShadowError(null);
       })
@@ -2815,7 +2922,9 @@ export default function SpxCommandChart() {
   }, [
     harvest?.generatedAt,
     harvest?.tradeDate,
+    officialSignalCandles,
     recommendation,
+    riskPolicy,
     shadowExecutionReads,
     shadowTrades,
     spxRows,
@@ -3701,6 +3810,7 @@ export default function SpxCommandChart() {
               shadowOpen={shadowTrades.filter((trade) => trade.state === "open").length}
               shadowClosed={shadowTrades.filter((trade) => trade.state === "closed").length}
               shadowError={shadowError}
+              trackRecord={creditSpreadTrackRecord}
             />
           )}
         </aside>

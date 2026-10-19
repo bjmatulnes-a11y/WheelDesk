@@ -2,6 +2,7 @@ import type { ConfirmedExecutionSignal } from "./execution/useExecutionSignalPai
 import type { ZeroDteExecutionRead } from "./zeroDteExecutionIntelligence";
 import type { ZeroDteShadowTrade } from "./zeroDteShadowTrade";
 import type { AdaptiveManagementDecision } from "./zeroDteAdaptiveManagement";
+import type { DefensibleCreditSpreadPlan } from "./zeroDteCreditSpreadPlan";
 import { buildShadowShortLegEntries, shadowWidthPoints } from "./zeroDteShadowTrade";
 import type { ZeroDteChainRow } from "./zeroDteOiIntelligence";
 import type { AdaptivePortfolioOpportunity, ShadowLegSnapshot } from "./zeroDteAdaptivePortfolio";
@@ -50,10 +51,20 @@ export async function loadZeroDteShadowTrades(
   return (json.trades ?? []) as ZeroDteShadowTrade[];
 }
 
+export async function loadZeroDteShadowHistory(limit = 500): Promise<ZeroDteShadowTrade[]> {
+  const response = await fetch(`/api/zero-dte/shadow?history=1&limit=${Math.max(10, Math.min(2000, Math.floor(limit)))}`, {
+    headers: await authHeaders(), cache: "no-store",
+  });
+  const json = await response.json();
+  if (!response.ok || !json.ok) throw new Error(json.error || "Shadow history load failed");
+  return (json.trades ?? []) as ZeroDteShadowTrade[];
+}
+
 export async function openZeroDteShadowTrade(args: {
   signal: ConfirmedExecutionSignal;
   spxRows: ZeroDteChainRow[];
   opportunity: AdaptivePortfolioOpportunity;
+  creditPlan?: DefensibleCreditSpreadPlan | null;
   directional?: {
     directionalSide: "BULL" | "BEAR" | "WAIT";
     directionalScore: number | null;
@@ -105,6 +116,15 @@ export async function openZeroDteShadowTrade(args: {
         shortStrike,
       })
     : null;
+  const planLeg = args.creditPlan?.paired
+    ? signal.strategy === "put-credit-spread"
+      ? args.creditPlan.paired.pcs
+      : signal.strategy === "call-credit-spread"
+        ? args.creditPlan.paired.ccs
+        : null
+    : args.creditPlan?.primary?.strategy === signal.strategy
+      ? args.creditPlan.primary
+      : null;
   const json = await call({
     action: "open",
     tradeDate: signal.tradeDate,
@@ -158,6 +178,23 @@ export async function openZeroDteShadowTrade(args: {
     shortStrikeBeyondPriorLevel,
     dailyTrend: directional?.dailyTrend ?? null,
     dailyFlipInPlay: directional?.dailyFlipInPlay ?? null,
+    edgePts: planLeg?.edge?.edgePts ?? null,
+    evPerLotDollars: planLeg?.edge?.evPerLotDollars ?? null,
+    histProbTouch: planLeg?.edge?.histProbTouch ?? null,
+    histProbItmAtClose: planLeg?.edge?.histProbItmAtClose ?? null,
+    moveTableKeyUsed: planLeg?.edge?.sample.keyUsed ?? null,
+    moveTableN: planLeg?.edge?.sample.n ?? null,
+    planStatus: args.creditPlan?.status ?? null,
+    entryTrigger: planLeg?.entryTrigger ?? null,
+    entryTimeBucket: args.creditPlan?.moveTableContext?.timeBucket ?? null,
+    gammaRegime: planLeg?.gammaRegime ?? args.creditPlan?.gammaRegime ?? null,
+    directionalTilt: planLeg?.directionalTilt ?? args.creditPlan?.directionalTilt ?? null,
+    planGuardKind: planLeg?.guard?.kind ?? null,
+    planGuardLabel: planLeg?.guard?.label ?? null,
+    planGuardPrice: planLeg?.guard?.price ?? null,
+    planDistanceEm: planLeg?.distanceEm ?? null,
+    planTakeProfitPct: planLeg?.exitPlan.takeProfitPct ?? null,
+    planStopCreditMultiple: planLeg?.exitPlan.stopCreditMultiple ?? null,
     portfolioDecision: args.opportunity.decision,
     portfolioRole: args.opportunity.role,
     portfolioConviction: args.opportunity.conviction,

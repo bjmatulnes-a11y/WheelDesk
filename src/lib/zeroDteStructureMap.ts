@@ -679,6 +679,7 @@ export type StructureAnchorSourceKind =
   | "DAILY"
   | "CARRIED_SWING"
   | "CARRIED_FVG"
+  | "INITIAL_BALANCE"
   | "OTHER";
 
 export interface StructureAnchor {
@@ -745,6 +746,7 @@ function anchorReasonForSourceKind(kind: StructureAnchorSourceKind): string | nu
   if (kind === "WEEKLY") return "weekly level";
   if (kind === "DAILY") return "daily flip";
   if (kind === "CARRIED_SWING" || kind === "CARRIED_FVG") return "prior-session structure";
+  if (kind === "INITIAL_BALANCE") return "initial balance";
   if (kind === "OI") return "OI anchor";
   if (kind === "TRADE") return "selected short strike";
   return null;

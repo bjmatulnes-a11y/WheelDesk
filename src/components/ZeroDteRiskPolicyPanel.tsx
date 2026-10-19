@@ -114,16 +114,32 @@ export function ZeroDteRiskPolicyPanel({
         <label style={styles.field}>
           Event risk
           <select
-            value={policy.eventRisk}
-            onChange={(event) =>
-              patch({ eventRisk: event.target.value === "HIGH" ? "HIGH" : "NORMAL" })
-            }
+            value={policy.eventRiskMode}
+            onChange={(event) => {
+              const mode = event.target.value as ZeroDteRiskPolicy["eventRiskMode"];
+              patch({ eventRiskMode: mode, eventRisk: mode === "HIGH" ? "HIGH" : "NORMAL" });
+            }}
             style={styles.input}
           >
-            <option value="NORMAL">Normal</option>
-            <option value="HIGH">High — CPI/FOMC/NFP</option>
+            <option value="AUTO">Auto calendar</option>
+            <option value="NORMAL">Force normal</option>
+            <option value="HIGH">Force high</option>
           </select>
         </label>
+        <TimeField label="Entry start CT" value={policy.entryWindowStart} onChange={(value) => patch({ entryWindowStart: value })} />
+        <TimeField label="Entry end CT" value={policy.entryWindowEnd} onChange={(value) => patch({ entryWindowEnd: value })} />
+        <NumberField
+          label="Take profit % credit"
+          value={policy.takeProfitPct * 100}
+          step={5}
+          onChange={(value) => patch({ takeProfitPct: Math.max(0.1, Math.min(0.9, (value ?? 50) / 100)) })}
+        />
+        <NumberField
+          label="Stop × entry credit"
+          value={policy.stopCreditMultiple}
+          step={0.25}
+          onChange={(value) => patch({ stopCreditMultiple: value ?? 2 })}
+        />
       </div>
 
       <div style={styles.readoutRow}>
@@ -151,6 +167,20 @@ export function ZeroDteRiskPolicyPanel({
         </div>
       ) : null}
     </div>
+  );
+}
+
+
+function TimeField({
+  label, value, onChange,
+}: {
+  label: string; value: string; onChange: (value: string) => void;
+}) {
+  return (
+    <label style={styles.field}>
+      {label}
+      <input type="time" value={value} onChange={(event) => onChange(event.target.value)} style={styles.input} />
+    </label>
   );
 }
 

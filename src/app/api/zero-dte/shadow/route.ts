@@ -10,13 +10,25 @@ export async function GET(request: NextRequest) {
   try {
     const user = await getAuthenticatedUserFromRequest(request);
     const tradeDate = request.nextUrl.searchParams.get("tradeDate");
-    if (!tradeDate) return jsonError("tradeDate is required", 400);
-    const { data, error } = await supabaseServer
-      .from("zero_dte_shadow_trades")
-      .select("*")
-      .eq("user_id", user.id)
-      .eq("trade_date", tradeDate)
-      .order("signal_time", { ascending: true });
+    const history = request.nextUrl.searchParams.get("history") === "1";
+    const rawLimit = Number(request.nextUrl.searchParams.get("limit") ?? "500");
+    const limit = Number.isFinite(rawLimit) ? Math.max(10, Math.min(2000, Math.floor(rawLimit))) : 500;
+    if (!tradeDate && !history) return jsonError("tradeDate is required", 400);
+    const result = history
+      ? await supabaseServer
+          .from("zero_dte_shadow_trades")
+          .select("*")
+          .eq("user_id", user.id)
+          .eq("state", "closed")
+          .order("signal_time", { ascending: false })
+          .limit(limit)
+      : await supabaseServer
+          .from("zero_dte_shadow_trades")
+          .select("*")
+          .eq("user_id", user.id)
+          .eq("trade_date", tradeDate!)
+          .order("signal_time", { ascending: true });
+    const { data, error } = result;
     if (error) throw error;
     return NextResponse.json({
       ok: true,
@@ -156,6 +168,23 @@ async function openShadow(body: any, userId: string) {
       body.dailyTrend === "BULL" || body.dailyTrend === "BEAR" ? body.dailyTrend : null,
     daily_flip_in_play:
       typeof body.dailyFlipInPlay === "boolean" ? body.dailyFlipInPlay : null,
+    edge_pts: numeric(body.edgePts),
+    ev_per_lot_dollars: numeric(body.evPerLotDollars),
+    hist_prob_touch: numeric(body.histProbTouch),
+    hist_prob_itm_at_close: numeric(body.histProbItmAtClose),
+    move_table_key_used: typeof body.moveTableKeyUsed === "string" ? body.moveTableKeyUsed : null,
+    move_table_n: numeric(body.moveTableN),
+    plan_status: ["READY", "PAIRED", "WAIT", "NO_TRADE_DAY"].includes(body.planStatus) ? body.planStatus : null,
+    entry_trigger: ["FADE_REJECTION", "FADE_SWEEP", "NONE"].includes(body.entryTrigger) ? body.entryTrigger : null,
+    entry_time_bucket: typeof body.entryTimeBucket === "string" ? body.entryTimeBucket : null,
+    gamma_regime: body.gammaRegime === "POSITIVE" || body.gammaRegime === "NEGATIVE" ? body.gammaRegime : null,
+    directional_tilt: body.directionalTilt === "BULL" || body.directionalTilt === "BEAR" || body.directionalTilt === "NONE" ? body.directionalTilt : null,
+    plan_guard_kind: ["OI", "PRIOR", "SWING", "FVG"].includes(body.planGuardKind) ? body.planGuardKind : null,
+    plan_guard_label: typeof body.planGuardLabel === "string" ? body.planGuardLabel : null,
+    plan_guard_price: numeric(body.planGuardPrice),
+    plan_distance_em: numeric(body.planDistanceEm),
+    plan_take_profit_pct: numeric(body.planTakeProfitPct),
+    plan_stop_credit_multiple: numeric(body.planStopCreditMultiple),
     portfolio_decision: portfolioDecision,
     portfolio_role: normalizePortfolioRole(body.portfolioRole),
     portfolio_conviction: normalizeConviction(body.portfolioConviction),
@@ -531,6 +560,11 @@ async function closeShadow(body: any, userId: string) {
     updated_at: body.exitTime,
     exit_time: body.exitTime,
     exit_reason: exitReason,
+    exit_rule: ["TAKE_PROFIT", "STRUCTURE_STOP", "PRICE_STOP", "TIME_STOP", "EXPIRED"].includes(exitReason)
+      ? exitReason
+      : exitReason === "SESSION_CLOSE"
+        ? "EXPIRED"
+        : null,
     exit_buyback_debit: finalExitDebit,
     exit_score: numeric(body.exitScore) ?? 0,
     exit_emergency: Boolean(body.emergencyExit),
@@ -640,6 +674,24 @@ function mapShadowTrade(row: any) {
       row.daily_trend === "BULL" || row.daily_trend === "BEAR" ? row.daily_trend : null,
     dailyFlipInPlay:
       typeof row.daily_flip_in_play === "boolean" ? row.daily_flip_in_play : null,
+    edgePts: numeric(row.edge_pts),
+    evPerLotDollars: numeric(row.ev_per_lot_dollars),
+    histProbTouch: numeric(row.hist_prob_touch),
+    histProbItmAtClose: numeric(row.hist_prob_itm_at_close),
+    moveTableKeyUsed: typeof row.move_table_key_used === "string" ? row.move_table_key_used : null,
+    moveTableN: numeric(row.move_table_n),
+    planStatus: ["READY", "PAIRED", "WAIT", "NO_TRADE_DAY"].includes(row.plan_status) ? row.plan_status : null,
+    entryTrigger: ["FADE_REJECTION", "FADE_SWEEP", "NONE"].includes(row.entry_trigger) ? row.entry_trigger : null,
+    entryTimeBucket: typeof row.entry_time_bucket === "string" ? row.entry_time_bucket : null,
+    gammaRegime: row.gamma_regime === "POSITIVE" || row.gamma_regime === "NEGATIVE" ? row.gamma_regime : null,
+    directionalTilt: row.directional_tilt === "BULL" || row.directional_tilt === "BEAR" || row.directional_tilt === "NONE" ? row.directional_tilt : null,
+    exitRule: ["TAKE_PROFIT", "STRUCTURE_STOP", "PRICE_STOP", "TIME_STOP", "EXPIRED"].includes(row.exit_rule) ? row.exit_rule : null,
+    planGuardKind: ["OI", "PRIOR", "SWING", "FVG"].includes(row.plan_guard_kind) ? row.plan_guard_kind : null,
+    planGuardLabel: typeof row.plan_guard_label === "string" ? row.plan_guard_label : null,
+    planGuardPrice: numeric(row.plan_guard_price),
+    planDistanceEm: numeric(row.plan_distance_em),
+    planTakeProfitPct: numeric(row.plan_take_profit_pct),
+    planStopCreditMultiple: numeric(row.plan_stop_credit_multiple),
     portfolioDecision: normalizePortfolioDecision(row.portfolio_decision),
     portfolioRole: normalizePortfolioRole(row.portfolio_role),
     portfolioConviction: normalizeConviction(row.portfolio_conviction),
