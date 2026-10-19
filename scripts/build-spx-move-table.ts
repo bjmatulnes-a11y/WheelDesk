@@ -10,10 +10,12 @@
  *   SPX: time,open,high,low,close  (time may be ISO or epoch seconds/ms)
  *   VIX: date,close                (YYYY-MM-DD; close is that session's VIX close)
  *
- * Optional authenticated WheelDesk API pull:
- *   npx tsx scripts/build-spx-move-table.ts --api-base http://localhost:3000 --bearer "$TOKEN"
+ * Optional authenticated WheelDesk API pull (explicit ranged requests):
+ *   npx tsx scripts/build-spx-move-table.ts --api-base http://localhost:3000 --bearer "$TOKEN" --lookback-days 180
+ *   npx tsx scripts/build-spx-move-table.ts --api-base http://localhost:3000 --bearer "$TOKEN" --start-date 2026-04-01 --end-date 2026-10-19
  *
- * The API path is intentionally best-effort because Schwab controls intraday lookback.
+ * The API path uses explicit startDate/endDate windows so it does not fall into WheelDesk's
+ * normal 24-hour live-chart default. Schwab still controls how much 1-minute history it returns.
  * If fewer than ~120 sessions are returned, the script logs a warning and accepts --spx-csv
  * as a supplemental/seed source.
  */
@@ -33,7 +35,7 @@ async function main() {
   let candles: StructureCandle[] = [];
   if (args["spx-csv"]) candles.push(...readSpXCsv(path.resolve(args["spx-csv"])));
   if (args["api-base"] && args.bearer) {
-    const apiCandles = await fetchFromWheelDeskApi(args["api-base"], args.bearer);
+    const apiCandles = await fetchFromWheelDeskApi(args["api-base"], args.bearer, args);
     candles.push(...apiCandles);
   }
   candles = dedupeCandles(candles);
@@ -48,7 +50,7 @@ async function main() {
 
   let vixByDate = args["vix-csv"] ? readVixCsv(path.resolve(args["vix-csv"])) : new Map<string, number>();
   if (!vixByDate.size && args["api-base"] && args.bearer) {
-    vixByDate = await fetchVixFromWheelDeskApi(args["api-base"], args.bearer);
+    vixByDate = await fetchVixFromWheelDeskApi(args["api-base"], args.bearer, args);
   }
   if (!vixByDate.size) console.warn("WARNING: no VIX history available; sessions without a prior VIX close will be skipped.");
 
@@ -70,29 +72,71 @@ async function main() {
   if (args["append-existing"] === "1") console.log("Append mode enabled: incoming bucket arrays were merged into the existing table.");
 }
 
-async function fetchFromWheelDeskApi(base: string, bearer: string): Promise<StructureCandle[]> {
-  const url = new URL("/api/brokers/schwab/price-history", base);
-  url.searchParams.set("symbol", "$SPX");
-  url.searchParams.set("frequencyType", "minute");
-  url.searchParams.set("frequency", "1");
-  url.searchParams.set("periodType", "day");
-  url.searchParams.set("period", "10");
-  url.searchParams.set("extended", "0");
-  const response = await fetch(url, { headers: { Authorization: `Bearer ${bearer}` } });
-  if (!response.ok) throw new Error(`WheelDesk history request failed: ${response.status} ${await response.text()}`);
-  const json: any = await response.json();
-  return (json.candles ?? []).map((row: any) => ({
-    time: Number(row.time), open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close), volume: null,
-  })).filter(validCandle);
+async function fetchFromWheelDeskApi(
+  base: string,
+  bearer: string,
+  cliArgs: Record<string, string>,
+): Promise<StructureCandle[]> {
+  const range = resolveApiRange(cliArgs);
+  const chunkDays = positiveInt(cliArgs["chunk-days"], 7);
+  const chunkMs = chunkDays * 24 * 60 * 60 * 1000;
+  const out: StructureCandle[] = [];
+
+  console.log(
+    `Requesting SPX 1-minute history from ${new Date(range.startMs).toISOString()} to ${new Date(range.endMs).toISOString()} in ${chunkDays}-day chunks.`,
+  );
+
+  for (let startMs = range.startMs; startMs <= range.endMs; startMs += chunkMs) {
+    const endMs = Math.min(range.endMs, startMs + chunkMs - 1);
+    const url = new URL("/api/brokers/schwab/price-history", base);
+    url.searchParams.set("symbol", "$SPX");
+    url.searchParams.set("frequencyType", "minute");
+    url.searchParams.set("frequency", "1");
+    url.searchParams.set("periodType", "day");
+    url.searchParams.set("startDate", String(startMs));
+    url.searchParams.set("endDate", String(endMs));
+    url.searchParams.set("extended", "0");
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${bearer}` } });
+    if (!response.ok) {
+      const detail = await response.text();
+      console.warn(
+        `WARNING: SPX history chunk ${new Date(startMs).toISOString().slice(0, 10)}..${new Date(endMs).toISOString().slice(0, 10)} failed: ${response.status} ${detail}`,
+      );
+      continue;
+    }
+    const json: any = await response.json();
+    const rows = (json.candles ?? []).map((row: any) => ({
+      time: Number(row.time),
+      open: Number(row.open),
+      high: Number(row.high),
+      low: Number(row.low),
+      close: Number(row.close),
+      volume: null,
+    })).filter(validCandle);
+    out.push(...rows);
+    console.log(
+      `  ${new Date(startMs).toISOString().slice(0, 10)}..${new Date(endMs).toISOString().slice(0, 10)}: ${rows.length.toLocaleString()} candles`,
+    );
+  }
+
+  return dedupeCandles(out);
 }
 
-async function fetchVixFromWheelDeskApi(base: string, bearer: string): Promise<Map<string, number>> {
+async function fetchVixFromWheelDeskApi(
+  base: string,
+  bearer: string,
+  cliArgs: Record<string, string>,
+): Promise<Map<string, number>> {
+  const range = resolveApiRange(cliArgs);
+  // Pull several extra calendar days so the first SPX session can still find its prior VIX close.
+  const startMs = range.startMs - 10 * 24 * 60 * 60 * 1000;
   const url = new URL("/api/brokers/schwab/price-history", base);
   url.searchParams.set("symbol", "$VIX");
   url.searchParams.set("frequencyType", "daily");
   url.searchParams.set("frequency", "1");
   url.searchParams.set("periodType", "month");
-  url.searchParams.set("period", "3");
+  url.searchParams.set("startDate", String(startMs));
+  url.searchParams.set("endDate", String(range.endMs));
   url.searchParams.set("extended", "0");
   const response = await fetch(url, { headers: { Authorization: `Bearer ${bearer}` } });
   if (!response.ok) {
@@ -108,6 +152,37 @@ async function fetchVixFromWheelDeskApi(base: string, bearer: string): Promise<M
   }
   console.log(`Loaded ${out.size} daily VIX closes from WheelDesk/Schwab.`);
   return out;
+}
+
+function resolveApiRange(cliArgs: Record<string, string>) {
+  const now = Date.now();
+  const endMs = cliArgs["end-date"]
+    ? parseDateBoundary(cliArgs["end-date"], true)
+    : now;
+  const startMs = cliArgs["start-date"]
+    ? parseDateBoundary(cliArgs["start-date"], false)
+    : endMs - positiveInt(cliArgs["lookback-days"], 180) * 24 * 60 * 60 * 1000;
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs >= endMs) {
+    throw new Error("Invalid API date range. Use --start-date YYYY-MM-DD / --end-date YYYY-MM-DD or --lookback-days N.");
+  }
+  return { startMs, endMs };
+}
+
+function parseDateBoundary(value: string, endOfDay: boolean) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error(`Invalid date '${value}'. Expected YYYY-MM-DD.`);
+  }
+  // UTC boundaries intentionally over-fetch slightly around the U.S. cash session;
+  // cashSessionCandles() later enforces 08:30-15:00 America/Chicago exactly.
+  const suffix = endOfDay ? "T23:59:59.999Z" : "T00:00:00.000Z";
+  const parsed = Date.parse(`${value}${suffix}`);
+  if (!Number.isFinite(parsed)) throw new Error(`Invalid date '${value}'.`);
+  return parsed;
+}
+
+function positiveInt(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
 
 function readSpXCsv(file: string): StructureCandle[] {
