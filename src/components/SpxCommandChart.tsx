@@ -13,7 +13,7 @@ import {
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { authenticatedApiHeaders } from "../lib/auth/authenticated-api";
 import type { ZeroDteChainRow, ZeroDteRecommendation } from "../lib/zeroDteOiIntelligence";
 import type { ZeroDteMoodRead } from "../lib/zeroDteMoodEngine";
@@ -86,6 +86,7 @@ import {
   loadZeroDteShadowHistory,
   loadZeroDteShadowTrades,
   openZeroDteShadowTrade,
+  openZeroDtePlanShadowTrade,
   sampleZeroDteShadowTrades,
 } from "../lib/zeroDteShadowRepository";
 import {
@@ -394,6 +395,17 @@ export default function SpxCommandChart() {
   const [shadowHistory, setShadowHistory] = useState<ZeroDteShadowTrade[]>([]);
   const [shadowError, setShadowError] = useState<string | null>(null);
   const [moveTable, setMoveTable] = useState<ZeroDteMoveTable>(() => emptyZeroDteMoveTable());
+  const [moveTableSource, setMoveTableSource] = useState<"supabase" | "static" | "none">("none");
+  const [moveTableObservationCount, setMoveTableObservationCount] = useState(0);
+  const [moveTableMeta, setMoveTableMeta] = useState<{
+    distinctDayCount: number;
+    sourceMix: { SCHWAB_1M: number; SCHWAB_30M: number };
+    lastCaptureDate: string | null;
+    stale: boolean;
+    capture: { status: "ok" | "auth_failed" | "error"; capturedAt: string; tradeDate: string | null; rowsWritten: number; detail: string | null } | null;
+  }>({ distinctDayCount: 0, sourceMix: { SCHWAB_1M: 0, SCHWAB_30M: 0 }, lastCaptureDate: null, stale: false, capture: null });
+  const [planLogBusy, setPlanLogBusy] = useState(false);
+  const planAutoOpenRef = useRef<Set<string>>(new Set());
   const [vixContext, setVixContext] = useState<{ priorClose: number | null; current: number | null; changePct: number | null }>({ priorClose: null, current: null, changePct: null });
   const shadowOpeningSignalIdsRef = useRef<Set<string>>(new Set());
   const shadowSampleKeyRef = useRef<string | null>(null);
@@ -419,14 +431,69 @@ export default function SpxCommandChart() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/data/spx-move-table.json", { cache: "no-store" })
-      .then(async (response) => response.ok ? response.json() : null)
-      .then((json) => {
-        if (!cancelled && json?.version === 1 && Array.isArray(json.buckets)) setMoveTable(json as ZeroDteMoveTable);
-      })
-      .catch(() => {
-        if (!cancelled) setMoveTable(emptyZeroDteMoveTable());
-      });
+
+    const loadMoveTable = async () => {
+      try {
+        const headers = await authenticatedApiHeaders();
+        const response = await fetch("/api/zero-dte/move-table", {
+          headers,
+          cache: "no-store",
+        });
+        if (response.ok) {
+          const json = await response.json();
+          const table = json?.table;
+          if (table?.version === 1 && Array.isArray(table.buckets) && table.buckets.length) {
+            if (!cancelled) {
+              setMoveTable(table as ZeroDteMoveTable);
+              setMoveTableSource("supabase");
+              setMoveTableObservationCount(Number(json?.observationCount ?? 0));
+              setMoveTableMeta({
+                distinctDayCount: Number(json?.distinctDayCount ?? table.sessionCount ?? 0),
+                sourceMix: {
+                  SCHWAB_1M: Number(json?.sourceMix?.SCHWAB_1M ?? table.sourceMix?.SCHWAB_1M ?? 0),
+                  SCHWAB_30M: Number(json?.sourceMix?.SCHWAB_30M ?? table.sourceMix?.SCHWAB_30M ?? 0),
+                },
+                lastCaptureDate: json?.lastCaptureDate ?? table.lastCaptureDate ?? null,
+                stale: Boolean(json?.stale),
+                capture: json?.capture ?? null,
+              });
+            }
+            return;
+          }
+        }
+      } catch {
+        // During migration/rollout, fall back to the deployed static seed.
+      }
+
+      try {
+        const response = await fetch("/data/spx-move-table.json", { cache: "no-store" });
+        const json = response.ok ? await response.json() : null;
+        if (!cancelled && json?.version === 1 && Array.isArray(json.buckets)) {
+          const table = json as ZeroDteMoveTable;
+          setMoveTable(table);
+          setMoveTableSource(table.buckets.length ? "static" : "none");
+          setMoveTableObservationCount(
+            table.buckets.reduce((sum, bucket) => sum + Number(bucket.n ?? 0), 0),
+          );
+          setMoveTableMeta({
+            distinctDayCount: table.sessionCount,
+            sourceMix: table.sourceMix ?? { SCHWAB_1M: 0, SCHWAB_30M: 0 },
+            lastCaptureDate: table.lastCaptureDate ?? null,
+            stale: false,
+            capture: null,
+          });
+        }
+      } catch {
+        if (!cancelled) {
+          setMoveTable(emptyZeroDteMoveTable());
+          setMoveTableSource("none");
+          setMoveTableObservationCount(0);
+          setMoveTableMeta({ distinctDayCount: 0, sourceMix: { SCHWAB_1M: 0, SCHWAB_30M: 0 }, lastCaptureDate: null, stale: true, capture: null });
+        }
+      }
+    };
+
+    void loadMoveTable();
     return () => { cancelled = true; };
   }, []);
 
@@ -2058,7 +2125,7 @@ export default function SpxCommandChart() {
     strikeFlow,
   ]);
 
-  const positionExecutionReads = useMemo(() => {
+  const positionExecutionReads = useMemo<Record<string, ZeroDteExecutionRead>>(() => {
     const tradeDate = harvest?.tradeDate;
     const generatedAt = harvest?.generatedAt;
     const mapState = mapManager.state;
@@ -2295,7 +2362,7 @@ export default function SpxCommandChart() {
   ]);
 
   const liveExecutionRead = useMemo(() => {
-    const positionReads = Object.values(positionExecutionReads);
+    const positionReads = Object.values(positionExecutionReads) as ZeroDteExecutionRead[];
     if (!positionReads.length) return entryExecutionRead;
     return [...positionReads].sort((a, b) => {
       if (a.emergencyExit !== b.emergencyExit) return a.emergencyExit ? -1 : 1;
@@ -2355,7 +2422,7 @@ export default function SpxCommandChart() {
     for (const read of entryReads) {
       if (read.setupKey) readsBySetup.set(read.setupKey, read);
     }
-    for (const read of Object.values(positionExecutionReads)) {
+    for (const read of Object.values(positionExecutionReads) as ZeroDteExecutionRead[]) {
       if (read.setupKey) readsBySetup.set(read.setupKey, read);
     }
     return [...readsBySetup.values()];
@@ -2638,6 +2705,84 @@ export default function SpxCommandChart() {
     directionalSignal,
     openingPriorContext,
     priorStructure,
+  ]);
+
+  const logCreditSpreadPlanEntry = useCallback(async (manual = false) => {
+    const tradeDate = harvest?.tradeDate;
+    const generatedAt = harvest?.generatedAt;
+    if (!tradeDate || !generatedAt || planLogBusy) return;
+    if (defensibleCreditSpreadPlan.status !== "READY" && defensibleCreditSpreadPlan.status !== "PAIRED") return;
+    if (!manual && defensibleCreditSpreadPlan.entryTrigger === "NONE") return;
+
+    const legs = defensibleCreditSpreadPlan.status === "PAIRED" && defensibleCreditSpreadPlan.paired
+      ? [defensibleCreditSpreadPlan.paired.pcs, defensibleCreditSpreadPlan.paired.ccs]
+      : defensibleCreditSpreadPlan.primary
+        ? [defensibleCreditSpreadPlan.primary]
+        : [];
+    if (!legs.length) return;
+
+    setPlanLogBusy(true);
+    try {
+      const opened: ZeroDteShadowTrade[] = [];
+      for (const leg of legs) {
+        const trade = await openZeroDtePlanShadowTrade({
+          tradeDate,
+          generatedAt,
+          leg,
+          planStatus: defensibleCreditSpreadPlan.status,
+          spxRows,
+          openingDayType: openingPriorContext?.openingDayType ?? null,
+          entryTimeBucket: moveTableContext?.timeBucket ?? null,
+          directionalSide: directionalShadowContext.directionalSide,
+          directionalScore: directionalShadowContext.directionalScore,
+          directionalStructureScore: directionalShadowContext.directionalStructureScore,
+          directionalMarketScore: directionalShadowContext.directionalMarketScore,
+        });
+        if (trade) opened.push(trade);
+      }
+      if (opened.length) {
+        setShadowTrades((current) => {
+          const byId = new Map(current.map((item) => [item.id, item]));
+          for (const trade of opened) byId.set(trade.id, trade);
+          return [...byId.values()];
+        });
+        loadZeroDteShadowHistory(1000).then(setShadowHistory).catch(() => undefined);
+      }
+      setShadowError(null);
+    } catch (error) {
+      setShadowError(error instanceof Error ? error.message : "PLAN shadow entry failed.");
+    } finally {
+      setPlanLogBusy(false);
+    }
+  }, [
+    defensibleCreditSpreadPlan,
+    directionalShadowContext,
+    harvest?.generatedAt,
+    harvest?.tradeDate,
+    moveTableContext?.timeBucket,
+    openingPriorContext?.openingDayType,
+    planLogBusy,
+    spxRows,
+  ]);
+
+  useEffect(() => {
+    if (defensibleCreditSpreadPlan.status !== "READY" && defensibleCreditSpreadPlan.status !== "PAIRED") return;
+    if (defensibleCreditSpreadPlan.entryTrigger === "NONE") return;
+    const tradeDate = harvest?.tradeDate;
+    const barTime = decisionStructureCandles.at(-1)?.time ?? null;
+    const setupKey = defensibleCreditSpreadPlan.primary?.candidate.setupKey ?? "none";
+    if (!tradeDate || barTime === null) return;
+    const key = `${tradeDate}:${defensibleCreditSpreadPlan.status}:${setupKey}:${defensibleCreditSpreadPlan.entryTrigger}:${barTime}`;
+    if (planAutoOpenRef.current.has(key)) return;
+    planAutoOpenRef.current.add(key);
+    void logCreditSpreadPlanEntry(false);
+  }, [
+    decisionStructureCandles,
+    defensibleCreditSpreadPlan.entryTrigger,
+    defensibleCreditSpreadPlan.primary?.candidate.setupKey,
+    defensibleCreditSpreadPlan.status,
+    harvest?.tradeDate,
+    logCreditSpreadPlanEntry,
   ]);
 
   const signalPaint = useExecutionSignalPaint({
@@ -3420,6 +3565,28 @@ export default function SpxCommandChart() {
         <aside style={styles.sideRail}>
           {advancedView ? (
             <>
+          <ZeroDteCreditSpreadPlanCard
+            plan={defensibleCreditSpreadPlan}
+            policy={riskPolicy}
+            shadowOpen={shadowTrades.filter((trade) => trade.source === "PLAN" && trade.state === "open").length}
+            shadowClosed={shadowTrades.filter((trade) => trade.source === "PLAN" && trade.state === "closed").length}
+            shadowError={shadowError}
+            trackRecord={creditSpreadTrackRecord}
+            history={{
+              sessionCount: moveTable.sessionCount,
+              bucketCount: moveTable.buckets.length,
+              observationCount: moveTableObservationCount,
+              source: moveTableSource,
+              generatedAt: moveTable.generatedAt,
+              distinctDayCount: moveTableMeta.distinctDayCount,
+              sourceMix: moveTableMeta.sourceMix,
+              lastCaptureDate: moveTableMeta.lastCaptureDate,
+              stale: moveTableMeta.stale,
+              capture: moveTableMeta.capture,
+            }}
+            onLogPlanEntry={defensibleCreditSpreadPlan.status === "READY" ? () => void logCreditSpreadPlanEntry(true) : null}
+            planLogBusy={planLogBusy}
+          />
           <div
             style={{
               ...styles.executionCard,
@@ -3807,10 +3974,24 @@ export default function SpxCommandChart() {
             <ZeroDteCreditSpreadPlanCard
               plan={defensibleCreditSpreadPlan}
               policy={riskPolicy}
-              shadowOpen={shadowTrades.filter((trade) => trade.state === "open").length}
-              shadowClosed={shadowTrades.filter((trade) => trade.state === "closed").length}
+              shadowOpen={shadowTrades.filter((trade) => trade.source === "PLAN" && trade.state === "open").length}
+              shadowClosed={shadowTrades.filter((trade) => trade.source === "PLAN" && trade.state === "closed").length}
               shadowError={shadowError}
               trackRecord={creditSpreadTrackRecord}
+              history={{
+                sessionCount: moveTable.sessionCount,
+                bucketCount: moveTable.buckets.length,
+                observationCount: moveTableObservationCount,
+                source: moveTableSource,
+                generatedAt: moveTable.generatedAt,
+                distinctDayCount: moveTableMeta.distinctDayCount,
+                sourceMix: moveTableMeta.sourceMix,
+                lastCaptureDate: moveTableMeta.lastCaptureDate,
+                stale: moveTableMeta.stale,
+                capture: moveTableMeta.capture,
+              }}
+              onLogPlanEntry={defensibleCreditSpreadPlan.status === "READY" ? () => void logCreditSpreadPlanEntry(true) : null}
+              planLogBusy={planLogBusy}
             />
           )}
         </aside>
@@ -4144,7 +4325,7 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-const styles: Record<string, React.CSSProperties> = {
+const styles: Record<string, CSSProperties> = {
   shell: {
     background: "#050b10",
     color: "#eef5fb",

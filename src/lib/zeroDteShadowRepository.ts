@@ -2,7 +2,7 @@ import type { ConfirmedExecutionSignal } from "./execution/useExecutionSignalPai
 import type { ZeroDteExecutionRead } from "./zeroDteExecutionIntelligence";
 import type { ZeroDteShadowTrade } from "./zeroDteShadowTrade";
 import type { AdaptiveManagementDecision } from "./zeroDteAdaptiveManagement";
-import type { DefensibleCreditSpreadPlan } from "./zeroDteCreditSpreadPlan";
+import type { CreditSpreadPlanLeg, DefensibleCreditSpreadPlan } from "./zeroDteCreditSpreadPlan";
 import { buildShadowShortLegEntries, shadowWidthPoints } from "./zeroDteShadowTrade";
 import type { ZeroDteChainRow } from "./zeroDteOiIntelligence";
 import type { AdaptivePortfolioOpportunity, ShadowLegSnapshot } from "./zeroDteAdaptivePortfolio";
@@ -116,7 +116,7 @@ export async function openZeroDteShadowTrade(args: {
         shortStrike,
       })
     : null;
-  const planLeg = args.creditPlan?.paired
+  const proposedPlanLeg = args.creditPlan?.paired
     ? signal.strategy === "put-credit-spread"
       ? args.creditPlan.paired.pcs
       : signal.strategy === "call-credit-spread"
@@ -125,8 +125,15 @@ export async function openZeroDteShadowTrade(args: {
     : args.creditPlan?.primary?.strategy === signal.strategy
       ? args.creditPlan.primary
       : null;
+  const planLeg =
+    proposedPlanLeg &&
+    (args.creditPlan?.status === "READY" || args.creditPlan?.status === "PAIRED") &&
+    exactLegGeometry(signal.legs, proposedPlanLeg.candidate.legs)
+      ? proposedPlanLeg
+      : null;
   const json = await call({
     action: "open",
+    source: "EXECUTION",
     tradeDate: signal.tradeDate,
     signalId: signal.id,
     signalTime: new Date((signal.candleTime + 60) * 1000).toISOString(),
@@ -184,11 +191,11 @@ export async function openZeroDteShadowTrade(args: {
     histProbItmAtClose: planLeg?.edge?.histProbItmAtClose ?? null,
     moveTableKeyUsed: planLeg?.edge?.sample.keyUsed ?? null,
     moveTableN: planLeg?.edge?.sample.n ?? null,
-    planStatus: args.creditPlan?.status ?? null,
+    planStatus: planLeg ? args.creditPlan?.status ?? null : null,
     entryTrigger: planLeg?.entryTrigger ?? null,
     entryTimeBucket: args.creditPlan?.moveTableContext?.timeBucket ?? null,
-    gammaRegime: planLeg?.gammaRegime ?? args.creditPlan?.gammaRegime ?? null,
-    directionalTilt: planLeg?.directionalTilt ?? args.creditPlan?.directionalTilt ?? null,
+    gammaRegime: planLeg?.gammaRegime ?? null,
+    directionalTilt: planLeg?.directionalTilt ?? null,
     planGuardKind: planLeg?.guard?.kind ?? null,
     planGuardLabel: planLeg?.guard?.label ?? null,
     planGuardPrice: planLeg?.guard?.price ?? null,
@@ -215,6 +222,83 @@ export async function openZeroDteShadowTrade(args: {
     portfolioDecisionReason: args.opportunity.reasons.join(" "),
     entryLegSnapshots: args.opportunity.entryLegSnapshots,
     entryGreeks: args.opportunity.entryGreeks,
+  });
+  return (json.trade ?? null) as ZeroDteShadowTrade | null;
+}
+
+export async function openZeroDtePlanShadowTrade(args: {
+  tradeDate: string;
+  generatedAt: string;
+  leg: CreditSpreadPlanLeg;
+  planStatus: "READY" | "PAIRED";
+  spxRows: ZeroDteChainRow[];
+  openingDayType?: "INSIDE_RANGE" | "OUTSIDE_UP" | "OUTSIDE_DOWN" | null;
+  entryTimeBucket?: string | null;
+  directionalSide?: "BULL" | "BEAR" | "WAIT" | null;
+  directionalScore?: number | null;
+  directionalStructureScore?: number | null;
+  directionalMarketScore?: number | null;
+}): Promise<ZeroDteShadowTrade | null> {
+  const leg = args.leg;
+  if (!leg.candidate.legs.length || leg.sellableCredit <= 0) return null;
+  const generatedMs = Date.parse(args.generatedAt);
+  const candleTime = Number.isFinite(generatedMs) ? Math.floor(generatedMs / 1000 / 60) * 60 : Math.floor(Date.now() / 1000 / 60) * 60;
+  const signalId = `plan:${args.tradeDate}:${leg.side}:${leg.candidate.setupKey}:${candleTime}`;
+  const entryShortLegs = buildShadowShortLegEntries(args.spxRows, leg.candidate.legs);
+  const json = await call({
+    action: "open",
+    source: "PLAN",
+    tradeDate: args.tradeDate,
+    signalId,
+    signalTime: args.generatedAt,
+    signalCandleTime: candleTime,
+    strategy: leg.strategy,
+    setupKey: leg.candidate.setupKey,
+    label: `PLAN ${leg.side} ${leg.shortStrike.toFixed(0)}/${leg.longStrike.toFixed(0)}`,
+    legs: leg.candidate.legs,
+    entryScore: leg.rank,
+    minimumEntryScore: 0,
+    timeRegime: "CREDIT_EDGE_PLAN",
+    shortDeltaAbs: leg.shortDeltaAbs,
+    shortDistancePoints: leg.distancePoints,
+    entryMarkCredit: leg.candidate.estimatedCredit,
+    entrySellableCredit: leg.sellableCredit,
+    entryShortLegs,
+    remainingMovePoints: null,
+    maxRiskDollars: leg.maxRiskDollars,
+    widthPoints: leg.widthPoints,
+    eventRisk: "NORMAL",
+    rangeConsumptionPct: null,
+    entryMapPhase: leg.candidate.mapPhase,
+    entryMapCenter: leg.candidate.mapCenter,
+    entryRailBreached: leg.candidate.railBreached,
+    directionalSide: args.directionalSide ?? null,
+    directionalScore: args.directionalScore ?? null,
+    directionalStructureScore: args.directionalStructureScore ?? null,
+    directionalMarketScore: args.directionalMarketScore ?? null,
+    openingDayType: args.openingDayType ?? null,
+    edgePts: leg.edge?.edgePts ?? null,
+    evPerLotDollars: leg.edge?.evPerLotDollars ?? null,
+    histProbTouch: leg.edge?.histProbTouch ?? null,
+    histProbItmAtClose: leg.edge?.histProbItmAtClose ?? null,
+    moveTableKeyUsed: leg.edge?.sample.keyUsed ?? null,
+    moveTableN: leg.edge?.sample.n ?? null,
+    planStatus: args.planStatus,
+    entryTrigger: leg.entryTrigger,
+    entryTimeBucket: args.entryTimeBucket ?? null,
+    gammaRegime: leg.gammaRegime,
+    directionalTilt: leg.directionalTilt,
+    planGuardKind: leg.guard?.kind ?? null,
+    planGuardLabel: leg.guard?.label ?? null,
+    planGuardPrice: leg.guard?.price ?? null,
+    planDistanceEm: leg.distanceEm,
+    planTakeProfitPct: leg.exitPlan.takeProfitPct,
+    planStopCreditMultiple: leg.exitPlan.stopCreditMultiple,
+    portfolioDecision: "TAKE",
+    portfolioRole: "NEW_RISK",
+    portfolioDecisionReason: "Credit Spread Edge PLAN validation trade.",
+    entryLegSnapshots: [],
+    entryGreeks: null,
   });
   return (json.trade ?? null) as ZeroDteShadowTrade | null;
 }
@@ -289,6 +373,15 @@ export async function closeZeroDteShadowTrade(args: {
     settlementSpot: args.settlementSpot ?? null,
   });
   return (json.trade ?? null) as ZeroDteShadowTrade | null;
+}
+
+
+export function exactLegGeometry(left: readonly { optionType: string; action: string; strike: number }[], right: readonly { optionType: string; action: string; strike: number }[]) {
+  if (left.length !== right.length) return false;
+  const key = (leg: { optionType: string; action: string; strike: number }) => `${leg.optionType}:${leg.action}:${Number(leg.strike).toFixed(4)}`;
+  const a = left.map(key).sort();
+  const b = right.map(key).sort();
+  return a.every((value, index) => value === b[index]);
 }
 
 function shortDistanceForPosition(read: ZeroDteExecutionRead, spot: number) {

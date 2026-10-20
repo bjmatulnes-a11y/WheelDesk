@@ -58,10 +58,30 @@ async function openShadow(body: any, userId: string) {
     return jsonError("Shadow open requires tradeDate, signalId, setupKey, and positive sellable credit.", 400);
   }
 
+  const source = body.source === "PLAN" ? "PLAN" : "EXECUTION";
   const portfolioDecision = normalizePortfolioDecision(body.portfolioDecision);
-  const accepted = portfolioDecision === "TAKE";
+  const accepted = source === "PLAN" ? true : portfolioDecision === "TAKE";
   const strategy = normalizeStrategy(body.strategy);
   const legs = Array.isArray(body.legs) ? body.legs : [];
+
+  if (source === "PLAN") {
+    const cutoff = new Date(Date.parse(String(body.signalTime ?? new Date().toISOString())) - 15 * 60_000).toISOString();
+    const { data: recentPlan, error: recentPlanError } = await supabaseServer
+      .from("zero_dte_shadow_trades")
+      .select("id,state,exit_time")
+      .eq("user_id", userId)
+      .eq("source", "PLAN")
+      .eq("trade_date", String(body.tradeDate))
+      .eq("strategy", strategy)
+      .eq("setup_key", String(body.setupKey))
+      .order("signal_time", { ascending: false })
+      .limit(10);
+    if (recentPlanError) throw recentPlanError;
+    const blocked = (recentPlan ?? []).find((row: any) =>
+      row.state === "open" || (row.exit_time && String(row.exit_time) >= cutoff),
+    );
+    if (blocked) return NextResponse.json({ ok: true, trade: null, deduped: true });
+  }
   const entryLegSnapshots = Array.isArray(body.entryLegSnapshots) ? body.entryLegSnapshots : [];
   const structureState = strategy === "iron-fly" ? "IF_CENTER" : "CREDIT_SPREAD";
   const openHistory = accepted
@@ -70,13 +90,16 @@ async function openShadow(body: any, userId: string) {
         action: "OPEN",
         strike: shortStrikeFromLegs(legs),
         price: entryCredit,
-        detail: "Individual shadow lot admitted by the Adaptive Portfolio Governor.",
+        detail: source === "PLAN"
+          ? "Credit Spread Edge PLAN shadow entry using the card's exact strikes and executable credit."
+          : "Individual shadow lot admitted by the Adaptive Portfolio Governor.",
         netCashPoints: entryCredit,
       }]
     : [];
 
   const payload = {
     user_id: userId,
+    source,
     trade_date: body.tradeDate,
     signal_id: body.signalId,
     strategy,
@@ -207,10 +230,10 @@ async function openShadow(body: any, userId: string) {
     current_leg_snapshots: entryLegSnapshots,
     entry_greeks: body.entryGreeks && typeof body.entryGreeks === "object" ? body.entryGreeks : null,
     current_greeks: body.entryGreeks && typeof body.entryGreeks === "object" ? body.entryGreeks : null,
-    adaptive_structure_state: accepted ? structureState : null,
-    adaptive_active_legs: accepted ? legs : [],
-    adaptive_net_cash_points: accepted ? entryCredit : null,
-    adaptive_marked_pnl_dollars: accepted ? 0 : null,
+    adaptive_structure_state: accepted && source === "EXECUTION" ? structureState : null,
+    adaptive_active_legs: accepted && source === "EXECUTION" ? legs : [],
+    adaptive_net_cash_points: accepted && source === "EXECUTION" ? entryCredit : null,
+    adaptive_marked_pnl_dollars: accepted && source === "EXECUTION" ? 0 : null,
     adaptive_released_short_strike: null,
     adaptive_reinstated_short_strike: null,
     adaptive_structure_history: openHistory,
@@ -222,9 +245,9 @@ async function openShadow(body: any, userId: string) {
     hit_one_point_five_x: false,
     hit_two_x: false,
     ran_to_max_loss: false,
-    adaptive_state: accepted ? "open" : null,
-    adaptive_management_state: accepted ? "HEALTHY" : null,
-    adaptive_action: accepted ? "HOLD" : null,
+    adaptive_state: accepted && source === "EXECUTION" ? "open" : null,
+    adaptive_management_state: accepted && source === "EXECUTION" ? "HEALTHY" : null,
+    adaptive_action: accepted && source === "EXECUTION" ? "HOLD" : null,
     adaptive_target_capture_pct: null,
     adaptive_target_debit: null,
     adaptive_target_r: null,
@@ -233,7 +256,9 @@ async function openShadow(body: any, userId: string) {
     adaptive_threat_score: null,
     adaptive_invalidation_score: null,
     adaptive_reason: accepted
-      ? "Adaptive portfolio manager initialized for an admitted individual lot."
+      ? source === "PLAN"
+        ? "PLAN trade uses the Credit Spread Edge card deterministic exit rules; adaptive repair is disabled."
+        : "Adaptive portfolio manager initialized for an admitted individual lot."
       : "Signal recorded by the opportunity ledger but not admitted to the portfolio.",
     adaptive_max_adverse_excursion_dollars: 0,
     adaptive_max_favorable_excursion_dollars: 0,
@@ -560,7 +585,7 @@ async function closeShadow(body: any, userId: string) {
     updated_at: body.exitTime,
     exit_time: body.exitTime,
     exit_reason: exitReason,
-    exit_rule: ["TAKE_PROFIT", "STRUCTURE_STOP", "PRICE_STOP", "TIME_STOP", "EXPIRED"].includes(exitReason)
+    exit_rule: ["TAKE_PROFIT", "STRUCTURE_STOP", "PRICE_STOP", "TIME_STOP", "TAKE_PROFIT_50", "SHORT_LEG_3X_STOP", "EXPIRED"].includes(exitReason)
       ? exitReason
       : exitReason === "SESSION_CLOSE"
         ? "EXPIRED"
@@ -585,6 +610,7 @@ async function closeShadow(body: any, userId: string) {
 function mapShadowTrade(row: any) {
   return {
     id: row.id,
+    source: row.source === "PLAN" ? "PLAN" : "EXECUTION",
     tradeDate: row.trade_date,
     signalId: row.signal_id,
     strategy: normalizeStrategy(row.strategy),
@@ -685,7 +711,7 @@ function mapShadowTrade(row: any) {
     entryTimeBucket: typeof row.entry_time_bucket === "string" ? row.entry_time_bucket : null,
     gammaRegime: row.gamma_regime === "POSITIVE" || row.gamma_regime === "NEGATIVE" ? row.gamma_regime : null,
     directionalTilt: row.directional_tilt === "BULL" || row.directional_tilt === "BEAR" || row.directional_tilt === "NONE" ? row.directional_tilt : null,
-    exitRule: ["TAKE_PROFIT", "STRUCTURE_STOP", "PRICE_STOP", "TIME_STOP", "EXPIRED"].includes(row.exit_rule) ? row.exit_rule : null,
+    exitRule: ["TAKE_PROFIT", "STRUCTURE_STOP", "PRICE_STOP", "TIME_STOP", "TAKE_PROFIT_50", "SHORT_LEG_3X_STOP", "EXPIRED"].includes(row.exit_rule) ? row.exit_rule : null,
     planGuardKind: ["OI", "PRIOR", "SWING", "FVG"].includes(row.plan_guard_kind) ? row.plan_guard_kind : null,
     planGuardLabel: typeof row.plan_guard_label === "string" ? row.plan_guard_label : null,
     planGuardPrice: numeric(row.plan_guard_price),

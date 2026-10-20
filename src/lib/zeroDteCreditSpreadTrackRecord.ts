@@ -25,11 +25,13 @@ export function buildCreditSpreadTrackRecord(args: {
   const distanceEm = leg.distanceEm;
   const base = args.trades.filter((trade) =>
     trade.state === "closed" &&
+    trade.source === "PLAN" &&
+    (trade.planStatus === "READY" || trade.planStatus === "PAIRED") &&
     trade.strategy === strategy &&
     trade.pnlConservativeDollars !== null &&
     (args.openingDayType === null || trade.openingDayType === args.openingDayType) &&
-    (trade.planGuardKind == null || guardKind == null || trade.planGuardKind === guardKind) &&
-    (trade.planDistanceEm == null || Math.abs(trade.planDistanceEm - distanceEm) <= 0.1),
+    trade.planGuardKind !== null && guardKind !== null && trade.planGuardKind === guardKind &&
+    trade.planDistanceEm !== null && Math.abs(trade.planDistanceEm - distanceEm) <= 0.1,
   );
   const exact = base.filter((trade) =>
     trade.entryTrigger === leg.entryTrigger &&

@@ -134,6 +134,7 @@ function executionPositionToAdaptiveShadowTrade(
   // the remaining fields preserve the complete ShadowTrade contract and make
   // this adapter resistant to future manager reads.
   return {
+    source: "EXECUTION",
     id: position.id,
     tradeDate: read.tradeDate,
     signalId: `actual:${position.id}`,

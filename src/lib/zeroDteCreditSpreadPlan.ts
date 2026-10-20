@@ -162,7 +162,7 @@ export function buildDefensibleCreditSpreadPlan(args: {
   const riskCap = minNullable(args.policy.maxRiskPerTradeDollars, accountCap);
   const baseFloor = absoluteDistanceFloorPoints(args.policy, args.spot);
   const confluenceTolerance = Math.max(1, args.confluenceTolerance ?? 0.05 * expectedMove);
-  const evaluations = args.candidates
+  const rawEvaluations = args.candidates
     .filter((candidate) => candidate.strategy === "put-credit-spread" || candidate.strategy === "call-credit-spread")
     .map((candidate) => {
       const side: CreditSpreadPlanSide = candidate.strategy === "put-credit-spread" ? "PCS" : "CCS";
@@ -186,6 +186,7 @@ export function buildDefensibleCreditSpreadPlan(args: {
         directionalTilt,
       });
     });
+  const evaluations = applyDirectionalRankTilt(rawEvaluations, directionalTilt);
 
   const bySide = (side: CreditSpreadPlanSide) => evaluations
     .filter((item) => item.side === side)
@@ -376,7 +377,7 @@ function evaluateCandidate(args: {
   const tiltText = args.directionalTilt === "NONE" ? "No directional tilt" : `${args.directionalTilt} directional tilt`;
   reasons.push(`${tiltText}; direction is a veto/placement adjustment, not an entry prerequisite.`);
   if (delta !== null) reasons.push(`Short delta ${delta.toFixed(2)}; distance ${distance.toFixed(1)} points (${Math.round(distanceEm * 100)}% of EM).`);
-  if (edge) reasons.push(`Historical hold-to-expiry EV ${moneySigned(edge.evPerLotDollars)} / lot from n=${edge.sample.n}.`);
+  if (edge) reasons.push(`${edge.sample.mode === "MODELED" ? "MODELED" : "Historical"} hold-to-expiry EV ${moneySigned(edge.evPerLotDollars)} / lot from n=${edge.sample.n} distinct days.`);
 
   const trigger = detectEntryTrigger({
     side: args.side,
@@ -662,6 +663,29 @@ function buildDayVetoReason(args: {
   }
   if (finite(args.vixChangePct) && args.vixChangePct! > 15) return `NO TRADE: VIX is up ${args.vixChangePct!.toFixed(1)}% from its prior close.`;
   return null;
+}
+
+
+function applyDirectionalRankTilt(
+  evaluations: readonly Evaluated[],
+  tilt: CreditSpreadDirectionalTilt,
+): Evaluated[] {
+  if (tilt === "NONE") return [...evaluations];
+  const favoredSide: CreditSpreadPlanSide = tilt === "BULL" ? "PCS" : "CCS";
+  const adjusted = evaluations.map((item) => ({ ...item }));
+  for (const side of ["PCS", "CCS"] as const) {
+    const eligible = adjusted
+      .filter((item) => item.side === side && item.candidate.eligible && Number.isFinite(item.distanceEm))
+      .sort((a, b) => a.distanceEm - b.distanceEm);
+    if (!eligible.length) continue;
+    const median = eligible[Math.floor((eligible.length - 1) / 2)]?.distanceEm ?? 0;
+    for (const item of adjusted.filter((value) => value.side === side)) {
+      const closerHalf = item.distanceEm <= median;
+      const shouldBonus = side === favoredSide ? closerHalf : !closerHalf;
+      if (shouldBonus) item.rank += 4;
+    }
+  }
+  return adjusted;
 }
 
 function distanceTiltFactor(side: CreditSpreadPlanSide, tilt: CreditSpreadDirectionalTilt) {

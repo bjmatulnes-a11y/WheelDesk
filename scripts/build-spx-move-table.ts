@@ -1,29 +1,26 @@
 /**
- * Build WheelDesk's empirical SPX remaining-move table.
+ * Build / backfill WheelDesk's empirical SPX remaining-move data.
  *
- * Usage (CSV seed; recommended if Schwab minute history is shallow):
- *   npx tsx scripts/build-spx-move-table.ts --spx-csv ./data/spx-1m.csv --vix-csv ./data/vix-daily.csv
- *   # After the close, a job may merge only the new session sample into an existing table:
- *   npx tsx scripts/build-spx-move-table.ts --spx-csv ./data/latest.csv --vix-csv ./data/vix-daily.csv --append-existing
+ * Primary historical backfill (recommended):
+ *   npx tsx scripts/build-spx-move-table.ts --schwab-backfill --api-base https://thewheeldesk.com --bearer "$TOKEN" --lookback-days 180
  *
- * CSV formats:
- *   SPX: time,open,high,low,close  (time may be ISO or epoch seconds/ms)
- *   VIX: date,close                (YYYY-MM-DD; close is that session's VIX close)
+ * The server-side backfill requests Schwab $SPX 30-minute candles with explicit
+ * date ranges, verifies the returned bar spacing/alignment, and stores one
+ * observation per trade date + entry time in Supabase. SCHWAB_1M observations
+ * captured later have precedence over SCHWAB_30M for the same date/bucket.
  *
- * Optional authenticated WheelDesk API pull (explicit ranged requests):
+ * Legacy static JSON seeding remains available for development/fallback only:
  *   npx tsx scripts/build-spx-move-table.ts --api-base http://localhost:3000 --bearer "$TOKEN" --lookback-days 180
- *   npx tsx scripts/build-spx-move-table.ts --api-base http://localhost:3000 --bearer "$TOKEN" --start-date 2026-04-01 --end-date 2026-10-19
+ *   npx tsx scripts/build-spx-move-table.ts --spx-csv ./data/spx-1m.csv --vix-csv ./data/vix-daily.csv
  *
- * The API path uses explicit startDate/endDate windows so it does not fall into WheelDesk's
- * normal 24-hour live-chart default. Schwab still controls how much 1-minute history it returns.
- * If fewer than ~120 sessions are returned, the script logs a warning and accepts --spx-csv
- * as a supplemental/seed source.
+ * Do not use --append-existing. Aggregate-only appends cannot safely dedupe
+ * overlapping Schwab windows; production accumulation is handled by the
+ * Supabase observation store and the automatic EOD capture route.
  */
 import fs from "node:fs";
 import path from "node:path";
 import {
   buildMoveTableFromSessions,
-  mergeZeroDteMoveTables,
   type HistoricalSessionInput,
 } from "../src/lib/zeroDteMoveTable";
 import type { StructureCandle } from "../src/lib/zeroDteStructureMap";
@@ -32,6 +29,24 @@ const args = parseArgs(process.argv.slice(2));
 const output = path.resolve(args.out ?? "public/data/spx-move-table.json");
 
 async function main() {
+  if (args["schwab-backfill"] === "1") {
+    if (!args["api-base"] || !args.bearer) {
+      throw new Error("--schwab-backfill requires --api-base and --bearer.");
+    }
+    const days = positiveInt(args["lookback-days"], 180);
+    const url = new URL("/api/zero-dte/move-table/backfill", args["api-base"]);
+    url.searchParams.set("days", String(days));
+    console.log(`Requesting server-side Schwab 30-minute backfill for ${days} days...`);
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${args.bearer}` },
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`Backfill failed ${response.status}: ${text}`);
+    const json = JSON.parse(text);
+    console.log(JSON.stringify(json, null, 2));
+    return;
+  }
   let candles: StructureCandle[] = [];
   if (args["spx-csv"]) candles.push(...readSpXCsv(path.resolve(args["spx-csv"])));
   if (args["api-base"] && args.bearer) {
@@ -62,14 +77,15 @@ async function main() {
     sessions.push({ tradeDate, candles: sessionsByDate.get(tradeDate) ?? [], priorVixClose });
   }
 
-  const built = buildMoveTableFromSessions(sessions);
-  const table = args["append-existing"] === "1" && fs.existsSync(output)
-    ? mergeZeroDteMoveTables(JSON.parse(fs.readFileSync(output, "utf8")), built)
-    : built;
+  if (args["append-existing"] === "1") {
+    throw new Error(
+      "--append-existing is disabled because aggregate-only merging can double-count overlapping Schwab sessions. Use the automated Supabase EOD observation store or rebuild fresh.",
+    );
+  }
+  const table = buildMoveTableFromSessions(sessions);
   fs.mkdirSync(path.dirname(output), { recursive: true });
   fs.writeFileSync(output, JSON.stringify(table, null, 2));
   console.log(`Wrote ${table.buckets.length} conditioned buckets from ${table.sessionCount} session inputs to ${output}.`);
-  if (args["append-existing"] === "1") console.log("Append mode enabled: incoming bucket arrays were merged into the existing table.");
 }
 
 async function fetchFromWheelDeskApi(

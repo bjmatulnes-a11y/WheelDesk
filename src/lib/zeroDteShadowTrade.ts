@@ -36,6 +36,7 @@ export type AdaptiveStructureHistoryItem = {
 
 export type ZeroDteShadowTrade = {
   id: string;
+  source: "EXECUTION" | "PLAN";
   tradeDate: string;
   signalId: string;
   strategy: ExecutionStrategy;
@@ -99,7 +100,7 @@ export type ZeroDteShadowTrade = {
   entryTimeBucket?: string | null;
   gammaRegime?: "POSITIVE" | "NEGATIVE" | null;
   directionalTilt?: "BULL" | "BEAR" | "NONE" | null;
-  exitRule?: "TAKE_PROFIT" | "STRUCTURE_STOP" | "PRICE_STOP" | "TIME_STOP" | "EXPIRED" | null;
+  exitRule?: "TAKE_PROFIT" | "STRUCTURE_STOP" | "PRICE_STOP" | "TIME_STOP" | "TAKE_PROFIT_50" | "SHORT_LEG_3X_STOP" | "EXPIRED" | null;
   planGuardKind?: "OI" | "PRIOR" | "SWING" | "FVG" | null;
   planGuardLabel?: string | null;
   planGuardPrice?: number | null;
@@ -184,7 +185,7 @@ export type ShadowShortLegEntry = {
 
 export type ShadowExitDecision = {
   shouldExit: boolean;
-  reason: "TAKE_PROFIT" | "STRUCTURE_STOP" | "PRICE_STOP" | "TIME_STOP" | "PROFIT_PROTECTION" | null;
+  reason: "TAKE_PROFIT" | "STRUCTURE_STOP" | "PRICE_STOP" | "TIME_STOP" | "TAKE_PROFIT_50" | "SHORT_LEG_3X_STOP" | "PROFIT_PROTECTION" | null;
   detail: string;
 };
 
@@ -321,58 +322,84 @@ export function evaluateZeroDteShadowExit(
     return { shouldExit: false, reason: null, detail: "Shadow trade is not open." };
   }
 
-  const takeProfitPct = clampNumber(trade.planTakeProfitPct ?? 0.5, 0.1, 0.9);
-  if (
-    trade.currentBuybackDebit !== null &&
-    trade.currentBuybackDebit <= trade.entrySellableCredit * takeProfitPct
-  ) {
-    return {
-      shouldExit: true,
-      reason: "TAKE_PROFIT",
-      detail: `Executable package debit ${trade.currentBuybackDebit.toFixed(2)} reached the ${(takeProfitPct * 100).toFixed(0)}% entry-credit take-profit debit.`,
-    };
-  }
+  const isPlanTrade = trade.source === "PLAN" || trade.planTakeProfitPct != null;
 
-  const stopMultiple = clampNumber(trade.planStopCreditMultiple ?? 2, 1.1, 5);
-  if (
-    trade.currentBuybackDebit !== null &&
-    trade.currentBuybackDebit >= trade.entrySellableCredit * stopMultiple
-  ) {
-    return {
-      shouldExit: true,
-      reason: "PRICE_STOP",
-      detail: `Spread buyback ${trade.currentBuybackDebit.toFixed(2)} reached ${stopMultiple.toFixed(2)}x the ${trade.entrySellableCredit.toFixed(2)} entry credit.`,
-    };
-  }
-
-  const spotClose = finitePositive(context?.spotClose);
-  const guard = finitePositive(trade.planGuardPrice);
-  if (spotClose !== null && guard !== null) {
-    const structureBroken =
-      trade.strategy === "put-credit-spread"
-        ? spotClose < guard
-        : trade.strategy === "call-credit-spread"
-          ? spotClose > guard
-          : false;
-    if (structureBroken) {
+  if (isPlanTrade) {
+    const takeProfitPct = clampNumber(trade.planTakeProfitPct ?? 0.5, 0.1, 0.9);
+    if (
+      trade.currentBuybackDebit !== null &&
+      trade.currentBuybackDebit <= trade.entrySellableCredit * takeProfitPct
+    ) {
       return {
         shouldExit: true,
-        reason: "STRUCTURE_STOP",
-        detail: `Completed 1m close ${spotClose.toFixed(1)} broke ${trade.planGuardLabel ?? "the guard"} ${guard.toFixed(1)}.`,
+        reason: "TAKE_PROFIT",
+        detail: `Executable package debit ${trade.currentBuybackDebit.toFixed(2)} reached the ${(takeProfitPct * 100).toFixed(0)}% entry-credit take-profit debit.`,
       };
     }
-  }
 
-  const generatedAt = epochSeconds(context?.generatedAt);
-  const shortStrike = trade.legs.find((leg) => leg.action === "sell")?.strike ?? null;
-  const remainingMove = finitePositive(context?.remainingMovePoints);
-  if (generatedAt !== null && spotClose !== null && Number.isFinite(shortStrike) && remainingMove !== null) {
-    const minute = centralMinuteOfDay(generatedAt);
-    if (minute >= 14 * 60 + 30 && Math.abs(spotClose - Number(shortStrike)) <= remainingMove * 0.25) {
+    const stopMultiple = clampNumber(trade.planStopCreditMultiple ?? 2, 1.1, 5);
+    if (
+      trade.currentBuybackDebit !== null &&
+      trade.currentBuybackDebit >= trade.entrySellableCredit * stopMultiple
+    ) {
       return {
         shouldExit: true,
-        reason: "TIME_STOP",
-        detail: `After 14:30 CT, spot is within 0.25x remaining move of the short strike.`,
+        reason: "PRICE_STOP",
+        detail: `Spread buyback ${trade.currentBuybackDebit.toFixed(2)} reached ${stopMultiple.toFixed(2)}x the ${trade.entrySellableCredit.toFixed(2)} entry credit.`,
+      };
+    }
+
+    const spotClose = finitePositive(context?.spotClose);
+    const guard = finitePositive(trade.planGuardPrice);
+    if (spotClose !== null && guard !== null) {
+      const structureBroken =
+        trade.strategy === "put-credit-spread"
+          ? spotClose < guard
+          : trade.strategy === "call-credit-spread"
+            ? spotClose > guard
+            : false;
+      if (structureBroken) {
+        return {
+          shouldExit: true,
+          reason: "STRUCTURE_STOP",
+          detail: `Completed 1m close ${spotClose.toFixed(1)} broke ${trade.planGuardLabel ?? "the guard"} ${guard.toFixed(1)}.`,
+        };
+      }
+    }
+
+    const generatedAt = epochSeconds(context?.generatedAt);
+    const shortStrike = trade.legs.find((leg) => leg.action === "sell")?.strike ?? null;
+    const remainingMove = finitePositive(context?.remainingMovePoints);
+    if (generatedAt !== null && spotClose !== null && Number.isFinite(shortStrike) && remainingMove !== null) {
+      const minute = centralMinuteOfDay(generatedAt);
+      if (minute >= 14 * 60 + 30 && Math.abs(spotClose - Number(shortStrike)) <= remainingMove * 0.25) {
+        return {
+          shouldExit: true,
+          reason: "TIME_STOP",
+          detail: "After 14:30 CT, spot is within 0.25x remaining move of the short strike.",
+        };
+      }
+    }
+  } else {
+    if (
+      trade.currentBuybackDebit !== null &&
+      trade.currentBuybackDebit <= trade.entrySellableCredit * 0.5
+    ) {
+      return {
+        shouldExit: true,
+        reason: "TAKE_PROFIT_50",
+        detail: `Executable package debit ${trade.currentBuybackDebit.toFixed(2)} has captured at least 50% of the ${trade.entrySellableCredit.toFixed(2)} entry credit.`,
+      };
+    }
+
+    if (
+      trade.currentShortLegMultiple !== null &&
+      trade.currentShortLegMultiple >= 3
+    ) {
+      return {
+        shouldExit: true,
+        reason: "SHORT_LEG_3X_STOP",
+        detail: `Worst short leg is ${trade.currentShortLegMultiple.toFixed(2)}x its executable entry sale price.`,
       };
     }
   }
