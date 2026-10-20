@@ -30,8 +30,8 @@ export function buildCreditSpreadTrackRecord(args: {
     trade.strategy === strategy &&
     trade.pnlConservativeDollars !== null &&
     (args.openingDayType === null || trade.openingDayType === args.openingDayType) &&
-    trade.planGuardKind !== null && guardKind !== null && trade.planGuardKind === guardKind &&
-    trade.planDistanceEm !== null && Math.abs(trade.planDistanceEm - distanceEm) <= 0.1,
+    trade.planGuardKind != null && guardKind !== null && trade.planGuardKind === guardKind &&
+    typeof trade.planDistanceEm === "number" && Math.abs(trade.planDistanceEm - distanceEm) <= 0.1,
   );
   const exact = base.filter((trade) =>
     trade.entryTrigger === leg.entryTrigger &&
