@@ -56,12 +56,17 @@ export function ZeroDteCreditSpreadPlanCard({
       : plan.side === "CCS"
         ? "#f24968"
         : "#94a3b8";
+  const triggerTag = plan.entryTrigger === "STRUCTURE_REVERSAL"
+    ? " · REV"
+    : plan.entryTrigger === "STRUCTURE_CONTINUATION"
+      ? " · CONT"
+      : "";
   const title = plan.status === "NO_TRADE_DAY"
     ? "NO TRADE DAY"
     : plan.status === "PAIRED"
       ? "PAIRED · POSITIVE GAMMA"
       : plan.status === "READY"
-        ? `${plan.side} READY`
+        ? `${plan.side} READY${triggerTag}`
         : `${plan.side ?? "CREDIT"} · WAIT`;
   const showManualPlanLog = plan.status === "READY" && plan.primary?.entryTrigger === "NONE" && Boolean(onLogPlanEntry);
 
@@ -192,7 +197,7 @@ function LegBlock({ leg }: { leg: CreditSpreadPlanLeg }) {
         <span>risk {money0(leg.maxRiskDollars * leg.riskSizeMultiplier)}</span>
         <span>Δ {leg.shortDeltaAbs == null ? "—" : leg.shortDeltaAbs.toFixed(2)}</span>
       </div>
-      {leg.riskSizeMultiplier < 1 ? <div style={styles.subtle}>50% risk size in paired mode.</div> : null}
+      {leg.riskSizeMultiplier < 1 ? <div style={styles.subtle}>Reduced {Math.round(leg.riskSizeMultiplier * 100)}% risk size · paired or thin-history structure override.</div> : null}
     </div>
   );
 }
@@ -215,6 +220,7 @@ function EdgeBlock({ leg }: { leg: CreditSpreadPlanLeg }) {
       {!modeled && (edge.sample.sourceMix.SCHWAB_1M || edge.sample.sourceMix.SCHWAB_30M) ? (
         <div style={styles.subtle}>{edge.sample.sourceMix.SCHWAB_1M}×1m · {edge.sample.sourceMix.SCHWAB_30M}×30m</div>
       ) : null}
+      {edge.sample.n < 30 && leg.riskSizeMultiplier < 1 ? <div style={{ ...styles.subtle, color: "#f5c542" }}>THIN HISTORY · structure-confirmed provisional entry · reduced size</div> : null}
       <div style={styles.subtle}>{edge.sample.keyUsed}</div>
     </div>
   );

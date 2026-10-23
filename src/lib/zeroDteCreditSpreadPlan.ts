@@ -24,7 +24,12 @@ import {
 
 export type CreditSpreadPlanSide = "PCS" | "CCS";
 export type CreditSpreadPlanStatus = "READY" | "PAIRED" | "WAIT" | "NO_TRADE_DAY";
-export type CreditSpreadEntryTrigger = "FADE_REJECTION" | "FADE_SWEEP" | "NONE";
+export type CreditSpreadEntryTrigger =
+  | "STRUCTURE_REVERSAL"
+  | "STRUCTURE_CONTINUATION"
+  | "FADE_REJECTION"
+  | "FADE_SWEEP"
+  | "NONE";
 export type CreditSpreadGammaRegime = "POSITIVE" | "NEGATIVE" | null;
 export type CreditSpreadDirectionalTilt = "BULL" | "BEAR" | "NONE";
 
@@ -220,7 +225,11 @@ export function buildDefensibleCreditSpreadPlan(args: {
         });
   }
 
-  if (readyPcs && readyCcs && gammaRegime === "POSITIVE") {
+  const structuralReady = [readyPcs, readyCcs].filter((item): item is Evaluated =>
+    Boolean(item && (item.entryTrigger === "STRUCTURE_REVERSAL" || item.entryTrigger === "STRUCTURE_CONTINUATION")),
+  );
+
+  if (readyPcs && readyCcs && gammaRegime === "POSITIVE" && structuralReady.length === 0) {
     const pcsLeg = toPlanLeg(readyPcs, 0.5);
     const ccsLeg = toPlanLeg(readyCcs, 0.5);
     const primaryEval = (readyPcs.edge?.evPerLotDollars ?? -Infinity) >= (readyCcs.edge?.evPerLotDollars ?? -Infinity)
@@ -241,7 +250,15 @@ export function buildDefensibleCreditSpreadPlan(args: {
 
   const ready = [readyPcs, readyCcs].filter((item): item is Evaluated => Boolean(item));
   if (ready.length) {
-    const best = ready.sort((a, b) => (b.edge?.evPerLotDollars ?? -Infinity) - (a.edge?.evPerLotDollars ?? -Infinity))[0];
+    const triggerPriority = (item: Evaluated) =>
+      item.entryTrigger === "STRUCTURE_REVERSAL" || item.entryTrigger === "STRUCTURE_CONTINUATION" ? 3
+        : item.entryTrigger === "FADE_REJECTION" || item.entryTrigger === "FADE_SWEEP" ? 2
+          : 1;
+    const best = ready.sort((a, b) =>
+      triggerPriority(b) - triggerPriority(a) ||
+      b.rank - a.rank ||
+      (b.edge?.evPerLotDollars ?? -Infinity) - (a.edge?.evPerLotDollars ?? -Infinity),
+    )[0];
     return fromEvaluated(best, "READY", {
       paired: null,
       blockers: [],
@@ -298,6 +315,7 @@ type Evaluated = {
   gammaRegime: CreditSpreadGammaRegime;
   directionalTilt: CreditSpreadDirectionalTilt;
   exitPlan: CreditSpreadExitPlan;
+  riskSizeMultiplier: number;
 };
 
 function evaluateCandidate(args: {
@@ -360,6 +378,19 @@ function evaluateCandidate(args: {
   const creditToRiskPct = Number.isFinite(credit) && Number.isFinite(riskPoints) && riskPoints > 0 ? credit / riskPoints : NaN;
   if (Number.isFinite(creditToRiskPct) && creditToRiskPct < 0.10) blockers.push(`Credit/risk ${(creditToRiskPct * 100).toFixed(0)}% is below the 10% defensibility floor.`);
 
+  const trigger = detectEntryTrigger({
+    side: args.side,
+    spot: args.spot,
+    expectedMove: args.expectedMove,
+    anchors: args.anchors,
+    structure: args.structure,
+    candles: args.candles,
+    directional: args.directional,
+    gammaRegime: args.gammaRegime,
+    tolerance: args.confluenceTolerance,
+  });
+  const structureConfirmedTrigger = trigger.kind === "STRUCTURE_REVERSAL" || trigger.kind === "STRUCTURE_CONTINUATION";
+
   const edge = buildSpreadEdgeRead({
     side: args.side,
     shortStrike: short,
@@ -370,8 +401,19 @@ function evaluateCandidate(args: {
     table: args.moveTable,
     context: args.moveTableContext,
   });
-  if (!edge || edge.sample.n < 30) blockers.push("Not enough history for this setup.");
-  else if (edge.evPerLotDollars <= 0) blockers.push("Historical EV is negative: market is not overpaying for this distance.");
+  let provisionalHistory = false;
+  if (!edge) {
+    blockers.push("Historical edge is unavailable for this setup.");
+  } else if (edge.evPerLotDollars <= 0) {
+    blockers.push("Historical EV is negative: market is not overpaying for this distance.");
+  } else if (edge.sample.n < 30) {
+    if (structureConfirmedTrigger && guard?.strong) {
+      provisionalHistory = true;
+      reasons.push(`Thin history n=${edge.sample.n} days; fresh ${trigger.kind === "STRUCTURE_REVERSAL" ? "reversal" : "continuation"} structure permits a provisional half-size entry.`);
+    } else {
+      blockers.push(`Not enough history for this setup (n=${edge.sample.n} distinct days).`);
+    }
+  }
 
   if (guard) reasons.push(`${guard.label} ${guard.price.toFixed(1)} guards the short strike.`);
   const tiltText = args.directionalTilt === "NONE" ? "No directional tilt" : `${args.directionalTilt} directional tilt`;
@@ -379,22 +421,17 @@ function evaluateCandidate(args: {
   if (delta !== null) reasons.push(`Short delta ${delta.toFixed(2)}; distance ${distance.toFixed(1)} points (${Math.round(distanceEm * 100)}% of EM).`);
   if (edge) reasons.push(`${edge.sample.mode === "MODELED" ? "MODELED" : "Historical"} hold-to-expiry EV ${moneySigned(edge.evPerLotDollars)} / lot from n=${edge.sample.n} distinct days.`);
 
-  const trigger = detectEntryTrigger({
-    side: args.side,
-    spot: args.spot,
-    anchors: args.anchors,
-    structure: args.structure,
-    candles: args.candles,
-    gammaRegime: args.gammaRegime,
-    tolerance: args.confluenceTolerance,
-  });
-
   const defenseBonus = defenses.reduce((sum, item) => sum + (item.strong ? 8 : 3), 0);
   const widthPreference = width >= 10 && width <= 20 ? 8 : width <= 30 ? 3 : -4;
   const deltaPreference = delta === null ? 0 : Math.max(-10, 8 - Math.abs(delta - 0.18) * 50);
   const distancePreference = Math.min(8, Math.max(0, (distance - args.distanceFloor) / 3));
   const edgeBonus = edge?.edgePts == null ? 0 : clamp(edge.edgePts, -10, 15);
-  const rank = args.candidate.score + Math.min(22, defenseBonus) + widthPreference + deltaPreference + distancePreference + edgeBonus;
+  const triggerBonus = trigger.kind === "STRUCTURE_REVERSAL" || trigger.kind === "STRUCTURE_CONTINUATION"
+    ? 18
+    : trigger.kind === "FADE_REJECTION" || trigger.kind === "FADE_SWEEP"
+      ? 8
+      : 0;
+  const rank = args.candidate.score + Math.min(22, defenseBonus) + widthPreference + deltaPreference + distancePreference + edgeBonus + triggerBonus;
   const invalidationText = guard
     ? `${args.side === "PCS" ? "1m close below" : "1m close above"} ${guard.label} ${guard.price.toFixed(1)} invalidates the defense thesis.`
     : "No structural guard is present between spot and the short strike.";
@@ -428,18 +465,24 @@ function evaluateCandidate(args: {
     gammaRegime: args.gammaRegime,
     directionalTilt: args.directionalTilt,
     exitPlan,
+    riskSizeMultiplier: provisionalHistory ? 0.5 : 1,
   };
 }
 
 function detectEntryTrigger(args: {
   side: CreditSpreadPlanSide;
   spot: number;
+  expectedMove: number;
   anchors: readonly StructureAnchor[];
   structure: ZeroDteStructureSnapshot;
   candles: readonly StructureCandle[];
+  directional: ZeroDteDirectionalSignal;
   gammaRegime: CreditSpreadGammaRegime;
   tolerance: number;
 }): { kind: CreditSpreadEntryTrigger; detail: string } {
+  const structural = detectStructuralEntryTrigger(args);
+  if (structural) return structural;
+
   if (args.gammaRegime !== "POSITIVE") {
     return { kind: "NONE", detail: args.gammaRegime === "NEGATIVE" ? "Neg-gamma: fades disabled." : "Gamma regime unavailable: fade trigger disabled." };
   }
@@ -469,6 +512,83 @@ function detectEntryTrigger(args: {
     if (hit) return { kind: "FADE_REJECTION", detail: `${args.side} ENTER NOW · 1m rejection at ${hit.anchor.label} ${hit.anchor.price.toFixed(1)}.` };
   }
   return { kind: "NONE", detail: "READY · no trigger yet" };
+}
+
+function detectStructuralEntryTrigger(args: {
+  side: CreditSpreadPlanSide;
+  spot: number;
+  expectedMove: number;
+  structure: ZeroDteStructureSnapshot;
+  candles: readonly StructureCandle[];
+  directional: ZeroDteDirectionalSignal;
+}): { kind: Exclude<CreditSpreadEntryTrigger, "FADE_REJECTION" | "FADE_SWEEP" | "NONE">; detail: string } | null {
+  if (!args.candles.length) return null;
+  const lastIndex = args.candles.length - 1;
+  const direction = args.side === "PCS" ? "BULL" : "BEAR";
+  const opposite = direction === "BULL" ? "BEAR" : "BULL";
+  const matchingAction = args.side === "PCS" ? "BUY" : "SELL";
+  const latestClose = args.candles[lastIndex]?.close ?? args.spot;
+  const maxChase = Math.max(4, Math.min(10, 0.25 * Math.max(1, args.expectedMove)));
+
+  const breaks = [...args.structure.breaks].sort((a, b) => a.breakIndex - b.breakIndex);
+  const freshBos = [...breaks].reverse().find((item) =>
+    item.direction === direction && item.kind === "BOS" && lastIndex - item.breakIndex <= 3,
+  ) ?? null;
+  if (!freshBos) return null;
+  if (Math.abs(latestClose - freshBos.level) > maxChase) return null;
+
+  const oppositeAfter = breaks.some((item) =>
+    item.direction === opposite && item.kind === "BOS" && item.breakIndex > freshBos.breakIndex,
+  );
+  if (oppositeAfter) return null;
+
+  const priorChoch = [...breaks].reverse().find((item) =>
+    item.direction === direction &&
+    item.kind === "CHOCH" &&
+    item.breakIndex < freshBos.breakIndex &&
+    freshBos.breakIndex - item.breakIndex <= 8,
+  ) ?? null;
+  if (priorChoch) {
+    return {
+      kind: "STRUCTURE_REVERSAL",
+      detail: `${args.side} ENTER NOW · CHoCH → BOS ${direction.toLowerCase()} reversal confirmed; fresh BOS is ${lastIndex - freshBos.breakIndex} bar(s) old.`,
+    };
+  }
+
+  const pullbackLabel = args.side === "PCS" ? "HL" : "LH";
+  const pullback = [...args.structure.swings].reverse().find((item) =>
+    item.label === pullbackLabel &&
+    item.confirmIndex <= freshBos.breakIndex &&
+    freshBos.breakIndex - item.confirmIndex <= 8,
+  ) ?? null;
+  if (pullback) {
+    const priorBos = [...breaks].reverse().find((item) =>
+      item.direction === direction && item.kind === "BOS" && item.breakIndex < pullback.confirmIndex,
+    ) ?? null;
+    const oppositeSincePullback = breaks.some((item) =>
+      item.direction === opposite && item.kind === "BOS" && item.breakIndex > pullback.confirmIndex,
+    );
+    if (priorBos && !oppositeSincePullback) {
+      return {
+        kind: "STRUCTURE_CONTINUATION",
+        detail: `${args.side} ENTER NOW · ${pullbackLabel} → fresh BOS ${direction.toLowerCase()} continuation confirmed; fresh BOS is ${lastIndex - freshBos.breakIndex} bar(s) old.`,
+      };
+    }
+  }
+
+  if (args.directional.action === matchingAction && args.directional.trigger === "REVERSAL_CAPTURE") {
+    return {
+      kind: "STRUCTURE_REVERSAL",
+      detail: `${args.side} ENTER NOW · directional reversal capture and fresh ${direction.toLowerCase()} BOS agree.`,
+    };
+  }
+  if (args.directional.action === matchingAction && args.directional.trigger === "CONTINUATION_CAPTURE") {
+    return {
+      kind: "STRUCTURE_CONTINUATION",
+      detail: `${args.side} ENTER NOW · directional continuation capture and fresh ${direction.toLowerCase()} BOS agree.`,
+    };
+  }
+  return null;
 }
 
 function collectDefenses(args: {
@@ -560,7 +680,7 @@ function toPlanLeg(item: Evaluated, riskSizeMultiplier = 1): CreditSpreadPlanLeg
     entryTriggerDetail: item.entryTriggerDetail,
     directionalTilt: item.directionalTilt,
     gammaRegime: item.gammaRegime,
-    riskSizeMultiplier,
+    riskSizeMultiplier: Math.min(riskSizeMultiplier, item.riskSizeMultiplier),
     exitPlan: item.exitPlan,
   };
 }

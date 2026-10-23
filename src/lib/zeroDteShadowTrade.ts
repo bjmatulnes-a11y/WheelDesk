@@ -96,7 +96,7 @@ export type ZeroDteShadowTrade = {
   moveTableKeyUsed?: string | null;
   moveTableN?: number | null;
   planStatus?: "READY" | "PAIRED" | "WAIT" | "NO_TRADE_DAY" | null;
-  entryTrigger?: "FADE_REJECTION" | "FADE_SWEEP" | "NONE" | null;
+  entryTrigger?: "STRUCTURE_REVERSAL" | "STRUCTURE_CONTINUATION" | "FADE_REJECTION" | "FADE_SWEEP" | "NONE" | null;
   entryTimeBucket?: string | null;
   gammaRegime?: "POSITIVE" | "NEGATIVE" | null;
   directionalTilt?: "BULL" | "BEAR" | "NONE" | null;
