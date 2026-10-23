@@ -543,7 +543,15 @@ export async function POST(request: NextRequest) {
   const access = await requirePlanAccessFromRequest(request, "research");
   if ("response" in access) return access.response;
   try {
-    const body = await request.json();
+    let body: any;
+    try {
+      body = await request.json();
+    } catch {
+      return err("Malformed JSON request body", 400);
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return err("JSON request body must be an object", 400);
+    }
     if (!body.tradeDate) return err("Missing tradeDate", 400);
 
     if (body.action === "sample" || body.action === "sample-batch") {

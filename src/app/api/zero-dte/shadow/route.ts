@@ -42,7 +42,15 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const user = await getAuthenticatedUserFromRequest(request);
-    const body = await request.json();
+    let body: any;
+    try {
+      body = await request.json();
+    } catch {
+      return jsonError("Malformed JSON request body.", 400);
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return jsonError("JSON request body must be an object.", 400);
+    }
     if (body.action === "open") return openShadow(body, user.id);
     if (body.action === "sample-batch") return sampleShadowBatch(body, user.id);
     if (body.action === "close") return closeShadow(body, user.id);
@@ -62,7 +70,7 @@ async function openShadow(body: any, userId: string) {
   const portfolioDecision = normalizePortfolioDecision(body.portfolioDecision);
   const accepted = source === "PLAN" ? true : portfolioDecision === "TAKE";
   const strategy = normalizeStrategy(body.strategy);
-  const legs = Array.isArray(body.legs) ? body.legs : [];
+  const legs = normalizeExecutionLegs(body.legs);
 
   if (source === "PLAN") {
     const cutoff = new Date(Date.parse(String(body.signalTime ?? new Date().toISOString())) - 15 * 60_000).toISOString();
@@ -82,7 +90,7 @@ async function openShadow(body: any, userId: string) {
     );
     if (blocked) return NextResponse.json({ ok: true, trade: null, deduped: true });
   }
-  const entryLegSnapshots = Array.isArray(body.entryLegSnapshots) ? body.entryLegSnapshots : [];
+  const entryLegSnapshots = normalizeLegSnapshots(body.entryLegSnapshots);
   const structureState = strategy === "iron-fly" ? "IF_CENTER" : "CREDIT_SPREAD";
   const openHistory = accepted
     ? [{
@@ -116,7 +124,7 @@ async function openShadow(body: any, userId: string) {
     short_distance_points: numeric(body.shortDistancePoints),
     entry_mark_credit: numeric(body.entryMarkCredit),
     entry_sellable_credit: entryCredit,
-    entry_short_legs: Array.isArray(body.entryShortLegs) ? body.entryShortLegs : [],
+    entry_short_legs: normalizeShortLegEntries(body.entryShortLegs),
     signal_peak_credit: numeric(body.signalPeakCredit),
     premium_expansion_pct: numeric(body.premiumExpansionPct),
     premium_rollover_pct: numeric(body.premiumRolloverPct),
@@ -228,8 +236,8 @@ async function openShadow(body: any, userId: string) {
     portfolio_decision_reason: body.portfolioDecisionReason ? String(body.portfolioDecisionReason) : null,
     entry_leg_snapshots: entryLegSnapshots,
     current_leg_snapshots: entryLegSnapshots,
-    entry_greeks: body.entryGreeks && typeof body.entryGreeks === "object" ? body.entryGreeks : null,
-    current_greeks: body.entryGreeks && typeof body.entryGreeks === "object" ? body.entryGreeks : null,
+    entry_greeks: normalizeGreekSnapshot(body.entryGreeks),
+    current_greeks: normalizeGreekSnapshot(body.entryGreeks),
     adaptive_structure_state: accepted && source === "EXECUTION" ? structureState : null,
     adaptive_active_legs: accepted && source === "EXECUTION" ? legs : [],
     adaptive_net_cash_points: accepted && source === "EXECUTION" ? entryCredit : null,
@@ -327,7 +335,7 @@ async function sampleShadowBatch(body: any, userId: string) {
     const buybackDebit = numeric(item.buybackDebit);
     const currentShortBuybackPrice = numeric(item.currentShortBuybackPrice);
     const currentShortLegMultiple = numeric(item.currentShortLegMultiple);
-    const currentLegSnapshots = Array.isArray(item.currentLegSnapshots) ? item.currentLegSnapshots : [];
+    const currentLegSnapshots = normalizeLegSnapshots(item.currentLegSnapshots);
     const entryCredit = numeric(row.entry_sellable_credit) ?? 0;
     const width = numeric(row.width_points);
     const shortStrike = shortStrikeFromLegs(row.legs);
@@ -903,6 +911,80 @@ function normalizeStructureTransition(value: any) {
     nextNetCashPoints,
     detail: String(value.detail ?? type),
   };
+}
+
+function normalizeExecutionLegs(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((raw) => {
+    if (!raw || typeof raw !== "object") return [];
+    const leg = raw as Record<string, unknown>;
+    const optionType = leg.optionType === "call" || leg.optionType === "put" ? leg.optionType : null;
+    const action = leg.action === "sell" || leg.action === "buy" ? leg.action : null;
+    const strike = numeric(leg.strike);
+    if (!optionType || !action || strike === null || strike <= 0) return [];
+    return [{ optionType, action, strike }];
+  });
+}
+
+function normalizeShortLegEntries(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((raw) => {
+    if (!raw || typeof raw !== "object") return [];
+    const leg = raw as Record<string, unknown>;
+    const optionType = leg.optionType === "call" || leg.optionType === "put" ? leg.optionType : null;
+    const strike = numeric(leg.strike);
+    const sellPrice = numeric(leg.sellPrice);
+    if (!optionType || strike === null || strike <= 0 || sellPrice === null || sellPrice <= 0) return [];
+    return [{ optionType, strike, sellPrice }];
+  });
+}
+
+function normalizeLegSnapshots(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  const validRoles = new Set([
+    "CORE_SHORT",
+    "CEILING_LONG",
+    "FLOOR_LONG",
+    "CENTER_SHORT",
+    "UPPER_WING",
+    "LOWER_WING",
+    "RUNNER",
+    "REPAIR_SHORT",
+  ]);
+  return value.flatMap((raw) => {
+    if (!raw || typeof raw !== "object") return [];
+    const item = raw as Record<string, unknown>;
+    const optionType = item.optionType === "call" || item.optionType === "put" ? item.optionType : null;
+    const action = item.action === "sell" || item.action === "buy" ? item.action : null;
+    const strike = numeric(item.strike);
+    const role = typeof item.role === "string" && validRoles.has(item.role) ? item.role : null;
+    if (!optionType || !action || strike === null || strike <= 0 || !role) return [];
+    return [{
+      optionType,
+      action,
+      strike,
+      role,
+      bid: numeric(item.bid),
+      ask: numeric(item.ask),
+      mid: numeric(item.mid),
+      iv: numeric(item.iv),
+      delta: numeric(item.delta),
+      gamma: numeric(item.gamma),
+      theta: numeric(item.theta),
+      vega: numeric(item.vega),
+    }];
+  });
+}
+
+function normalizeGreekSnapshot(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const delta = numeric(raw.delta);
+  const gamma = numeric(raw.gamma);
+  const theta = numeric(raw.theta);
+  const vega = numeric(raw.vega);
+  if (delta === null || gamma === null || theta === null || vega === null) return null;
+  return { delta, gamma, theta, vega };
 }
 
 function numeric(value: unknown): number | null {

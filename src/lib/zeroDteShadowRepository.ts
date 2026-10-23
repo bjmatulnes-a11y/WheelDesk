@@ -7,6 +7,7 @@ import { buildShadowShortLegEntries, shadowWidthPoints } from "./zeroDteShadowTr
 import type { ZeroDteChainRow } from "./zeroDteOiIntelligence";
 import type { AdaptivePortfolioOpportunity, ShadowLegSnapshot } from "./zeroDteAdaptivePortfolio";
 import { getSupabaseAuthClient } from "./auth/supabase-auth-client";
+import { readJsonResponse, stringifyJsonBody } from "./http/jsonTransport";
 import {
   priorLevelGuardsShortStrike,
   type PriorStructureLevel,
@@ -27,12 +28,12 @@ async function call(body: Record<string, unknown>) {
   const response = await fetch("/api/zero-dte/shadow", {
     method: "POST",
     headers: await authHeaders(true),
-    body: JSON.stringify(body),
+    body: stringifyJsonBody(body),
     cache: "no-store",
   });
-  const json = await response.json();
+  const json = await readJsonResponse<Record<string, any>>(response, "Shadow-trade persistence");
   if (!response.ok || !json.ok) {
-    throw new Error(json.error || "Shadow-trade persistence failed");
+    throw new Error(String(json.error || `Shadow-trade persistence failed (${response.status})`));
   }
   return json;
 }
@@ -44,9 +45,9 @@ export async function loadZeroDteShadowTrades(
     `/api/zero-dte/shadow?tradeDate=${encodeURIComponent(tradeDate)}`,
     { headers: await authHeaders(), cache: "no-store" },
   );
-  const json = await response.json();
+  const json = await readJsonResponse<Record<string, any>>(response, "Shadow-trade load");
   if (!response.ok || !json.ok) {
-    throw new Error(json.error || "Shadow-trade load failed");
+    throw new Error(String(json.error || `Shadow-trade load failed (${response.status})`));
   }
   return (json.trades ?? []) as ZeroDteShadowTrade[];
 }
@@ -55,8 +56,8 @@ export async function loadZeroDteShadowHistory(limit = 500): Promise<ZeroDteShad
   const response = await fetch(`/api/zero-dte/shadow?history=1&limit=${Math.max(10, Math.min(2000, Math.floor(limit)))}`, {
     headers: await authHeaders(), cache: "no-store",
   });
-  const json = await response.json();
-  if (!response.ok || !json.ok) throw new Error(json.error || "Shadow history load failed");
+  const json = await readJsonResponse<Record<string, any>>(response, "Shadow history load");
+  if (!response.ok || !json.ok) throw new Error(String(json.error || `Shadow history load failed (${response.status})`));
   return (json.trades ?? []) as ZeroDteShadowTrade[];
 }
 

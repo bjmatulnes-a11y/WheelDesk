@@ -11,6 +11,7 @@ import type { ZeroDteOpeningMap } from "./zeroDteOpeningMap";
 import type { ZeroDteOpeningTradePlan } from "./zeroDteOpeningTradePlan";
 import type { ZeroDteRecommendation } from "./zeroDteOiIntelligence";
 import type { ZeroDteStrikeFlowRead } from "./zeroDteStrikeFlow";
+import { readJsonResponse, stringifyJsonBody } from "./http/jsonTransport";
 
 const memoryCache = new Map<string, ZeroDteExecutionMemory>();
 
@@ -23,12 +24,12 @@ async function call(body: Record<string, unknown>): Promise<ZeroDteExecutionMemo
   const response = await fetch("/api/zero-dte/execution-v2", {
     method: "POST",
     headers: await authenticatedApiHeaders({ "content-type": "application/json" }),
-    body: JSON.stringify(body),
+    body: stringifyJsonBody(body),
     cache: "no-store",
   });
-  const json = await response.json();
+  const json = await readJsonResponse<Record<string, any>>(response, "Execution persistence");
   if (!response.ok || !json.ok) {
-    throw new Error(json.error || "Execution persistence failed");
+    throw new Error(String(json.error || `Execution persistence failed (${response.status})`));
   }
   if (!json.memory) {
     throw new Error("Execution persistence returned no memory state.");
@@ -43,9 +44,9 @@ export async function loadExecutionMemoryDb(
     `/api/zero-dte/execution-v2?tradeDate=${encodeURIComponent(tradeDate)}`,
     { headers: await authenticatedApiHeaders(), cache: "no-store" },
   );
-  const json = await response.json();
+  const json = await readJsonResponse<Record<string, any>>(response, "Execution history load");
   if (!response.ok || !json.ok) {
-    throw new Error(json.error || "Execution history load failed");
+    throw new Error(String(json.error || `Execution history load failed (${response.status})`));
   }
   return remember(json.memory as ZeroDteExecutionMemory);
 }
@@ -94,16 +95,16 @@ export async function persistExecutionSamples(args: {
   const response = await fetch("/api/zero-dte/execution-v2", {
     method: "POST",
     headers: await authenticatedApiHeaders({ "content-type": "application/json" }),
-    body: JSON.stringify({
+    body: stringifyJsonBody({
       action: "sample-batch",
       ...args,
       items,
     }),
     cache: "no-store",
   });
-  const json = await response.json();
+  const json = await readJsonResponse<Record<string, any>>(response, "Execution sample persistence");
   if (!response.ok || !json.ok) {
-    throw new Error(json.error || "Execution sample persistence failed");
+    throw new Error(String(json.error || `Execution sample persistence failed (${response.status})`));
   }
 
   // New optimized route returns only the inserted sample delta. Keep a
